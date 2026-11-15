@@ -195,6 +195,8 @@ ComfyUI не трогает. Без готового описания (кэш, `
    сохраняется, а «пляж» проступает только в проёмах окон. Чтобы сцена действительно сменилась,
    нужен `--cn-strength 0.2–0.3` и обычно `--denoise 0.85–0.9` (кадр `00028`). Полная замена
    сцены без оглядки на исходник — это ветка `01_scene_*` (текст→картинка), не фото.
+   Отдельных сборок для этого не заводим (решение 15.11): поля `cn_strength` и `denoise`
+   в App Mode подписаны обоими режимами, обычные 0.6 / 0.75 остаются переносом стиля со сценой.
 
 0.14. **Веб-слой: четыре вещи, на которых легко потерять час.**
    NiceGUI 4: обработчик `ui.upload` должен быть **корутиной, переданной объектом**
@@ -241,7 +243,7 @@ ComfyUI не трогает. Без готового описания (кэш, `
    `verify`. Четвёртое: `settings.utf8_streams()` в точках входа —
    в пайп Python пишет в кодировке локали (cp1252), и `print` с кириллицей падал с
    `UnicodeEncodeError`; без этого команды из README работают только с `PYTHONIOENCODING`.
-   Проверка: `python tools\test_photo_prompt.py` (206) и `python tools\test_web_app.py` (176).
+   Проверка: `python tools\test_photo_prompt.py` (208) и `python tools\test_web_app.py` (176).
 
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
@@ -347,7 +349,7 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 
 ## Проверки перед словом «готово»
 
-- `python tools\test_photo_prompt.py` — 206 проверок CLI и пайплайна (модели не нужны).
+- `python tools\test_photo_prompt.py` — 208 проверок CLI и пайплайна (модели не нужны).
 - `python tools\test_web_app.py` — 176 проверок заданий, очереди и веб-слоя на HTTP-заглушках
   (LM Studio и ComfyUI подменяются, GPU не нужен).
 - `python tools\test_web_ui.py` — 31 браузерная проверка Chromium на тех же заглушках:

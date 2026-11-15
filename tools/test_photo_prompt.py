@@ -1262,6 +1262,14 @@ def test_style_prompts_consistent():
     check("05: блок стиля на месте",
           "theofficialpit style" in five_pos and "flat colors" in five_pos, five_pos[:140])
 
+    ui = json.loads((pp.WF_DIR / "07_photo_thepit.json").read_text(encoding="utf-8"))
+    descs = [str(i[2].get("description", ""))
+             for i in ui["extra"]["linearData"]["inputs"]]
+    check("07: в поле глубины есть рецепт смены сцены",
+          any("0.25" in d and "сменить место" in d for d in descs), str(descs)[:240])
+    check("07: в поле denoise есть рецепт смены сцены",
+          any("0.85–0.9" in d and "смена места" in d for d in descs), str(descs)[:240])
+
 
 def main():
     patch_roots()
