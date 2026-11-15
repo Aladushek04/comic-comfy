@@ -674,15 +674,19 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
         return None
 
     folder = ROOT / "out" / image_tag(image_path)
-    folder.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, folder / name)
     book_path = folder / "run.json"
     book = {"runs": []}
     if book_path.exists():
+        # Паспорт уже есть — переписываем только прочитанный: пустой «паспорт»
+        # вместо истории хуже, чем кадр без записи, и молча теряет прошлые кадры.
         try:
             book = read_json(book_path)
-        except Exception:
-            pass
+        except Exception as e:
+            raise PipelineError(
+                f"паспорт {book_path} не читается ({e}) — кадр не записан, "
+                f"паспорт не тронут") from e
+    folder.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, folder / name)
     for r in book.get("runs", []):
         if not r.get("workflow"):
             r["workflow"] = workflow_from_file(r.get("file", ""))

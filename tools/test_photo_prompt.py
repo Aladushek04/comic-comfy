@@ -1194,6 +1194,44 @@ def test_utf8_streams():
           "UnicodeEncodeError" not in err and "Traceback" not in err, err[-200:])
 
 
+def test_passport_not_lost():
+    print("\n27) паспорт не перезаписывается, если не читается")
+    img = TMP / "root" / "notlost.png"
+    make(img, (7, 8, 9))
+    saved_roots = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT, pp.OUTPUT_DIR = TMP / "root_notlost", TMP / "out_notlost"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        frame = "07_photo_thepit_00077_.png"
+        (pp.OUTPUT_DIR / frame).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "adult woman", "negative_extra": ""}, 1, None, frame)
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "adult woman", "negative_extra": ""}, 2, None, frame)
+        book = pp.ROOT / "out" / pp.image_tag(str(img)) / "run.json"
+        before = book.read_bytes()
+        saved_read = pp.read_json
+        pp.read_json = lambda *a, **k: (_ for _ in ()).throw(PermissionError("занят"))
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    pp.save_run(str(img), "07_photo_thepit",
+                                {"subject": "adult woman", "negative_extra": ""},
+                                2, None, frame)
+                    check("невозможность прочитать паспорт видна", False)
+                except pp.PipelineError as e:
+                    check("невозможность прочитать паспорт видна",
+                          "паспорт" in str(e) and "занят" in str(e), str(e))
+        finally:
+            pp.read_json = saved_read
+        check("старый паспорт цел побайтно", book.read_bytes() == before)
+        check("прежняя история на месте",
+              len(json.loads(book.read_text(encoding="utf-8"))["runs"]) == 2)
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved_roots
+
+
 def main():
     patch_roots()
     try:
@@ -1222,6 +1260,7 @@ def main():
         test_passport_records_generation_settings()
         test_atomic_json()
         test_utf8_streams()
+        test_passport_not_lost()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

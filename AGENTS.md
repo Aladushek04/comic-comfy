@@ -231,7 +231,9 @@ ComfyUI не трогает. Без готового описания (кэш, `
    а не «не запущено».
    Второе: JSON пишется только через `photo_prompt.write_json` (`tmp` рядом с целевым →
    `fsync` → `os.replace`); `write_text` рвёт паспорт или кэш пополам, а `save_run`
-   переписывает всю историю папки. Третье: предел картинки (`MAX_SIDE` 8192, `MAX_PIXELS`
+   переписывает всю историю папки. Существующий, но нечитаемый `run.json` — это
+   `PipelineError`, а не повод начать историю с нуля: пустой паспорт молча теряет
+   записи о прежних кадрах. Третье: предел картинки (`MAX_SIDE` 8192, `MAX_PIXELS`
    64 Мпикс) проверяется по заголовку **до** `Image.open` для PNG и JPEG
    (`image_size`: чанки до IHDR, первый SOF): PIL отказывается открывать кадр больше
    ~179 Мпикс своей защитой от «бомб» и не называет размер, а `verify()` на обрезанном
@@ -239,7 +241,7 @@ ComfyUI не трогает. Без готового описания (кэш, `
    `verify`. Четвёртое: `settings.utf8_streams()` в точках входа —
    в пайп Python пишет в кодировке локали (cp1252), и `print` с кириллицей падал с
    `UnicodeEncodeError`; без этого команды из README работают только с `PYTHONIOENCODING`.
-   Проверка: `python tools\test_photo_prompt.py` (195) и `python tools\test_web_app.py` (176).
+   Проверка: `python tools\test_photo_prompt.py` (198) и `python tools\test_web_app.py` (176).
 
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
@@ -345,7 +347,7 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 
 ## Проверки перед словом «готово»
 
-- `python tools\test_photo_prompt.py` — 195 проверок CLI и пайплайна (модели не нужны).
+- `python tools\test_photo_prompt.py` — 198 проверок CLI и пайплайна (модели не нужны).
 - `python tools\test_web_app.py` — 176 проверок заданий, очереди и веб-слоя на HTTP-заглушках
   (LM Studio и ComfyUI подменяются, GPU не нужен).
 - `python tools\test_web_ui.py` — 31 браузерная проверка Chromium на тех же заглушках:
@@ -353,8 +355,10 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
   Recheck, две вкладки, потеря связи браузера, отказ WebSocket ComfyUI, промпт формы,
   истёкшая история задания.
 - Переменные кодировки не нужны: `settings.utf8_streams()` в точках входа ставит UTF-8 сам,
-  поэтому те же команды работают и в консоли, и с перенаправлением вывода в файл или пайп
-  (кроме `webapp\run.py` — он поднимается из `.cmd`/`.ps1` со своим окружением).
+  поэтому те же команды работают и в консоли, и с перенаправлением вывода в файл или пайп.
+  Это про `tools\*`: `webapp\run.py` поднимается из `.cmd`/`.ps1` со своим окружением, а
+  `test_web_ui.py` сам задаёт `PYTHONIOENCODING` дочернему серверу — браузерная проверка
+  работу сервера без переменной не доказывает.
 - `python tools\check_install.py` — все 22 модели из сборок на диске и описаны в `DOWNLOADS.md`.
 - `python build_workflows.py` без ошибок, затем валидатор `widgets_values` по `/object_info`.
 - Интерфейс: `ComicWeb.cmd` (или `.venv-web\Scripts\python.exe webapp\run.py`), затем живой
