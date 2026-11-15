@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -784,6 +785,39 @@ def test_upload_validation():
         svc.shutdown()
 
 
+def test_upload_limits():
+    print("\n21) загрузка: предел картинки до декодирования")
+    from webapp import service as svc_mod
+    svc = JobService(jobs_root=TMP / "limit_root")
+    try:
+        wide = TMP / "wide.png"
+        Image.new("RGB", (8200, 8), (9, 9, 9)).save(wide)
+        try:
+            svc.save_upload("wide.png", wide.read_bytes())
+            check("картинка шире предела отвергается", False)
+        except UploadError as e:
+            check("картинка шире предела отвергается", True)
+            check("в ошибке сторона, предел и площадь",
+                  "8200×8" in str(e) and "8192" in str(e) and "64" in str(e), str(e))
+
+        bomb = bytearray(_png_bytes())
+        struct.pack_into(">I", bomb, 16, 7900)      # ширина в IHDR
+        struct.pack_into(">I", bomb, 20, 8192)      # высота: стороны в норме
+        struct.pack_into(">I", bomb, 29, zlib.crc32(bytes(bomb[12:29])) & 0xffffffff)
+        try:
+            svc.save_upload("bomb.png", bytes(bomb))
+            check("площадь свыше предела отвергается", False)
+        except UploadError as e:
+            check("площадь свыше предела отвергается",
+                  "7900×8192" in str(e) and "64.7 Мпикс" in str(e), str(e))
+            check("заголовок важнее CRC: это не «не картинка»",
+                  "не картинка" not in str(e), str(e))
+        check("нормальная картинка по-прежнему проходит",
+              svc.upload_path(svc.save_upload("ok.png", _png_bytes())[0]) is not None)
+    finally:
+        svc.shutdown()
+
+
 def test_overrides():
     print("\n11) переопределения: поля, LoRA и полный промпт")
     comfy = comfy_stub()
@@ -1240,6 +1274,7 @@ def main():
         test_frame_prompt_passport()
         test_comfy_launch_plan()
         test_job_autostart()
+        test_upload_limits()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

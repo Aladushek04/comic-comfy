@@ -6,6 +6,7 @@
 """
 import io
 import shutil
+import struct
 import threading
 import time
 import uuid
@@ -22,6 +23,10 @@ class UploadError(ValueError):
 
 
 MAX_UPLOAD = 30 * 1024 * 1024
+MAX_SIDE = 8192                 # сторона выше — отказ до декодирования
+MAX_PIXELS = 64_000_000         # площадь выше — отказ до декодирования
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def _safe_stem(name):
@@ -30,13 +35,43 @@ def _safe_stem(name):
     return keep or "photo"
 
 
+def _size_text(width, height):
+    """Размер для текста ошибки: «8200×8 (0.1 Мпикс)»."""
+    return f"{width}×{height} ({width * height / 1e6:.1f} Мпикс)"
+
+
+def _too_big(width, height):
+    return width > MAX_SIDE or height > MAX_SIDE or width * height > MAX_PIXELS
+
+
+def _too_big_text(width, height):
+    return (f"файл {_size_text(width, height)} больше предела: сторона до "
+            f"{MAX_SIDE} px, площадь до {MAX_PIXELS / 1e6:.1f} Мпикс")
+
+
+def png_size(data):
+    """Ширина и высота из заголовка PNG, без декодирования кадра.
+
+    Pillow декодирует PNG уже в Image.open, поэтому проверять размер после
+    открытия поздно: 30 МБ PNG бывает на 150 Мпикс. None — это не PNG.
+    """
+    if not data.startswith(PNG_SIGNATURE) or data[12:16] != b"IHDR" or len(data) < 24:
+        return None
+    return struct.unpack(">II", data[16:24])
+
+
 def save_png(folder, data, name="photo"):
     """Пересохраняет загруженное фото в PNG: без EXIF и посторонних байтов."""
     if len(data) > MAX_UPLOAD:
         raise UploadError(f"файл больше {MAX_UPLOAD // (1024 * 1024)} МБ")
+    size = png_size(data)
+    if size and _too_big(*size):
+        raise UploadError(_too_big_text(*size))
     from PIL import Image, ImageOps
     try:
         with Image.open(io.BytesIO(data)) as im:
+            if _too_big(*im.size):          # JPEG и прочее: размер из заголовка
+                raise UploadError(_too_big_text(*im.size))
             im.verify()
         with Image.open(io.BytesIO(data)) as im:
             im = ImageOps.exif_transpose(im)
