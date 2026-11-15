@@ -30,6 +30,7 @@ import build_workflows as bw
 from PIL import Image
 from webapp import catalog
 from webapp.service import JobService, UploadError
+from webapp.state import fmt_setting, pass_steps
 
 TMP = Path(tempfile.mkdtemp(prefix="comic_web_test_"))
 passed, failed = [], []
@@ -127,6 +128,7 @@ class LMHandler(_Handler):
 
 class ComfyHandler(_Handler):
     WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    CONTROL_KEYS = ("ws_disabled", "delay", "make_files", "empty_outputs", "prompt_fail")
 
     def _ws_frame(self, obj):
         data = json.dumps(obj, ensure_ascii=False).encode()
@@ -208,6 +210,13 @@ class ComfyHandler(_Handler):
     def do_POST(self):
         st = self.server.state
         st.posts.append(self.path)
+        if self.path == "/_control":
+            body = self._body()
+            for key in self.CONTROL_KEYS:
+                if key in body:
+                    setattr(st, key, body[key])
+            self._json({k: getattr(st, k) for k in self.CONTROL_KEYS})
+            return
         if self.path == "/prompt":
             payload = self._body()
             st.prompts.append(payload)
@@ -827,6 +836,146 @@ def test_overrides():
         comfy.stop()
 
 
+def test_pass_logic():
+    print("\n12) полоска шагов относится к текущему проходу")
+    events = [
+        {"stage": "variant", "data": {"index": 1, "total": 2}},
+        {"stage": "sampling", "data": {"value": 30, "max": 30, "node": "13"}},
+        {"stage": "save", "data": {"file": "a.png"}},
+        {"stage": "sampling", "data": {"value": 0.0, "max": 1.0, "node": "19"}},
+    ]
+    check("после сохранения полоска не врёт", pass_steps(events, ["13"]) is None)
+    events += [
+        {"stage": "variant", "data": {"index": 2, "total": 2}},
+        {"stage": "sampling", "data": {"value": 5, "max": 30, "node": "13"}},
+    ]
+    step = pass_steps(events, ["13"])
+    check("новый вариант показывает свой шаг",
+          bool(step) and step["data"]["value"] == 5, str(step))
+    check("препроцессор не считается шагом сэмплера",
+          pass_steps([{"stage": "sampling",
+                       "data": {"value": 1, "max": 1, "node": "9"}}], ["13"]) is None)
+    check("старый граф без samplers: только max > 1",
+          pass_steps([{"stage": "sampling", "data": {"value": 1, "max": 1, "node": "9"}},
+                      {"stage": "sampling", "data": {"value": 3, "max": 8, "node": "13"}}])
+          is not None)
+    check("recheck скрывает полоску до своих шагов",
+          pass_steps(events + [{"stage": "recheck", "data": {}}], ["13"]) is None)
+    check("настройка: None — по умолчанию, ноль — ноль",
+          fmt_setting(None) == "по умолчанию" and fmt_setting(0) == "0"
+          and fmt_setting(0.0) == "0" and fmt_setting(0.25) == "0.25",
+          f"{fmt_setting(None)} {fmt_setting(0)} {fmt_setting(0.25)}")
+
+
+def test_recheck_frames():
+    print("\n13) кадр recheck доходит до результата и паспорта")
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy) as root:
+            img = TMP / "recheck_frames.png"
+            make(img, (21, 42, 63))
+            r = jobs.run_job(jobs.JobRequest(
+                image=str(img), workflow="07_photo_thepit", subject="adult woman, plain",
+                recheck=True, seed=5, style_weight=0.7))
+            check("уточнение сделало второй кадр", r.ok and len(r.frames) == 2,
+                  f"{r.ok} {len(r.frames)} {r.error}")
+            check("первый кадр — основной", r.frames[0].get("refined") is False,
+                  str(r.frames[0].get("refined")))
+            check("второй кадр — уточнённый", r.frames[1].get("refined") is True,
+                  str(r.frames[1].get("refined")))
+            check("файлы разные", r.frames[0]["file"] != r.frames[1]["file"],
+                  str([f["file"] for f in r.frames]))
+            book = book_for(img)
+            check("в run.json оба кадра с меткой",
+                  [x.get("refined") for x in book["runs"]] == [False, True],
+                  str([x.get("refined") for x in book["runs"]]))
+            check("промпт уточнённого кадра содержит добавку",
+                  "silver bracelet" in book["runs"][-1]["subject"],
+                  book["runs"][-1]["subject"][:100])
+
+            svc = JobService(jobs_root=root / "out" / "jobs")
+            job = svc.submit(jobs.JobRequest(
+                image="", workflow="07_photo_thepit", subject="adult woman, second",
+                recheck=True, seed=6), source_path=str(TMP / "recheck_frames.png"))
+            snap = svc.wait(job.id, timeout=60)
+            check("снимок задания отдаёт оба кадра",
+                  len(snap["frames"]) == 2
+                  and snap["frames"][-1].get("refined") is True, str(snap["frames"])[:200])
+            check("download-имена привязаны к заданию",
+                  all(Path(f["file"]).name for f in snap["frames"]), str(snap["frames"]))
+    finally:
+        lm.stop()
+        comfy.stop()
+
+
+def test_source_tag():
+    print("\n14) задание помнит, с какого фото сделано")
+    comfy = comfy_stub()
+    try:
+        with stand(lm=None, comfy=comfy) as root:
+            a = TMP / "tag_a.png"
+            b = TMP / "tag_b.png"
+            make(a, (1, 2, 3))
+            make(b, (9, 8, 7))
+            svc = JobService(jobs_root=root / "out" / "jobs")
+            job_a = svc.submit(jobs.JobRequest(
+                image="", workflow="07_photo_thepit", subject="adult woman", seed=1),
+                source_path=str(a))
+            job_b = svc.submit(jobs.JobRequest(
+                image="", workflow="07_photo_thepit", subject="adult woman", seed=2),
+                source_path=str(b))
+            tag_a = svc.get(job_a.id).source_tag
+            tag_b = svc.get(job_b.id).source_tag
+            check("тег совпадает с отпечатком фото",
+                  tag_a == pp.image_tag(str(svc.get(job_a.id).source)), tag_a)
+            check("разные фото — разные теги", tag_a != tag_b, f"{tag_a} {tag_b}")
+            svc.wait(job_a.id, timeout=60)
+            svc.wait(job_b.id, timeout=60)
+            check("снимок отдаёт тег фото",
+                  svc.snapshot(job_a.id)["source_tag"] == tag_a)
+    finally:
+        comfy.stop()
+
+
+def test_comfy_rule():
+    print("\n15) каталог, health и генерация выбирают один адрес ComfyUI")
+    comfy = comfy_stub()
+    saved_env = os.environ.get("COMFY_URL")
+    saved_url = pp.settings.COMFY_URL
+    try:
+        os.environ.pop("COMFY_URL", None)
+        pp.settings.COMFY_URL = comfy.url
+        url, err = pp.comfy_state()
+        check("без явного адреса берётся настроенный", url == comfy.url and not err,
+              f"{url} {err}")
+        check("каталог видит тот же адрес", catalog.find_comfy() == comfy.url,
+              catalog.find_comfy())
+        os.environ["COMFY_URL"] = "http://127.0.0.1:1"
+        url, err = pp.comfy_state()
+        check("явный недоступный адрес не подменяется локальным",
+              url == "http://127.0.0.1:1" and "задан явно" in err, f"{url} {err}")
+        check("каталог показывает тот же явный адрес",
+              catalog.find_comfy() == "http://127.0.0.1:1", catalog.find_comfy())
+        info = catalog.health("http://127.0.0.1:2")
+        check("health даёт ту же диагностику",
+              info["comfy"]["ok"] is False and "задан явно" in info["comfy"]["error"],
+              str(info["comfy"]))
+        code = None
+        try:
+            pp.resolve_comfy(None)
+        except SystemExit as e:
+            code = e.code
+        check("генерация отказывает с той же причиной",
+              code and "задан явно" in str(code), str(code))
+    finally:
+        pp.settings.COMFY_URL = saved_url
+        if saved_env is None:
+            os.environ.pop("COMFY_URL", None)
+        else:
+            os.environ["COMFY_URL"] = saved_env
+        comfy.stop()
+
+
 def _png_bytes():
     buf = io.BytesIO()
     Image.new("RGB", (8, 8), (1, 2, 3)).save(buf, "PNG")
@@ -847,6 +996,10 @@ def main():
         test_generator_to_form()
         test_upload_validation()
         test_overrides()
+        test_pass_logic()
+        test_recheck_frames()
+        test_source_tag()
+        test_comfy_rule()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

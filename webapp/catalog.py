@@ -5,7 +5,6 @@
 `/object_info` работающего ComfyUI. Пересобрали граф — форма изменилась сама.
 """
 import json
-import os
 import urllib.request
 
 import photo_prompt as pp
@@ -135,21 +134,16 @@ def probe(url, path="/system_stats", timeout=4):
 
 
 def find_comfy():
-    """Адрес работающего ComfyUI без sys.exit: страница должна открыться и без него.
+    """Адрес ComfyUI по тому же правилу, что у генерации."""
+    return pp.comfy_state()[0]
 
-    Порядок как у resolve_comfy: явный COMFY_URL, адрес из настроек, затем
-    локальные 8199 и 8188. Если не ответил никто — возвращаем настроенный
-    адрес, чтобы проверка сервисов показала именно его.
+
+def health(lm_url):
+    """Лёгкие проверки уже запущенных сервисов. Ничего не поднимает.
+
+    Адрес ComfyUI выбирается тем же правилом, что и для генерации, поэтому
+    «готов» на странице означает ровно тот сервер, куда уйдёт задание.
     """
-    explicit = os.environ.get("COMFY_URL")
-    for cand in (explicit, pp.COMFY, "http://127.0.0.1:8199", "http://127.0.0.1:8188"):
-        if cand and probe(cand):
-            return cand
-    return explicit or pp.COMFY
-
-
-def health(lm_url, comfy_url):
-    """Лёгкие проверки уже запущенных сервисов. Ничего не поднимает."""
     lm = {"ok": probe(lm_url, "/api/v1/models"), "url": lm_url, "models": []}
     if lm["ok"]:
         try:
@@ -162,5 +156,6 @@ def health(lm_url, comfy_url):
                     lm["models"].append(key)
         except Exception:
             pass
-    comfy = {"ok": probe(comfy_url), "url": comfy_url}
+    url, error = pp.comfy_state()
+    comfy = {"ok": not error, "url": url, "error": error}
     return {"lm": lm, "comfy": comfy}

@@ -31,8 +31,9 @@
 - Оркестрация задания: `tools\jobs.py` — общий код CLI и страницы: описание, сцена, выгрузка VLM,
   `/prompt`, `/history`, `run.json`, `recheck`. Отдаёт события (этап, время, данные) подписчику.
 - Веб-интерфейс: `webapp\` (`ui.py` — форма на NiceGUI, `service.py` — очередь и состояние,
-  `catalog.py` — сборки, `meta.fields`, `/object_info`), запуск `ComicWeb.cmd` или
-  `webapp\run.py`, зависимости `requirements-web.txt`.
+  `catalog.py` — сборки, `meta.fields`, `/object_info`, `state.py` — чистые правила шагов и
+  подписей), запуск `ComicWeb.cmd` или `webapp\run.py`, зависимости `requirements-web.txt`,
+  проверки — `tools\test_web_ui.py` (Playwright, `requirements-web-dev.txt`).
   **Своё окружение `.venv-web`**: NiceGUI не ставится в venv ComfyUI.
 
 ## Как менять воркфлоу
@@ -188,8 +189,12 @@ ComfyUI не трогает. Без готового описания (кэш, `
    файл из графа (модель не скачана) — текущее значение всегда добавляется в варианты,
    иначе `ui.select` падает с `Invalid value`. Четвёртое: шаги показываем только по узлам
    из `meta.samplers`; ComfyUI шлёт `progress` и от препроцессоров с `max=1`, и без этого
-   фильтра подпись застревает на «шаг 0/1», пока идёт сэмплер.
-   Проверка: `python tools\test_web_app.py` (95 проверок) и живой браузерный прогон.
+   фильтра подпись застревает на «шаг 0/1», пока идёт сэмплер. Пятое: `ui.upload` после
+   успеха надо `reset()` — иначе «Заменить фото» показывает старую очередь без поля выбора.
+   Шестое: проверка сервисов обновляет только списки (`set_options`), а не перерисовывает
+   панель, иначе ввод пользователя пропадает. Седьмое: номер задания живёт в адресе
+   (`/?job=...`), иначе новая вкладка подхватывает чужую работу.
+   Проверка: `python tools\test_web_app.py` (118) и `python tools\test_web_ui.py` (26).
 
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
@@ -296,8 +301,11 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 ## Проверки перед словом «готово»
 
 - `python tools\test_photo_prompt.py` — 180 проверок CLI и пайплайна (модели не нужны).
-- `python tools\test_web_app.py` — 95 проверок заданий, очереди и веб-слоя на HTTP-заглушках
+- `python tools\test_web_app.py` — 118 проверок заданий, очереди и веб-слоя на HTTP-заглушках
   (LM Studio и ComfyUI подменяются, GPU не нужен).
+- `python tools\test_web_ui.py` — 26 браузерных проверок Chromium на тех же заглушках:
+  раскладка, расширенная панель, сохранение ввода после health-check, замена фото, второй кадр
+  Recheck, две вкладки, потеря связи браузера, отказ WebSocket ComfyUI.
 - `python tools\check_install.py` — все 22 модели из сборок на диске и описаны в `DOWNLOADS.md`.
 - `python build_workflows.py` без ошибок, затем валидатор `widgets_values` по `/object_info`.
 - Интерфейс: `ComicWeb.cmd` (или `.venv-web\Scripts\python.exe webapp\run.py`), затем живой

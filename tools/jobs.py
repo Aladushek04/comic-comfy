@@ -312,11 +312,16 @@ def run_job(req, emit=None):
                         "file": name, "folder": str(folder), "seed": sd,
                         "workflow": req.workflow, "cn_strength": req.cn_strength,
                         "style_weight": req.style_weight, "denoise": req.denoise,
+                        "refined": False, "subject": desc.get("subject", ""),
                     })
                     result.folders.append(str(folder))
                     out("save", f"   кадр сохранён: {name}", file=name, folder=str(folder))
             if req.recheck and i == 0 and name:
-                ok_all &= _recheck(req, desc, name, out, sd)
+                ok_recheck, refined = _recheck(req, desc, name, out, sd)
+                ok_all &= ok_recheck
+                if refined:
+                    result.frames.append(refined)
+                    result.folders.append(refined["folder"])
         t_gen = time.monotonic() - t
 
         result.elapsed = out.elapsed
@@ -352,7 +357,11 @@ def _fail(out, result, message):
 
 
 def _recheck(req, desc, name, out, seed):
-    """Проверка кадра моделью и один повторный проход. True — всё цело."""
+    """Проверка кадра моделью и один повторный проход.
+
+    Возвращает (всё_цело, кадр_уточнения | None). Второй кадр идёт по той же
+    цепочке, что и первый: он попадает в result.frames, run.json и галерею.
+    """
     out("recheck", "   проверка кадра моделью")
     pp.comfy_free()
     try:
@@ -363,25 +372,25 @@ def _recheck(req, desc, name, out, seed):
             pp.free_llm(model, req.unload_all)
     except SystemExit as e:
         out("recheck", f"   проверку выполнить не удалось: {e.code} — повторный проход пропущен")
-        return True
+        return True, None
     if miss is None:
         out("recheck", "   проверку выполнить не удалось — повторный проход пропущен")
-        return True
+        return True, None
     if not miss:
         out("recheck", "   всё на месте")
-        return True
+        return True, None
 
     out("recheck", "   не доехало: " + miss, missing=miss)
     # Промах = чего не хватает на кадре, поэтому усиливаем ПРОМПТ, а не негатив.
     subj = desc.get("subject", "")
     low = subj.lower()
     add = [x.strip() for x in miss.split(",") if x.strip() and x.strip().lower() not in low]
-    ok_all = True
+    ok_all, frame = True, None
     if add:
         desc["subject"] = ", ".join([subj] + add)
         out("recheck", "   промпт дополнен: " + ", ".join(add))
         out("recheck", "   повторный проход с усиленным промптом")
-        ok_all &= _one_more(req, desc, out, seed)
+        ok_all, frame = _one_more(req, desc, out, seed)
     else:
         subj2, bumped = subj, []
         for tag in [x.strip() for x in miss.split(",") if x.strip()]:
@@ -392,10 +401,10 @@ def _recheck(req, desc, name, out, seed):
         if bumped:
             desc["subject"] = subj2
             out("recheck", "   усилено весом: " + ", ".join(bumped))
-            ok_all &= _one_more(req, desc, out, seed)
+            ok_all, frame = _one_more(req, desc, out, seed)
         else:
             out("recheck", "   повтор не изменит результата — пропускаю")
-    return ok_all
+    return ok_all, frame
 
 
 def _one_more(req, desc, out, seed=None):
@@ -408,11 +417,17 @@ def _one_more(req, desc, out, seed=None):
         positive=req.positive_override, negative=req.negative_override,
         progress=out.progress, client_id=req.client_id)
     if not ok or not name2:
-        return False
+        return False, None
     folder = pp.save_run(str(req.image), req.workflow, desc, sd, req.denoise, name2,
                          cn_strength=req.cn_strength, style_weight=req.style_weight,
-                         overrides=req.overrides or None)
+                         overrides=req.overrides or None, refined=True)
     if folder is None:
-        return False
-    out("save", f"   кадр сохранён: {name2}", file=name2, folder=str(folder))
-    return True
+        return False, None
+    out("save", f"   кадр сохранён: {name2}", file=name2, folder=str(folder),
+        refined=True)
+    return True, {
+        "file": name2, "folder": str(folder), "seed": sd,
+        "workflow": req.workflow, "cn_strength": req.cn_strength,
+        "style_weight": req.style_weight, "denoise": req.denoise,
+        "refined": True, "subject": desc.get("subject", ""),
+    }

@@ -50,6 +50,34 @@ def comfy_probe(url):
         return False
 
 
+COMFY_LOCAL = ("http://127.0.0.1:8199", "http://127.0.0.1:8188")
+
+
+def comfy_candidates(explicit=None):
+    """Один порядок адресов для CLI, каталога, health и генерации.
+
+    Явный адрес (флаг или COMFY_URL) — единственный кандидат: подставлять
+    локальный сервер вместо названного нельзя, там другие модели и папка вывода.
+    """
+    fixed = explicit or os.environ.get("COMFY_URL")
+    if fixed:
+        return [fixed], True
+    return list(dict.fromkeys((settings.COMFY_URL,) + COMFY_LOCAL)), False
+
+
+def comfy_state(explicit=None):
+    """(адрес, ошибка). Пустая ошибка — сервер ответил."""
+    candidates, fixed = comfy_candidates(explicit)
+    for cand in candidates:
+        if comfy_probe(cand):
+            return cand, ""
+    if fixed:
+        return candidates[0], (f"ComfyUI не отвечает на {candidates[0]} — адрес задан явно, "
+                               f"другой не подставляю")
+    return candidates[0], ("ComfyUI не отвечает ни на " + ", ".join(candidates)
+                           + " — запусти его и повтори")
+
+
 def resolve_comfy(explicit=None):
     """Свой стенд, иначе Desktop. Явный адрес не подменяется локальным.
 
@@ -57,16 +85,10 @@ def resolve_comfy(explicit=None):
     Если адрес задан явно (флагом или переменной) и не отвечает — отказ, а не тихий
     переход на другой сервер: там могут быть другие модели и папки вывода.
     """
-    for cand in (explicit, os.environ.get("COMFY_URL")):
-        if cand:
-            if comfy_probe(cand):
-                return cand
-            sys.exit(f"ComfyUI не отвечает на {cand} — адрес задан явно, другой не подставляю")
-    local = list(dict.fromkeys((COMFY, "http://127.0.0.1:8199", "http://127.0.0.1:8188")))
-    for cand in local:
-        if comfy_probe(cand):
-            return cand
-    sys.exit("ComfyUI не отвечает ни на " + ", ".join(local) + " — запусти его и повтори")
+    url, error = comfy_state(explicit)
+    if error:
+        sys.exit(error)
+    return url
 
 # Запасной вариант: основной стилевой блок приходит из графа (meta.positive_template),
 # эту таблицу используем только для старых .api.json без meta.
@@ -574,7 +596,7 @@ def workflow_from_file(name):
 
 
 def save_run(image_path, workflow, desc, seed, denoise, name,
-             cn_strength=None, style_weight=None, overrides=None):
+             cn_strength=None, style_weight=None, overrides=None, refined=False):
     """Складывает кадр и его паспорт в папку out/<фото>_<хэш>/.
 
     Сборка пишется в каждый кадр, а не одна на папку: в одной папке лежат кадры
@@ -617,6 +639,7 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
         "seed": seed, "denoise": denoise, "file": name,
         "cn_strength": cn_strength, "style_weight": style_weight,
         "overrides": overrides or None,
+        "refined": bool(refined),
         "subject": desc.get("subject", ""), "negative_extra": desc.get("negative_extra", ""),
     })
     book.pop("workflow", None)
@@ -1060,6 +1083,11 @@ def _ws_watch(base, client_id, pid, progress, stop, ready=None):
         while not stop.is_set():
             try:
                 raw = conn.recv()
+            except TimeoutError:
+                # Тишина во время загрузки модели — не повод бросать канал.
+                if stop.is_set():
+                    return
+                continue
             except Exception:
                 # Сокет закрылся — не беда: историю всё равно опрашиваем, кадр не теряется.
                 return

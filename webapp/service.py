@@ -59,6 +59,7 @@ class Job:
     folder: Path
     source: Path
     request: jobs.JobRequest
+    source_tag: str = ""
     created: float = field(default_factory=time.time)
     started: float | None = None
     finished: float | None = None
@@ -111,7 +112,8 @@ class JobService:
         local = folder / (src.stem + src.suffix.lower())
         shutil.copy2(src, local)
         request.image = str(local)
-        job = Job(id=jid, folder=folder, source=local, request=request)
+        job = Job(id=jid, folder=folder, source=local, request=request,
+                  source_tag=pp.image_tag(local))
         with self._lock:
             self._jobs[jid] = job
             self._order.append(jid)
@@ -193,10 +195,11 @@ class JobService:
         for frame in (result.frames if result else []):
             frames.append({k: frame.get(k) for k in
                            ("file", "folder", "seed", "workflow", "cn_strength",
-                            "style_weight", "denoise")})
+                            "style_weight", "denoise", "refined", "subject")})
         desc = (result.description if result else None) or None
         return {
             "id": job.id,
+            "source_tag": job.source_tag,
             "status": status,
             "stage": stage,
             "queue": self.queue_position(job) if status == "queued" else 0,
