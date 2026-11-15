@@ -13,6 +13,8 @@
   --no-llm     не звать LM Studio, взять --subject
   --model      id модели в LM Studio (иначе первая загруженная / первая vision)
   --keep-llm   не выгружать модель (только если хватает памяти)
+  --unload-all выгрузить из LM Studio все модели, а не только свою
+  --dry-run    показать промпт, ничего не загружая: нужен кэш/пресет/--no-llm
 """
 import argparse
 import base64
@@ -161,6 +163,15 @@ def write_cache(image_path, desc, scene=None):
     data["scene"] = scene or ""
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return p
+
+
+def legacy_cache_hint(image_path):
+    """Объясняет, почему старый out\\<фото>.prompt.json не используется."""
+    legacy = ROOT / "out" / (Path(image_path).stem + ".prompt.json")
+    if legacy.exists():
+        print(f"   старый кэш {legacy.name} не беру: в нём нет отпечатка файла")
+        return True
+    return False
 
 
 def resolve_workflow(workflow, style):
@@ -413,7 +424,10 @@ def describe(image_path, model):
 
 
 def unload_all(resp):
-    """Выгружает все загруженные инстансы: без этого SDXL не влезет в 16 ГБ."""
+    """Выгружает все загруженные инстансы: без этого SDXL не влезет в 16 ГБ.
+
+    Трогает и чужие задачи, поэтому по умолчанию не используется — только --unload-all.
+    """
     freed = []
     for m in model_list(resp):
         for inst in m.get("loaded_instances", []) or []:
@@ -424,6 +438,40 @@ def unload_all(resp):
             except Exception as e:
                 print(f"  не удалось выгрузить {iid}: {e}")
     return freed
+
+
+def unload_model(resp, model):
+    """Выгружает инстансы только этой модели: чужие задачи остаются как были.
+
+    Память под SDXL нужна, но выбивать из LM Studio модель, загруженную другой
+    задачей, — не наше дело: о такой модели сообщаем и оставляем её в покое.
+    """
+    freed, left = [], set()
+    for m in model_list(resp):
+        inst = m.get("loaded_instances") or []
+        if not inst:
+            continue
+        if m.get("key") == model:
+            for i in inst:
+                iid = i.get("instance_id") or i.get("id") or m.get("key")
+                try:
+                    post(LM + "/api/v1/models/unload", {"instance_id": iid}, timeout=60)
+                    freed.append(iid)
+                except Exception as e:
+                    print(f"  не удалось выгрузить {iid}: {e}")
+        else:
+            left.add(str(m.get("key")))
+    if left:
+        print("  остались загруженными (не трогаю):", ", ".join(sorted(left)))
+        print("  если SDXL не влезет в память — выгрузи их сам или добавь --unload-all")
+    return freed
+
+
+def free_llm(model, unload_everything=False):
+    """Освобождает память под SDXL. По умолчанию — только модель этого прогона."""
+    if unload_everything:
+        return unload_all(lm_models())
+    return unload_model(lm_models(), model)
 
 
 def build_negative(negative_extra):
@@ -636,7 +684,10 @@ def run_batch(args, workflow):
     print(f"пачка: {len(files)} файлов, стиль {workflow}, "
           f"описание: {'LLM' if need_llm else 'без модели'}")
 
-    model = pick_model(lm_models(), args.model) if need_llm else None
+    # --dry-run модель не грузит: значит и опрашивать LM Studio незачем. В остальных
+    # случаях модель спрашиваем только когда действительно нужно описание.
+    model = None
+    described = 0
     descs = {}
     for i, f in enumerate(files, 1):
         print(f"\n=== [{i}/{len(files)}] {f.name}")
@@ -649,8 +700,14 @@ def run_batch(args, workflow):
             print(f"   из кэша {cache_path(str(f), args.scene).name}")
         elif args.no_llm:
             desc = {"subject": args.subject or "", "negative_extra": "", "notes": "без LLM"}
+        elif args.dry_run:
+            print("   в кэше нет описания, а --dry-run модель не грузит — пропускаю")
+            continue
         else:
+            if model is None:
+                model = pick_model(lm_models(), args.model)
             desc = describe(str(f), model)
+            described += 1
             fresh = True
             if args.scene:
                 new = rewrite_scene(desc, args.scene, model)
@@ -677,12 +734,15 @@ def run_batch(args, workflow):
         descs[f] = desc
         print("   subject:", desc["subject"][:110])
 
-    if need_llm and not args.keep_llm:
-        freed = unload_all(lm_models())
+    if need_llm and described and model and not args.keep_llm:
+        freed = free_llm(model, args.unload_all)
         print(f"\nвыгружено: {', '.join(freed) if freed else 'нечего'}")
 
     if args.dry_run or not args.generate:
         print(f"\nготово описаний: {len(descs)} (генерация не запускалась)")
+        if args.dry_run and not descs:
+            print("нечего показать: ни одного описания")
+            return 1
         return 0
     if not descs:
         print("\nни одного описания — генерировать нечего")
@@ -728,6 +788,8 @@ def main():
     ap.add_argument("--recheck", action="store_true",
                     help="после генерации проверить кадр моделью и один раз дописать негатив")
     ap.add_argument("--keep-llm", action="store_true")
+    ap.add_argument("--unload-all", action="store_true",
+                    help="выгрузить из LM Studio все модели, а не только свою (трогает чужие задачи)")
     ap.add_argument("--comfy", help="адрес ComfyUI, по умолчанию автоопределение")
     ap.add_argument("--negative-extra", default="", help="дописать в негатив вручную")
     ap.add_argument("--negative-drop", default="", help="вычеркнуть слова из негатива LLM")
@@ -777,10 +839,20 @@ def main():
             desc = cached
             print(f"0) описание из кэша {cache_path(a.image, a.scene).name} "
                   f"(--force чтобы пересмотреть фото)")
+        elif a.dry_run:
+            # --dry-run обещает «ничего не запускать», а просмотр фото поднимает VLM
+            # в LM Studio и потом выгружает модели. Показывать нечего — так и скажем.
+            what = "описания для этой сцены" if a.scene else "описания"
+            hint = " (--force отключает кэш — убери его)" if a.force else ""
+            legacy_cache_hint(a.image)
+            print(f"--dry-run ничего не загружает, а в кэше нет {what}{hint}:\n"
+                  f"  {cache_path(a.image, a.scene)}\n"
+                  "Дай готовое описание: --preset имя, --from-json файл или "
+                  "--no-llm --subject \"…\";\n"
+                  "либо убери --dry-run — тогда VLM посмотрит фото (это загрузка памяти).")
+            sys.exit(1)
         else:
-            legacy = ROOT / "out" / (Path(a.image).stem + ".prompt.json")
-            if legacy.exists():
-                print(f"   старый кэш {legacy.name} не беру: в нём нет отпечатка файла")
+            legacy_cache_hint(a.image)
             models = lm_models()
             model = pick_model(models, a.model)
             print(f"1) смотрю фото моделью {model}")
@@ -798,7 +870,7 @@ def main():
                     desc = new
             if not a.keep_llm:
                 t = time.time()
-                freed = unload_all(lm_models())
+                freed = free_llm(model, a.unload_all)
                 t_unload = time.time() - t
                 print(f"2) выгружено: {', '.join(freed) if freed else 'нечего'} ({t_unload:.1f} с)")
 
@@ -868,7 +940,7 @@ def main():
                 model = pick_model(models, a.model)
                 miss = recheck(desc, OUTPUT_DIR / name, model)
                 if not a.keep_llm:
-                    unload_all(lm_models())
+                    free_llm(model, a.unload_all)
                 if miss is None:
                     print("   проверку выполнить не удалось — повторный проход пропущен")
                 elif miss:

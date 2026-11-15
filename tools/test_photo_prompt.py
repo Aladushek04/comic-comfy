@@ -9,6 +9,7 @@
   5. Флаги командной строки (--negative-extra) не оседают в кэше.
   6. generate() без картинки и пакетный режим при провале дают код 1.
   7. build_workflows.py --run: опечатка в имени и отказ API -> код 1.
+  8. --dry-run не трогает LM Studio; выгрузка не трогает чужие модели.
 
 Модели и ComfyUI не нужны: describe/lm_*/generate подменяются.
 
@@ -225,6 +226,7 @@ def batch_args(folder, **over):
         model=None, subject=None, no_llm=False, from_json=None, preset=None, save_preset=None,
         recheck=False, keep_llm=False, comfy=None, negative_extra="", negative_drop="",
         denoise=None, style_weight=None, seed=7, force=False, dry_run=False, generate=True,
+        unload_all=False,
     )
     for k, v in over.items():
         setattr(ns, k, v)
@@ -308,6 +310,127 @@ def test_build_workflows_exit_codes():
     check("причина отказа в логе", "ОШИБКА" in out, out.strip()[-160:])
 
 
+def run_plain(argv):
+    """main() с подставленным argv, без подмены функций."""
+    saved = sys.argv
+    sys.argv = ["photo_prompt.py"] + argv
+    buf = io.StringIO()
+    code = 0
+    try:
+        with contextlib.redirect_stdout(buf):
+            pp.main()
+    except SystemExit as e:
+        code = e.code
+    finally:
+        sys.argv = saved
+    return code, buf.getvalue()
+
+
+def test_dry_run_does_not_touch_lm():
+    print("\n10) --dry-run не трогает LM Studio")
+    img = TMP / "dry.png"
+    make(img, (5, 5, 5))
+    calls = []
+    saved = (pp.lm_models, pp.pick_model, pp.describe, pp.unload_model,
+             pp.unload_all, pp.post, pp.resolve_comfy, pp.comfy_probe)
+    pp.lm_models = lambda: (calls.append("lm_models") or {"models": []})
+    pp.pick_model = lambda r, w: (calls.append("pick_model") or "m")
+    pp.describe = lambda p, m: (calls.append("describe") or
+                                {"subject": "adult woman", "negative_extra": "", "notes": ""})
+    pp.unload_model = lambda r, m: (calls.append("unload_model") or [])
+    pp.unload_all = lambda r: (calls.append("unload_all") or [])
+    pp.post = lambda url, payload, timeout=300: (calls.append("post") or {})
+    pp.resolve_comfy = lambda c=None: (calls.append("resolve_comfy") or "http://x")
+    try:
+        code, text = run_plain(["--image", str(img), "--style", "thepit", "--dry-run"])
+        check("без кэша -> отказ, код не 0", code not in (0, None), str(code))
+        check("LM Studio не тронут", calls == [], str(calls))
+        check("сказано, чего не хватает", "в кэше нет" in text, text.strip()[-160:])
+        check("подсказан выход", "--no-llm --subject" in text or "--preset" in text,
+              text.strip()[-160:])
+
+        pp.write_cache(str(img), {"subject": "adult woman, black dress", "negative_extra": ""})
+        calls.clear()
+        code, text = run_plain(["--image", str(img), "--style", "thepit", "--dry-run"])
+        check("с кэшем -> код 0", code == 0, str(code))
+        check("с кэшем LM Studio не тронут", calls == [], str(calls))
+        check("промпт показан", "adult woman, black dress" in text, text.strip()[-160:])
+
+        calls.clear()
+        code, text = run_plain(["--image", str(img), "--style", "thepit",
+                                "--no-llm", "--subject", "adult woman, test", "--dry-run"])
+        check("--no-llm --dry-run без LM", code == 0 and calls == [], f"{code} {calls}")
+
+        # пакетный --dry-run ведёт себя так же
+        folder = TMP / "dry_batch"
+        make(folder / "x.png", (9, 9, 9))
+        calls.clear()
+        rc, text = capture(lambda: pp.run_batch(batch_args(folder, dry_run=True), "07_photo_thepit"))
+        check("пакет без кэша -> код 1", rc == 1, str(rc))
+        check("пакет LM Studio не тронул", calls == [], str(calls))
+        check("пакет сказал, что показать нечего", "ни одного описания" in text, text.strip()[-160:])
+
+        pp.write_cache(str(folder / "x.png"),
+                       {"subject": "adult woman, from cache", "negative_extra": ""})
+        calls.clear()
+        rc, text = capture(lambda: pp.run_batch(batch_args(folder, dry_run=True), "07_photo_thepit"))
+        check("пакет с кэшем -> код 0", rc == 0, str(rc))
+        check("пакет с кэшем без LM", calls == [], str(calls))
+        check("пакет взял описание из кэша", "adult woman, from cache" in text, text.strip()[-160:])
+
+        # полностью закэшированная пачка не должна требовать LM Studio вообще
+        pp.lm_models = lambda: (_ for _ in ()).throw(RuntimeError("LM Studio не запущен"))
+        rc, text = capture(lambda: pp.run_batch(
+            batch_args(folder, dry_run=False, generate=False), "07_photo_thepit"))
+        check("закэшированная пачка живёт без LM Studio", rc == 0, str(rc))
+    finally:
+        (pp.lm_models, pp.pick_model, pp.describe, pp.unload_model,
+         pp.unload_all, pp.post, pp.resolve_comfy, pp.comfy_probe) = saved
+
+
+def test_unload_only_own_model():
+    print("\n11) выгрузка не трогает чужие модели")
+    resp = {"models": [
+        {"key": "ours-vlm", "loaded_instances": [{"instance_id": "inst-ours"}]},
+        {"key": "other-task-27b", "loaded_instances": [{"instance_id": "inst-other"}]},
+    ]}
+    unloaded = []
+    saved = (pp.lm_models, pp.post)
+    pp.lm_models = lambda: resp
+    pp.post = lambda url, payload, timeout=300: (unloaded.append(payload["instance_id"]) or {})
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            freed = pp.unload_model(resp, "ours-vlm")
+        text = buf.getvalue()
+        check("выгружена только своя модель", unloaded == ["inst-ours"], str(unloaded))
+        check("freed содержит свою", freed == ["inst-ours"], str(freed))
+        check("о чужой сказано", "other-task-27b" in text and "не трогаю" in text, text.strip()[-160:])
+
+        unloaded.clear()
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.unload_all(resp)
+        check("--unload-all выгружает всё", sorted(unloaded) == ["inst-other", "inst-ours"],
+              str(unloaded))
+
+        # обычный прогон (без --generate) выгружает только свою модель
+        img = TMP / "unload.png"
+        make(img, (5, 6, 7))
+        saved2 = (pp.pick_model, pp.describe)
+        pp.pick_model = lambda r, w: "ours-vlm"
+        pp.describe = lambda p, m: {"subject": "adult woman, test", "negative_extra": "",
+                                    "notes": ""}
+        unloaded.clear()
+        try:
+            code, text = run_plain(["--image", str(img), "--style", "thepit"])
+        finally:
+            pp.pick_model, pp.describe = saved2
+        check("прогон выгрузил только свою", unloaded == ["inst-ours"], str(unloaded))
+        check("чужую не тронул", "other-task-27b" not in unloaded, str(unloaded))
+    finally:
+        pp.lm_models, pp.post = saved
+
+
 def main():
     patch_roots()
     try:
@@ -320,6 +443,8 @@ def main():
         test_generate_requires_image()
         test_batch_reports_failure()
         test_build_workflows_exit_codes()
+        test_dry_run_does_not_touch_lm()
+        test_unload_only_own_model()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
