@@ -29,6 +29,7 @@ import comfy_launch as cl
 import jobs
 import photo_prompt as pp
 import build_workflows as bw
+import settings as st
 from PIL import Image
 from webapp import catalog
 from webapp.service import JobService, UploadError
@@ -36,6 +37,8 @@ from webapp.state import fmt_setting, pass_steps
 
 TMP = Path(tempfile.mkdtemp(prefix="comic_web_test_"))
 passed, failed = [], []
+
+st.utf8_streams()      # кириллица и в консоли, и в пайпе (сюда же приходит test_web_ui)
 
 
 def check(name, cond, detail=""):

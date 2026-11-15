@@ -12,10 +12,26 @@
 """
 import os
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(os.environ.get("COMIC_ROOT") or Path(__file__).resolve().parent.parent)
 YAML = ROOT / "extra_model_paths.yaml"
+
+
+def utf8_streams(streams=None):
+    """Русский текст в stdout/stderr и при перенаправлении в файл или пайп.
+
+    В консоли Python пишет через WriteConsoleW, а в пайп — в кодировке локали
+    (на этой машине cp1252): print с кириллицей падал с UnicodeEncodeError.
+    errors="replace" оставляет падение невозможным и в чужом терминале.
+    """
+    for stream in (sys.stdout, sys.stderr) if streams is None else streams:
+        if not hasattr(stream, "reconfigure"):
+            continue
+        if (getattr(stream, "encoding", "") or "").lower() in ("utf-8", "utf8"):
+            continue
+        stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def read_yaml_base_path(yaml_path):

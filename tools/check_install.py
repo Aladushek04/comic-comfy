@@ -193,4 +193,5 @@ def main():
 
 
 if __name__ == "__main__":
+    settings.utf8_streams()
     sys.exit(main())

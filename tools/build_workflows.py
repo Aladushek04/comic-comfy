@@ -864,6 +864,7 @@ def pick_targets(target):
 
 
 if __name__ == "__main__":
+    settings.utf8_streams()
     # Имя проверяем до сборки: опечатка не должна переписывать файлы и молча ничего не делать.
     targets = []
     if "--run" in sys.argv:

@@ -40,6 +40,8 @@ from PIL import Image
 TMP = Path(tempfile.mkdtemp(prefix="photo_prompt_test_"))
 passed, failed = [], []
 
+st.utf8_streams()      # кириллица и в консоли, и в пайпе
+
 
 def capture(fn):
     """Выполняет fn, возвращает (результат, весь stdout)."""
@@ -1160,6 +1162,38 @@ def test_atomic_json():
     check("чтение во время записи не видит половину", not bad, str(bad[:1]))
 
 
+def test_utf8_streams():
+    print("\n26) кириллица в пайп без PYTHONIOENCODING")
+
+    class Fake:
+        encoding = "cp1252"
+
+        def __init__(self):
+            self.got = None
+
+        def reconfigure(self, **kw):
+            self.got = kw
+
+    fake = Fake()
+    st.utf8_streams([fake])
+    check("поток переключён на utf-8",
+          fake.got == {"encoding": "utf-8", "errors": "replace"}, str(fake.got))
+    once = dict(fake.got)
+    st.utf8_streams([fake])
+    check("повторный вызов ничего не меняет", fake.got == once, str(fake.got))
+
+    script = Path(__file__).with_name("check_install.py")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+    proc = subprocess.run([sys.executable, str(script)], cwd=str(pp.ROOT.parent),
+                          env=env, capture_output=True)
+    text = proc.stdout.decode("utf-8")            # строго: не latin-1 и не cp1252
+    err = proc.stderr.decode("utf-8")
+    check("вывод в пайп — UTF-8 с кириллицей", "модели:" in text, text[:120])
+    check("трейсбека кодировки нет",
+          "UnicodeEncodeError" not in err and "Traceback" not in err, err[-200:])
+
+
 def main():
     patch_roots()
     try:
@@ -1187,6 +1221,7 @@ def main():
         test_controlnet_strength_flag()
         test_passport_records_generation_settings()
         test_atomic_json()
+        test_utf8_streams()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
