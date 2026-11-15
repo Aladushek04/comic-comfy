@@ -110,14 +110,78 @@ class Job:
 class JobService:
     """Один поток исполнения, много читателей состояния."""
 
-    def __init__(self, workers=1, jobs_root=None):
+    def __init__(self, workers=1, jobs_root=None, keep_hours=24.0, keep_jobs=30):
         self.jobs_root = Path(jobs_root or (pp.ROOT / "out" / "jobs"))
+        self.keep_hours = float(keep_hours)
+        self.keep_jobs = int(keep_jobs)
         self._jobs = {}
         self._order = []
         self._lock = threading.Lock()
         self._active = None
         self._latest = None
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="comic-job")
+        self.purge()        # подъём сервера: папки прошлых запусков уже никому не нужны
+
+    # ------------------------------------------------------------ уборка
+    def purge(self, now=None):
+        """Снимает старые задания из памяти и их папки с диска.
+
+        Кадры и `run.json` живут в `out\\<фото>_<хэш>\\` и не трогаются: это
+        результат работы. Задание в очереди и работающее не снимаются никогда,
+        даже если часы ушли вперёд. Возвращает список снятых id.
+        """
+        now = time.time() if now is None else now
+        cutoff = now - self.keep_hours * 3600
+        dropped = []
+        with self._lock:
+            finished = [jid for jid in self._order
+                        if jid in self._jobs
+                        and self._jobs[jid].status not in ("queued", "running")]
+            fresh = set(finished[-self.keep_jobs:]) if self.keep_jobs > 0 else set(finished)
+            for jid in list(self._order):
+                job = self._jobs.get(jid)
+                if job is None:
+                    self._order.remove(jid)
+                    continue
+                if job.status in ("queued", "running"):
+                    continue
+                if jid in fresh and now - (job.finished or job.created) < self.keep_hours * 3600:
+                    continue
+                self._jobs.pop(jid, None)
+                self._order.remove(jid)
+                dropped.append((jid, job.folder))
+            if self._latest not in self._jobs:
+                self._latest = self._order[-1] if self._order else None
+        for jid, folder in dropped:
+            self._drop_folder(jid, folder)
+        self.purge_uploads(now=now)
+        return [jid for jid, _ in dropped]
+
+    def _drop_folder(self, jid, folder):
+        """Удаляет папку задания; uploads и чужие пути не трогает."""
+        folder = Path(folder)
+        if folder.name != str(jid) or folder.parent.resolve() != self.jobs_root.resolve():
+            return
+        shutil.rmtree(folder, ignore_errors=True)
+
+    def purge_uploads(self, now=None, hours=None):
+        """Убирает черновики загрузок старше срока. После «Старт» черновик живёт:
+        пока задание идёт, `/media/upload/{uid}` показывает по нему превью."""
+        now = time.time() if now is None else now
+        hours = self.keep_hours if hours is None else float(hours)
+        root = self.jobs_root / "uploads"
+        if not root.is_dir():
+            return []
+        gone = []
+        for folder in root.iterdir():
+            try:
+                old = now - folder.stat().st_mtime > hours * 3600
+            except OSError:
+                continue
+            if folder.is_dir() and old:
+                shutil.rmtree(folder, ignore_errors=True)
+                gone.append(folder.name)
+        return gone
 
     # ------------------------------------------------------------ загрузка
     def save_upload(self, name, data):
@@ -137,6 +201,7 @@ class JobService:
     # ------------------------------------------------------------ задания
     def submit(self, request, upload_id=None, source_path=None):
         """Ставит задание в очередь. Возвращает Job сразу, без ожидания."""
+        self.purge()        # заодно убирает папки прошлых запусков и старые черновики
         src = Path(source_path) if source_path else self.upload_path(upload_id)
         if src is None or not src.exists():
             raise UploadError("сначала загрузи фото")

@@ -788,6 +788,77 @@ def test_upload_validation():
         svc.shutdown()
 
 
+def test_job_retention():
+    print("\n22) срок хранения: память, папки заданий, черновики")
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy) as root:
+            img = TMP / "retention.png"
+            make(img, (20, 40, 60))
+            comfy.state.delay = 3                 # первое задание успевает побыть running
+            svc = JobService(jobs_root=root / "out" / "jobs", keep_hours=24.0, keep_jobs=30)
+            try:
+                uid, upload = svc.save_upload("retention.png", img.read_bytes())
+                first = svc.submit(jobs.JobRequest(
+                    image="", workflow="07_photo_thepit", subject="adult woman, one", seed=1),
+                    source_path=str(img))
+                while svc.snapshot(first.id)["status"] != "running":
+                    time.sleep(0.05)
+                second = svc.submit(jobs.JobRequest(
+                    image="", workflow="07_photo_thepit", subject="adult woman, two", seed=2),
+                    source_path=str(img))
+                check("второе задание в очереди", svc.snapshot(second.id)["status"] == "queued",
+                      svc.snapshot(second.id)["status"])
+                check("черновик загрузки жив после «Старт»", svc.upload_path(uid) == upload)
+                gone = svc.purge(now=time.time() + 30 * 3600)
+                check("работающее и очередное не снимаются", gone == [], str(gone))
+                check("их папки целы",
+                      (root / "out" / "jobs" / first.id).is_dir()
+                      and (root / "out" / "jobs" / second.id).is_dir())
+                svc.wait(first.id, timeout=60)
+                svc.wait(second.id, timeout=60)
+                frames = [Path(f["folder"]) for f in (svc.snapshot(first.id)["frames"] or [])]
+                gone = svc.purge(now=time.time())
+                check("свежие завершённые остаются", gone == [], str(gone))
+                check("папки двух заданий на диске",
+                      (root / "out" / "jobs" / first.id).is_dir()
+                      and (root / "out" / "jobs" / second.id).is_dir())
+
+                gone = svc.purge(now=time.time() + 25 * 3600)
+                check("истёкшие сняты из памяти",
+                      svc.get(first.id) is None and svc.get(second.id) is None, str(gone))
+                check("папки истёкших удалены",
+                      not (root / "out" / "jobs" / first.id).exists()
+                      and not (root / "out" / "jobs" / second.id).exists())
+                check("кадры и run.json на месте",
+                      bool(frames) and all((f / "run.json").exists() for f in frames),
+                      str(frames))
+                check("истёкший черновик удалён",
+                      not (root / "out" / "jobs" / "uploads" / uid).exists())
+
+                svc2 = JobService(jobs_root=root / "out" / "jobs2", keep_jobs=1)
+                try:
+                    a = svc2.submit(jobs.JobRequest(image="", workflow="07_photo_thepit",
+                                                    subject="adult woman, a", seed=3,
+                                                    generate=False), source_path=str(img))
+                    svc2.wait(a.id, timeout=60)
+                    b = svc2.submit(jobs.JobRequest(image="", workflow="07_photo_thepit",
+                                                    subject="adult woman, b", seed=4,
+                                                    generate=False), source_path=str(img))
+                    svc2.wait(b.id, timeout=60)
+                    gone = svc2.purge()
+                    check("сверх последних 30 снимается старшее", gone == [a.id], str(gone))
+                    check("последнее задание осталось", svc2.get(b.id) is not None)
+                    check("его папка цела", (root / "out" / "jobs2" / b.id).is_dir())
+                finally:
+                    svc2.shutdown()
+            finally:
+                svc.shutdown()
+    finally:
+        lm.stop()
+        comfy.stop()
+
+
 def test_upload_limits():
     print("\n21) загрузка: предел картинки до декодирования")
     from webapp import service as svc_mod
@@ -1278,6 +1349,7 @@ def main():
         test_comfy_launch_plan()
         test_job_autostart()
         test_upload_limits()
+        test_job_retention()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
