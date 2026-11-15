@@ -5,6 +5,7 @@
 вкладки показывает текущий этап, а не начинает задание заново.
 """
 import io
+import re
 import shutil
 import struct
 import threading
@@ -27,6 +28,9 @@ MAX_SIDE = 8192                 # сторона выше — отказ до д
 MAX_PIXELS = 64_000_000         # площадь выше — отказ до декодирования
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+# SOF0..SOF15 без DHT (C4), JPG (C8) и DAC (CC): только у них есть размеры кадра.
+SOF_MARKERS = frozenset(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC}
+JOB_ID = re.compile(r"^[0-9a-f]{10}$")
 
 
 def _safe_stem(name):
@@ -49,28 +53,64 @@ def _too_big_text(width, height):
             f"{MAX_SIDE} px, площадь до {MAX_PIXELS / 1e6:.1f} Мпикс")
 
 
-def png_size(data):
-    """Ширина и высота из заголовка PNG, без декодирования кадра.
+def _png_size(data):
+    """Размер из IHDR: чанк ищем, а не читаем по фиксированному смещению."""
+    pos = len(PNG_SIGNATURE)
+    while pos + 8 <= len(data):
+        length, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        if kind == b"IHDR" and pos + 16 <= len(data):
+            return struct.unpack(">II", data[pos + 8:pos + 16])
+        pos += 12 + length
+    return None
 
-    Pillow декодирует PNG уже в Image.open, поэтому проверять размер после
-    открытия поздно: 30 МБ PNG бывает на 150 Мпикс. None — это не PNG.
+
+def _jpeg_size(data):
+    """Размер из первого SOF: к этому моменту кадр ещё не декодирован."""
+    pos = 2
+    while pos + 4 <= len(data):
+        if data[pos] != 0xFF:
+            pos += 1
+            continue
+        marker = data[pos + 1]
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+            pos += 2
+            continue
+        if marker == 0xDA:              # начались данные кадра
+            return None
+        length = struct.unpack(">H", data[pos + 2:pos + 4])[0]
+        if marker in SOF_MARKERS and pos + 9 <= len(data):
+            height, width = struct.unpack(">HH", data[pos + 5:pos + 9])
+            return width, height
+        pos += 2 + length
+    return None
+
+
+def image_size(data):
+    """Размер из заголовка PNG или JPEG, до Image.open.
+
+    Зачем до открытия: PIL отказывается открывать кадр больше ~179 Мпикс своей
+    защитой от «бомб» и не называет размер, а verify() на обрезанном файле
+    говорит «не картинка» — оба ответа бесполезны тому, кто прислал панораму.
+    None — формат не опознан по заголовку: там решает проверка после открытия.
     """
-    if not data.startswith(PNG_SIGNATURE) or data[12:16] != b"IHDR" or len(data) < 24:
-        return None
-    return struct.unpack(">II", data[16:24])
+    if data.startswith(PNG_SIGNATURE):
+        return _png_size(data)
+    if data[:2] == b"\xff\xd8":
+        return _jpeg_size(data)
+    return None
 
 
 def save_png(folder, data, name="photo"):
     """Пересохраняет загруженное фото в PNG: без EXIF и посторонних байтов."""
     if len(data) > MAX_UPLOAD:
         raise UploadError(f"файл больше {MAX_UPLOAD // (1024 * 1024)} МБ")
-    size = png_size(data)
+    size = image_size(data)
     if size and _too_big(*size):
         raise UploadError(_too_big_text(*size))
     from PIL import Image, ImageOps
     try:
         with Image.open(io.BytesIO(data)) as im:
-            if _too_big(*im.size):          # JPEG и прочее: размер из заголовка
+            if _too_big(*im.size):          # остальные форматы: размер из заголовка
                 raise UploadError(_too_big_text(*im.size))
             im.verify()
         with Image.open(io.BytesIO(data)) as im:
@@ -84,6 +124,9 @@ def save_png(folder, data, name="photo"):
             return dst
     except UploadError:
         raise
+    except Image.DecompressionBombError as e:
+        raise UploadError(f"картинка больше предела: сторона до {MAX_SIDE} px, "
+                          f"площадь до {MAX_PIXELS / 1e6:.1f} Мпикс") from e
     except Exception as e:
         raise UploadError(f"это не картинка: {e}") from None
 
@@ -131,7 +174,7 @@ class JobService:
         даже если часы ушли вперёд. Возвращает список снятых id.
         """
         now = time.time() if now is None else now
-        cutoff = now - self.keep_hours * 3600
+        keep = self.keep_hours * 3600
         dropped = []
         with self._lock:
             finished = [jid for jid in self._order
@@ -145,22 +188,52 @@ class JobService:
                     continue
                 if job.status in ("queued", "running"):
                     continue
-                if jid in fresh and now - (job.finished or job.created) < self.keep_hours * 3600:
+                if jid in fresh and now - (job.finished or job.created) < keep:
                     continue
                 self._jobs.pop(jid, None)
                 self._order.remove(jid)
                 dropped.append((jid, job.folder))
             if self._latest not in self._jobs:
                 self._latest = self._order[-1] if self._order else None
+            alive = set(self._jobs)
         for jid, folder in dropped:
             self._drop_folder(jid, folder)
+        self.sweep_jobs(now=now, keep_ids=alive)
         self.purge_uploads(now=now)
         return [jid for jid, _ in dropped]
+
+    def sweep_jobs(self, now=None, keep_ids=()):
+        """Убирает папки заданий, оставшиеся от прошлых запусков сервера.
+
+        В памяти таких заданий уже нет (сервер перезапущен), вкладок с ними тоже:
+        папка нужна только на время задания, а кадры лежат в out\\<фото>_<хэш>\\).
+        Трогаем только папки с именем id задания: uploads и чужие папки — не наши.
+        """
+        now = time.time() if now is None else now
+        keep_hours = self.keep_hours * 3600
+        root = self.jobs_root
+        gone = []
+        if not root.is_dir():
+            return gone
+        keep = set(keep_ids)
+        for folder in root.iterdir():
+            if not JOB_ID.match(folder.name) or folder.name in keep:
+                continue
+            try:
+                if not folder.is_dir() or now - folder.stat().st_mtime <= keep_hours:
+                    continue
+            except OSError:
+                continue
+            shutil.rmtree(folder, ignore_errors=True)
+            gone.append(folder.name)
+        return gone
 
     def _drop_folder(self, jid, folder):
         """Удаляет папку задания; uploads и чужие пути не трогает."""
         folder = Path(folder)
-        if folder.name != str(jid) or folder.parent.resolve() != self.jobs_root.resolve():
+        if folder.name != str(jid) or not JOB_ID.match(folder.name):
+            return
+        if folder.parent.resolve() != self.jobs_root.resolve():
             return
         shutil.rmtree(folder, ignore_errors=True)
 

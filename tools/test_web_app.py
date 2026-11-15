@@ -32,7 +32,7 @@ import build_workflows as bw
 import settings as st
 from PIL import Image
 from webapp import catalog
-from webapp.service import JobService, UploadError
+from webapp.service import JobService, PNG_SIGNATURE, UploadError
 from webapp.state import fmt_setting, missing_job_text, pass_steps
 
 TMP = Path(tempfile.mkdtemp(prefix="comic_web_test_"))
@@ -868,6 +868,74 @@ def test_expired_job_text():
     check("это не «не запущено»", "не запущено" not in text, text)
 
 
+def test_past_jobs_swept():
+    print("\n24) папки прошлых запусков убираются при подъёме сервера")
+    jobs_dir = TMP / "past_jobs" / "out" / "jobs"
+    old = jobs_dir / "aaaaaaaab1"        # имя как id задания
+    fresh = jobs_dir / "bbbbbbbbb2"
+    foreign = jobs_dir / "keep_me"       # не id: такая папка не наша
+    upload = jobs_dir / "uploads" / "cccccccccc"
+    for d in (old, fresh, foreign, upload):
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "src.png").write_bytes(b"png")
+    past = time.time() - 40 * 3600
+    os.utime(old, (past, past))
+    os.utime(upload, (past, past))
+    svc = JobService(jobs_root=jobs_dir)
+    try:
+        check("папка старого задания удалена", not old.exists())
+        check("свежая папка осталась", fresh.exists())
+        check("папка не с id не тронута", foreign.exists())
+        check("истёкший черновик удалён", not upload.exists())
+    finally:
+        svc.shutdown()
+
+
+def test_upload_headers():
+    print("\n25) загрузка: размер из заголовка PNG и JPEG")
+    svc = JobService(jobs_root=TMP / "header_root")
+    try:
+        broken_crc = bytearray(_png_bytes())
+        struct.pack_into(">I", broken_crc, 16, 9000)     # IHDR без пересчёта CRC
+        struct.pack_into(">I", broken_crc, 20, 300)
+        try:
+            svc.save_upload("crc.png", bytes(broken_crc))
+            check("битый CRC не мешает отказу по размеру", False)
+        except UploadError as e:
+            check("битый CRC не мешает отказу по размеру",
+                  "9000×300" in str(e) and "2.7 Мпикс" in str(e), str(e))
+
+        head = bytearray(PNG_SIGNATURE)
+        head += struct.pack(">I", 13) + b"IHDR" + struct.pack(">IIBBBBB", 9000, 300, 8, 2, 0, 0, 0)
+        head += struct.pack(">I", zlib.crc32(bytes(head[12:])))
+        try:
+            svc.save_upload("head.png", bytes(head))
+            check("обрезанный PNG режется по заголовку", False)
+        except UploadError as e:
+            check("обрезанный PNG режется по заголовку", "9000×300" in str(e), str(e))
+
+        try:
+            svc.save_upload("tiny.png", _png_bytes()[:20])
+            check("мелкий обрезок — «не картинка»", False)
+        except UploadError as e:
+            check("мелкий обрезок — «не картинка»", "не картинка" in str(e), str(e))
+
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64), (5, 6, 7)).save(buf, "JPEG")
+        jpeg = bytearray(buf.getvalue())
+        sof = jpeg.find(b"\xff\xc0")
+        struct.pack_into(">H", jpeg, sof + 5, 30000)     # высота в SOF0
+        struct.pack_into(">H", jpeg, sof + 7, 30000)     # ширина
+        try:
+            svc.save_upload("huge.jpg", bytes(jpeg))
+            check("JPEG-бомба отвергается по заголовку", False)
+        except UploadError as e:
+            check("JPEG-бомба отвергается по заголовку",
+                  "30000×30000" in str(e) and "900.0 Мпикс" in str(e), str(e))
+    finally:
+        svc.shutdown()
+
+
 def test_upload_limits():
     print("\n21) загрузка: предел картинки до декодирования")
     from webapp import service as svc_mod
@@ -893,7 +961,7 @@ def test_upload_limits():
         except UploadError as e:
             check("площадь свыше предела отвергается",
                   "7900×8192" in str(e) and "64.7 Мпикс" in str(e), str(e))
-            check("заголовок важнее CRC: это не «не картинка»",
+            check("это отказ по размеру, а не «не картинка»",
                   "не картинка" not in str(e), str(e))
         check("нормальная картинка по-прежнему проходит",
               svc.upload_path(svc.save_upload("ok.png", _png_bytes())[0]) is not None)
@@ -1360,6 +1428,8 @@ def main():
         test_upload_limits()
         test_job_retention()
         test_expired_job_text()
+        test_past_jobs_swept()
+        test_upload_headers()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

@@ -1166,13 +1166,13 @@ def test_utf8_streams():
     print("\n26) кириллица в пайп без PYTHONIOENCODING")
 
     class Fake:
-        encoding = "cp1252"
-
         def __init__(self):
+            self.encoding = "cp1252"
             self.got = None
 
         def reconfigure(self, **kw):
             self.got = kw
+            self.encoding = kw.get("encoding", self.encoding)
 
     fake = Fake()
     st.utf8_streams([fake])
