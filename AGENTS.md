@@ -219,7 +219,23 @@ ComfyUI не трогает. Без готового описания (кэш, `
    фактический positive/negative кадра пишутся в `run.json` и в карточку кадра
    (`generate(..., report=...)`); по `subject` их не восстановить — шаблон стиля,
    переопределения и негатив собираются в графе.
-   Проверка: `python tools\test_web_app.py` (147) и `python tools\test_web_ui.py` (30).
+   Проверка: `python tools\test_web_app.py` (168) и `python tools\test_web_ui.py` (31).
+
+0.15. **Обрывы и мусор: четыре правила, которые нельзя терять.**
+   Первое: задания и черновики загрузок живут по сроку — `JobService.purge()` снимает
+   завершённые старше 24 ч или дальше последних 30 (при подъёме сервера и на каждом
+   «Старт»), папки `out\jobs\<id>` и `uploads\<uid>` удаляются, а **кадры и их `run.json`
+   в `out\<фото>_<хэш>\` — никогда**. Задание в очереди и работающее не снимается; вкладка
+   с `?job=` на снятое задание показывает «История задания истекла», а не «не запущено».
+   Второе: JSON пишется только через `photo_prompt.write_json` (`tmp` рядом с целевым →
+   `fsync` → `os.replace`); `write_text` рвёт паспорт или кэш пополам, а `save_run`
+   переписывает всю историю папки. Третье: предел картинки (`MAX_SIDE` 8192, `MAX_PIXELS`
+   64 Мпикс) проверяется **до** `Image.open` для PNG (`png_size` читает IHDR) и сразу после
+   открытия для остальных: Pillow декодирует PNG уже в `open`, и проверка после него не
+   спасает от 30 МБ на 150 Мпикс. Четвёртое: `settings.utf8_streams()` в точках входа —
+   в пайп Python пишет в кодировке локали (cp1252), и `print` с кириллицей падал с
+   `UnicodeEncodeError`; без этого команды из README работают только с `PYTHONIOENCODING`.
+   Проверка: `python tools\test_photo_prompt.py` (195) и `python tools\test_web_app.py` (168).
 
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
@@ -325,12 +341,15 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 
 ## Проверки перед словом «готово»
 
-- `python tools\test_photo_prompt.py` — 180 проверок CLI и пайплайна (модели не нужны).
-- `python tools\test_web_app.py` — 147 проверок заданий, очереди и веб-слоя на HTTP-заглушках
+- `python tools\test_photo_prompt.py` — 195 проверок CLI и пайплайна (модели не нужны).
+- `python tools\test_web_app.py` — 168 проверок заданий, очереди и веб-слоя на HTTP-заглушках
   (LM Studio и ComfyUI подменяются, GPU не нужен).
-- `python tools\test_web_ui.py` — 30 браузерных проверок Chromium на тех же заглушках:
+- `python tools\test_web_ui.py` — 31 браузерная проверка Chromium на тех же заглушках:
   раскладка, расширенная панель, сохранение ввода после health-check, замена фото, второй кадр
-  Recheck, две вкладки, потеря связи браузера, отказ WebSocket ComfyUI, промпт формы.
+  Recheck, две вкладки, потеря связи браузера, отказ WebSocket ComfyUI, промпт формы,
+  истёкшая история задания.
+- Переменные кодировки не нужны: `settings.utf8_streams()` в точках входа ставит UTF-8 сам,
+  поэтому те же команды работают и в консоли, и с перенаправлением вывода в файл или пайп.
 - `python tools\check_install.py` — все 22 модели из сборок на диске и описаны в `DOWNLOADS.md`.
 - `python build_workflows.py` без ошибок, затем валидатор `widgets_values` по `/object_info`.
 - Интерфейс: `ComicWeb.cmd` (или `.venv-web\Scripts\python.exe webapp\run.py`), затем живой
