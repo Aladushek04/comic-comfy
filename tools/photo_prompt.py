@@ -48,11 +48,22 @@ def comfy_probe(url):
 
 
 def resolve_comfy(explicit=None):
-    """Свой тестовый стенд 8199, иначе Desktop на 8188."""
-    for cand in (explicit, "http://127.0.0.1:8199", "http://127.0.0.1:8188"):
-        if cand and comfy_probe(cand):
+    """Свой стенд, иначе Desktop. Явный адрес не подменяется локальным.
+
+    Порядок: --comfy, затем COMFY_URL из настроек, затем локальные 8199 и 8188.
+    Если адрес задан явно (флагом или переменной) и не отвечает — отказ, а не тихий
+    переход на другой сервер: там могут быть другие модели и папки вывода.
+    """
+    for cand in (explicit, os.environ.get("COMFY_URL")):
+        if cand:
+            if comfy_probe(cand):
+                return cand
+            sys.exit(f"ComfyUI не отвечает на {cand} — адрес задан явно, другой не подставляю")
+    local = list(dict.fromkeys((COMFY, "http://127.0.0.1:8199", "http://127.0.0.1:8188")))
+    for cand in local:
+        if comfy_probe(cand):
             return cand
-    sys.exit("ComfyUI не отвечает ни на 8199, ни на 8188 — запусти его и повтори")
+    sys.exit("ComfyUI не отвечает ни на " + ", ".join(local) + " — запусти его и повтори")
 
 # Запасной вариант: основной стилевой блок приходит из графа (meta.positive_template),
 # эту таблицу используем только для старых .api.json без meta.
@@ -122,9 +133,18 @@ def ensure_input(image_path):
 
 
 def scene_slug(scene):
+    """Имя сцены для кэша. Кириллица не должна исчезать.
+
+    Раньше «на пляже» и «в горах» давали пустой slug и попадали в один файл с запуском
+    без сцены. Теперь к читаемой части всегда добавляется короткий хэш полной строки,
+    поэтому разные сцены не сталкиваются, в каком бы алфавите они ни были записаны.
+    """
     if not scene:
         return ""
-    return re.sub(r"[^a-z0-9]+", "-", str(scene).lower()).strip("-")[:40].strip("-")
+    text = str(scene).strip()
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:32].strip("-")
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
+    return (slug + "-" if slug else "s-") + digest
 
 
 def cache_path(image_path, scene=None):
@@ -141,13 +161,16 @@ def cache_path(image_path, scene=None):
 
 
 def read_cache(image_path, scene=None):
-    """Описание с диска, если оно снято с этого же содержимого. Иначе None."""
+    """Описание с диска, если оно снято с этого же содержимого и для этой же сцены."""
     p = cache_path(image_path, scene)
     if not p.exists():
         return None
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
     except Exception:
+        return None
+    if (data.get("scene") or "") != (scene or ""):
+        # Имя файла могло совпасть, но описание — от другой сцены.
         return None
     if data.get("sha1") and data["sha1"] != fingerprint(image_path):
         return None
@@ -546,13 +569,23 @@ def save_run(image_path, workflow, desc, seed, denoise, name):
     Сборка пишется в каждый кадр, а не одна на папку: в одной папке лежат кадры
     разных стилей, и общее поле «workflow» врало. У старых записей сборка
     восстанавливается из имени файла — префикс SaveImage и есть имя сборки.
+
+    Возвращает папку или None, если кадра нет в OUTPUT_DIR: паспорт на
+    несуществующий файл хуже, чем отсутствие паспорта.
     """
+    if not name:
+        print("   паспорт не пишу: ComfyUI не назвал файл")
+        return None
+    src = OUTPUT_DIR / name
+    if not src.exists():
+        print(f"   кадра нет по пути {src} — паспорт не пишу")
+        print(f"   папка вывода задана как {OUTPUT_DIR}; проверь COMFY_OUTPUT "
+              f"или --output-directory у ComfyUI")
+        return None
+
     folder = ROOT / "out" / image_tag(image_path)
     folder.mkdir(parents=True, exist_ok=True)
-    if name:
-        src = OUTPUT_DIR / name
-        if src.exists():
-            shutil.copy2(src, folder / name)
+    shutil.copy2(src, folder / name)
     book_path = folder / "run.json"
     book = {"runs": []}
     if book_path.exists():
@@ -748,6 +781,7 @@ def run_batch(args, workflow):
     model = None
     described = 0
     descs = {}
+    skipped = []
     for i, f in enumerate(files, 1):
         print(f"\n=== [{i}/{len(files)}] {f.name}")
         fresh = False
@@ -761,6 +795,7 @@ def run_batch(args, workflow):
             desc = {"subject": args.subject or "", "negative_extra": "", "notes": "без LLM"}
         elif args.dry_run:
             print("   в кэше нет описания, а --dry-run модель не грузит — пропускаю")
+            skipped.append(f.name)
             continue
         else:
             if model is None:
@@ -778,6 +813,8 @@ def run_batch(args, workflow):
         desc["subject"] = with_adult(desc.get("subject", ""))
         if not desc["subject"]:
             print("   пустое описание — пропускаю")
+            skipped.append(f.name)
+            print("   нет описания, кадр не появится")
             continue
         # Кэш — до подмешивания ключей командной строки, иначе флаги прогона
         # остаются в описании навсегда.
@@ -802,6 +839,9 @@ def run_batch(args, workflow):
         if args.dry_run and not descs:
             print("нечего показать: ни одного описания")
             return 1
+        if skipped:
+            print("без описания: " + ", ".join(skipped))
+            return 1
         return 0
     if not descs:
         print("\nни одного описания — генерировать нечего")
@@ -821,13 +861,18 @@ def run_batch(args, workflow):
                 failed += 1
                 print("   кадр не получен")
                 continue
+            folder = save_run(str(f), workflow, desc, sd, args.denoise, name)
+            if folder is None:
+                failed += 1
+                continue
             frames += 1
-            folders.append(save_run(str(f), workflow, desc, sd, args.denoise, name))
-    print(f"\nкадров: {frames}, провалов: {failed}")
+            folders.append(folder)
+    print(f"\nкадров: {frames}, провалов: {failed}"
+          + (f", без описания: {len(skipped)} ({', '.join(skipped)})" if skipped else ""))
     if folders:
         print("  результаты:", ", ".join(sorted({p.name for p in folders})))
-    # Ноль кадров или хоть один провал — не успех: код возврата это покажет.
-    return 0 if frames and not failed else 1
+    # Пропуск на любом этапе — не успех: код возврата это покажет.
+    return 0 if frames and not failed and not skipped else 1
 
 
 def main():
@@ -991,8 +1036,8 @@ def main():
             ok, name = generate(a.workflow, desc["subject"], desc.get("negative_extra", ""),
                                 denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image))
             ok_all &= ok
-            if name:
-                save_run(a.image, a.workflow, desc, sd, a.denoise, name)
+            if name and save_run(a.image, a.workflow, desc, sd, a.denoise, name) is None:
+                ok_all = False
             if a.recheck and i == 0 and name:
                 print("   проверка кадра моделью")
                 comfy_free()
@@ -1017,8 +1062,8 @@ def main():
                         ok, name2 = generate(a.workflow, desc["subject"], desc.get("negative_extra", ""),
                                              denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image))
                         ok_all &= ok
-                        if name2:
-                            save_run(a.image, a.workflow, desc, sd, a.denoise, name2)
+                        if name2 and save_run(a.image, a.workflow, desc, sd, a.denoise, name2) is None:
+                            ok_all = False
                     else:
                         # Слово уже в промпте, но не отрисовалось — усиливаем вес.
                         subj2, bumped = subj, []
@@ -1033,8 +1078,8 @@ def main():
                             ok, name2 = generate(a.workflow, desc["subject"], desc.get("negative_extra", ""),
                                                  denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image))
                             ok_all &= ok
-                            if name2:
-                                save_run(a.image, a.workflow, desc, sd, a.denoise, name2)
+                            if name2 and save_run(a.image, a.workflow, desc, sd, a.denoise, name2) is None:
+                                ok_all = False
                         else:
                             print("   повтор не изменит результата — пропускаю")
                 else:

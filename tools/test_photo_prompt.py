@@ -19,6 +19,7 @@ import argparse
 import contextlib
 import io
 import json
+import os
 import re
 import shutil
 import socket
@@ -100,7 +101,7 @@ def test_cache_scene():
     img = TMP / "A" / "same.png"
     plain, beach = pp.cache_path(str(img)), pp.cache_path(str(img), "beach at sunset")
     check("сцена -> другой файл кэша", plain != beach, f"{plain.name} == {beach.name}")
-    check("slug безопасен для имени", beach.name.endswith("__beach-at-sunset.prompt.json"), beach.name)
+    check("slug безопасен для имени", "__beach-at-sunset-" in beach.name, beach.name)
     check("без сцены сценический кэш не берётся", pp.read_cache(str(img), "beach at sunset") is None)
     pp.write_cache(str(img), {"subject": "adult woman, beach"}, "beach at sunset")
     got = pp.read_cache(str(img), "beach at sunset")
@@ -573,7 +574,7 @@ def test_portable_paths():
 
     rc, out = check_install_run()
     check("полный набор -> код 0", rc == 0, out[-200:])
-    check("все 19 моделей найдены", "моделей в сборках: 19" in out, out[-200:])
+    check("найдены все 22 модели сборок", "моделей в сборках: 22" in out, out[-200:])
 
     (models / "depth_anything_v2_vitl.pth").unlink()
     rc, out = check_install_run()
@@ -633,6 +634,168 @@ def test_passport_records_workflow():
         pp.ROOT, pp.OUTPUT_DIR = saved
 
 
+def test_scene_cache_cyrillic():
+    print("\n15) кэш не путает сцены на русском")
+    img = TMP / "ru.png"
+    make(img, (3, 4, 5))
+    p0 = pp.cache_path(str(img))
+    p1 = pp.cache_path(str(img), "на пляже")
+    p2 = pp.cache_path(str(img), "в горах")
+    check("три сцены — три файла", len({p0, p1, p2}) == 3, f"{p0.name} | {p1.name} | {p2.name}")
+    check("кириллица не исчезает", p1.name != p0.name and "__s-" in p1.name, p1.name)
+
+    pp.write_cache(str(img), {"subject": "в лесу", "negative_extra": ""}, "в лесу")
+    check("чужой сценический кэш не отдаётся", pp.read_cache(str(img), "на пляже") is None)
+    check("свой сценический кэш читается", pp.read_cache(str(img), "в лесу") is not None)
+
+    # подменённое поле scene: имя файла совпало, описание чужое
+    data = json.loads(pp.cache_path(str(img), "в лесу").read_text(encoding="utf-8"))
+    data["scene"] = "в горах"
+    pp.cache_path(str(img), "в лесу").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    check("несовпадение scene в файле ловится", pp.read_cache(str(img), "в лесу") is None)
+
+    _, calls = run_main(["--image", str(img), "--style", "thepit", "--scene", "на пляже"])
+    check("новая сцена заставляет описать фото", any(c[0] == "scene" for c in calls), str(calls))
+    check("кэш сцены записан", pp.read_cache(str(img), "на пляже") is not None)
+
+    _, calls2 = run_main(["--image", str(img), "--style", "thepit", "--scene", "в горах"])
+    check("другая сцена не берёт чужой кэш", any(c[0] == "scene" for c in calls2), str(calls2))
+
+    _, calls3 = run_main(["--image", str(img), "--style", "thepit", "--scene", "на пляже"])
+    check("повтор той же сцены — из кэша", calls3 == [], str(calls3))
+
+
+def test_partial_failure_visible():
+    print("\n16) пачка и паспорт не скрывают сбой")
+    folder = TMP / "batch_part"
+    for n in ("good.png", "bad.png"):
+        make(folder / n, (8, 8, 8))
+    saved = (pp.describe, pp.lm_models, pp.pick_model, pp.unload_all,
+             pp.resolve_comfy, pp.generate)
+
+    def fake_describe(path, model):
+        if Path(path).name == "bad.png":
+            return {"subject": "", "negative_extra": "", "notes": "модель молчит"}
+        return {"subject": "adult woman, good", "negative_extra": "", "notes": ""}
+
+    def good_generate(*a, **k):
+        name = "07_photo_thepit_00002_.png"
+        pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        (pp.OUTPUT_DIR / name).write_bytes(b"png")
+        return True, name
+
+    pp.describe = fake_describe
+    pp.lm_models, pp.pick_model, pp.unload_all = lambda: {}, lambda r, w: "m", lambda r: []
+    pp.resolve_comfy = lambda c: "http://x"
+    try:
+        pp.generate = good_generate
+        rc, text = capture(lambda: pp.run_batch(batch_args(folder, force=True), "07_photo_thepit"))
+        check("пустое описание -> код 1", rc == 1, str(rc))
+        check("пропуск назван в итоге", "без описания: 1 (bad.png)" in text, text.strip()[-200:])
+        check("кадр по второму фото сделан", "кадров: 1" in text, text.strip()[-200:])
+        books = list((pp.ROOT / "out").rglob("run.json"))
+        tag = pp.image_tag(str(folder / "good.png"))
+        own = (pp.ROOT / "out" / tag / "run.json")
+        check("run.json есть у описанного фото", own.exists(), str(books))
+        check("run.json у пропущенного не появился",
+              not (pp.ROOT / "out" / pp.image_tag(str(folder / "bad.png")) / "run.json").exists())
+
+        # ComfyUI назвал файл, которого нет в папке вывода
+        pp.generate = lambda *a, **k: (True, "ghost.png")
+        rc, text = capture(lambda: pp.run_batch(batch_args(folder, force=True), "07_photo_thepit"))
+        check("паспорт без кадра -> код 1", rc == 1, str(rc))
+        check("сказано, что кадра нет", "кадра нет по пути" in text, text.strip()[-200:])
+        runs = json.loads(own.read_text(encoding="utf-8"))["runs"]
+        check("паспорт не вырос", len(runs) == 1, str(len(runs)))
+
+        img = TMP / "ghost.png"
+        make(img, (1, 1, 1))
+        code = None
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_main(["--image", str(img), "--style", "thepit", "--no-llm",
+                          "--subject", "adult woman", "--generate"])
+        except SystemExit as e:
+            code = e.code
+        check("одиночный путь при пропавшем кадре -> код 1", code == 1, str(code))
+    finally:
+        (pp.describe, pp.lm_models, pp.pick_model, pp.unload_all,
+         pp.resolve_comfy, pp.generate) = saved
+
+
+def test_check_install_covers_all_loaders():
+    print("\n17) check_install видит любые загрузчики")
+    wf = TMP / "wf_scan"
+    wf.mkdir(exist_ok=True)
+    (wf / "fake.json").write_text(json.dumps({"nodes": [
+        {"type": "CheckpointLoaderSimple", "widgets_values": ["base.safetensors"]},
+        {"type": "UnetLoaderGGUF", "widgets_values": ["qwen-q4.gguf"]},
+        {"type": "IPAdapterModelLoader", "widgets_values": ["ip-adapter.safetensors"]},
+    ]}), encoding="utf-8")
+    found = ci.workflow_models(wf)
+    check("GGUF найден", any(n.endswith(".gguf") for n in found), str(sorted(found)))
+    check("IP-Adapter найден", any("ip-adapter" in n for n in found), str(sorted(found)))
+
+    models = TMP / "scan_models"
+    models.mkdir(exist_ok=True)
+    (models / "base.safetensors").write_bytes(b"x")
+    docs = TMP / "scan_docs.md"
+    docs.write_text("base.safetensors qwen-q4.gguf ip-adapter.safetensors", encoding="utf-8")
+
+    def run_check(wf_dir=None):
+        r = subprocess.run([sys.executable, str(Path(__file__).parent / "check_install.py"),
+                            "--models", str(models), "--docs", str(docs),
+                            "--workflows", str(wf_dir or wf)],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+    rc, out = run_check()
+    check("не хватает GGUF и IP-Adapter -> код 1", rc == 1, out.strip()[-200:])
+    check("обе пропажи названы",
+          "qwen-q4.gguf" in out and "ip-adapter.safetensors" in out, out.strip()[-300:])
+
+    for n in ("qwen-q4.gguf", "ip-adapter.safetensors"):
+        (models / n).write_bytes(b"x")
+    rc, out = run_check()
+    check("всё на месте -> код 0", rc == 0, out.strip()[-200:])
+
+    rc, out = run_check(TMP / "нет-такой-папки")
+    check("нет папки графов -> код 1", rc == 1, out.strip()[-200:])
+
+
+def test_comfy_url_setting():
+    print("\n18) COMFY_URL учитывается при генерации")
+    saved_probe = pp.comfy_probe
+    saved_env = os.environ.get("COMFY_URL")
+    probed = []
+    try:
+        pp.comfy_probe = lambda url: (probed.append(url), url.startswith("http://remote:9999"))[1]
+        os.environ["COMFY_URL"] = "http://remote:9999"
+        check("адрес из env используется", pp.resolve_comfy(None) == "http://remote:9999", str(probed))
+
+        probed.clear()
+        pp.comfy_probe = lambda url: (probed.append(url), False)[1]
+        code = None
+        try:
+            pp.resolve_comfy(None)
+        except SystemExit as e:
+            code = e.code
+        check("недоступный заданный адрес -> отказ", code not in (0, None), str(code))
+        check("локальные порты не подставляются",
+              all("127.0.0.1" not in u for u in probed), str(probed))
+
+        os.environ.pop("COMFY_URL", None)
+        probed.clear()
+        pp.comfy_probe = lambda url: (probed.append(url), url.endswith(":8199"))[1]
+        check("без env — свой стенд", pp.resolve_comfy(None).endswith(":8199"), str(probed))
+    finally:
+        pp.comfy_probe = saved_probe
+        if saved_env is None:
+            os.environ.pop("COMFY_URL", None)
+        else:
+            os.environ["COMFY_URL"] = saved_env
+
+
 def main():
     patch_roots()
     try:
@@ -650,6 +813,10 @@ def main():
         test_style_from_graph()
         test_portable_paths()
         test_passport_records_workflow()
+        test_scene_cache_cyrillic()
+        test_partial_failure_visible()
+        test_check_install_covers_all_loaders()
+        test_comfy_url_setting()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

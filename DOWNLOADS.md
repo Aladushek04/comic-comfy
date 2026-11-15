@@ -68,10 +68,10 @@ powershell -ExecutionPolicy Bypass -File tools\download-hf.ps1 -Verify
 
 Размеры в ГБ, как их отдаёт сервер (`-Verify` печатает то же самое).
 
-**Не в списке, потому что качается сам:** `depth_anything_v2_vitl.pth` (~1.25 ГБ) —
-узел `DepthAnythingV2Preprocessor` тянет его при первом прогоне сборок 07/08 в
-`custom_nodes\comfyui_controlnet_aux\ckpts\depth-anything\Depth-Anything-V2-Large\`.
-Если нужен офлайн — положи файл туда заранее.
+**Не в списке, потому что качается само:** файлы узлов `comfyui_controlnet_aux` (~1.4 ГБ) —
+`depth_anything_v2_vitl.pth` (~1.25 ГБ) и `dw-ll_ucoco_384_bs5.torchscript.pt` (~0.13 ГБ).
+Узел тянет их при первом прогоне сборок 04 (поза) и 07/08 (глубина) в
+`custom_nodes\comfyui_controlnet_aux\ckpts\`. Нужен офлайн — положи туда заранее.
 
 Готовые воркфлоу авторов скрипт кладёт в `workflows\reference\` (эта папка не в git).
 
@@ -131,7 +131,7 @@ powershell -ExecutionPolicy Bypass -File tools\download-civitai.ps1 -Verify   # 
 python tools\check_install.py
 ```
 
-Скрипт сверяет 19 моделей из всех 13 сборок с папкой моделей и с этим файлом: покажет, чего
+Скрипт сверяет 22 модели из всех 13 сборок с папкой моделей и с этим файлом: покажет, чего
 нет на диске и что не описано. Код возврата 1, если чего-то не хватает. Чужую машину можно
 проверить так: `python tools\check_install.py --models D:\models`.
 

@@ -20,25 +20,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import settings
 
-# тип узла -> откуда берётся имя файла в UI-JSON
-MODEL_NODES = {
-    "CheckpointLoaderSimple": "ckpt_name",
-    "LoraLoaderModelOnly": "lora_name",
-    "ControlNetLoader": "control_net_name",
-    "CLIPLoader": "clip_name",
-    "CLIPVisionLoader": "clip_name",
-    "VAELoader": "vae_name",
-    "UNETLoader": "unet_name",
-    "UpscaleModelLoader": "model_name",
-    "DepthAnythingV2Preprocessor": "ckpt_name",
-}
+# Расширения, которые в графах означают файл модели. Ищем по ним, а не по списку
+# типов узлов: GGUF-загрузчик и IP-Adapter в списке забывались, и проверка врала «всё на месте».
+MODEL_EXT = (".safetensors", ".gguf", ".pth", ".ckpt", ".bin", ".pt")
 
-# Эти файлы качает не репозиторий, а сам узел при первом прогоне.
-AUTO_DOWNLOADED = {"depth_anything_v2_vitl.pth"}
+# Эти файлы качает не репозиторий, а сам узел controlnet_aux при первом прогоне.
+AUTO_DOWNLOADED = {"depth_anything_v2_vitl.pth", "dw-ll_ucoco_384_bs5.torchscript.pt"}
 
 
 def workflow_models(wf_dir):
-    """{имя файла: [сборки, которые его грузят]} по всем UI-графам."""
+    """{имя файла модели: [сборки, которые её грузят]} по всем UI-графам."""
     found = {}
     for path in sorted(Path(wf_dir).glob("*.json")):
         if path.name.endswith(".api.json"):
@@ -49,13 +40,12 @@ def workflow_models(wf_dir):
             print(f"  {path.name}: не читается ({e})")
             continue
         for node in data.get("nodes") or []:
-            if node.get("type") not in MODEL_NODES:
-                continue
             values = node.get("widgets_values") or []
-            if not values:
-                continue
-            name = str(values[0])
-            found.setdefault(name, []).append(path.stem)
+            if isinstance(values, dict):
+                values = list(values.values())
+            for value in values:
+                if isinstance(value, str) and value.lower().endswith(MODEL_EXT):
+                    found.setdefault(value, []).append(path.stem)
     return found
 
 
@@ -83,8 +73,16 @@ def main():
     print(f"сборки: {wf_dir}")
     print(f"инструкция: {docs}")
 
+    if not wf_dir.is_dir():
+        print(f"  !! папки сборок нет: {wf_dir}")
+        return 1
     needed = workflow_models(wf_dir)
+    if not needed:
+        print(f"  !! в {wf_dir} не нашлось ни одной модели — проверь, что это UI-графы")
+        return 1
     index = disk_index(models_dir)
+    if not models_dir.is_dir():
+        print(f"  !! папки моделей нет: {models_dir}")
     text = docs.read_text(encoding="utf-8") if docs.exists() else ""
     if not text:
         print(f"  !! {docs} нет — сверять не с чем")
