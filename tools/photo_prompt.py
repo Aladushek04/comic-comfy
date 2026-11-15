@@ -527,8 +527,26 @@ def preset_path(name):
     return ROOT / "out" / "presets" / (name + ".json")
 
 
+def workflow_from_file(name):
+    """Сборка по имени кадра: SaveImage пишет префикс comic/<сборка>_NNNNN_.png."""
+    stem = Path(str(name or "")).name
+    best = ""
+    for p in WF_DIR.glob("*.json"):
+        w = p.name[:-len(".json")]
+        if w.endswith(".api"):
+            continue
+        if stem.startswith(w) and len(w) > len(best):
+            best = w
+    return best
+
+
 def save_run(image_path, workflow, desc, seed, denoise, name):
-    """Складывает кадр и его паспорт в папку out/<фото>_<хэш>/."""
+    """Складывает кадр и его паспорт в папку out/<фото>_<хэш>/.
+
+    Сборка пишется в каждый кадр, а не одна на папку: в одной папке лежат кадры
+    разных стилей, и общее поле «workflow» врало. У старых записей сборка
+    восстанавливается из имени файла — префикс SaveImage и есть имя сборки.
+    """
     folder = ROOT / "out" / image_tag(image_path)
     folder.mkdir(parents=True, exist_ok=True)
     if name:
@@ -536,16 +554,22 @@ def save_run(image_path, workflow, desc, seed, denoise, name):
         if src.exists():
             shutil.copy2(src, folder / name)
     book_path = folder / "run.json"
-    book = {"workflow": workflow, "runs": []}
+    book = {"runs": []}
     if book_path.exists():
         try:
             book = json.loads(book_path.read_text(encoding="utf-8"))
         except Exception:
             pass
+    for r in book.get("runs", []):
+        if not r.get("workflow"):
+            r["workflow"] = workflow_from_file(r.get("file", ""))
     book.setdefault("runs", []).append({
+        "workflow": workflow,
         "seed": seed, "denoise": denoise, "file": name,
         "subject": desc.get("subject", ""), "negative_extra": desc.get("negative_extra", ""),
     })
+    book.pop("workflow", None)
+    book["workflows"] = sorted({r["workflow"] for r in book["runs"] if r.get("workflow")})
     book_path.write_text(json.dumps(book, ensure_ascii=False, indent=2), encoding="utf-8")
     return folder
 

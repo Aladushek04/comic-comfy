@@ -594,6 +594,45 @@ def test_portable_paths():
           rc == 1 and "не описано" in out, out[-200:])
 
 
+def test_passport_records_workflow():
+    print("\n14) run.json: сборка у каждого кадра")
+    img = TMP / "passport.png"
+    make(img, (11, 22, 33))
+    saved = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT = TMP / "root_pass"
+    pp.OUTPUT_DIR = TMP / "out_comic"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        tag = pp.image_tag(img)
+        folder = pp.ROOT / "out" / tag
+        folder.mkdir(parents=True)
+        # старый паспорт: одна сборка на папку, у записей её нет
+        (folder / "run.json").write_text(json.dumps({"workflow": "07_photo_thepit", "runs": [
+            {"seed": 1, "denoise": None, "file": "08_photo_gta_00001_.png",
+             "subject": "x", "negative_extra": ""},
+            {"seed": 2, "denoise": None, "file": "07_photo_bimbo_00003_.png",
+             "subject": "x", "negative_extra": ""},
+        ]}), encoding="utf-8")
+        (pp.OUTPUT_DIR / "07_photo_thepit_00099_.png").write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "x", "negative_extra": ""}, 3, None,
+                        "07_photo_thepit_00099_.png")
+        book = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+        check("сборка записана у нового кадра",
+              book["runs"][-1]["workflow"] == "07_photo_thepit", str(book["runs"][-1]))
+        check("старые записи восстановлены по имени кадра",
+              [r["workflow"] for r in book["runs"][:2]] == ["08_photo_gta", "07_photo_bimbo"],
+              str(book["runs"][:2]))
+        check("общее поле workflow убрано", "workflow" not in book, str(list(book)))
+        check("workflows перечислены",
+              book["workflows"] == ["07_photo_bimbo", "07_photo_thepit", "08_photo_gta"],
+              str(book.get("workflows")))
+        check("кадр скопирован в папку", (folder / "07_photo_thepit_00099_.png").exists())
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved
+
+
 def main():
     patch_roots()
     try:
@@ -610,6 +649,7 @@ def main():
         test_unload_only_own_model()
         test_style_from_graph()
         test_portable_paths()
+        test_passport_records_workflow()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
