@@ -262,6 +262,24 @@ def main():
                   page.locator("textarea").first.input_value() == "",
                   page.locator("textarea").first.input_value()[:60])
 
+            print("\n5a) таймер не затирает пересчитанный промпт")
+            page.locator("textarea").first.fill("adult woman, preview persistence test")
+            page.get_by_role("button", name="Пересчитать промпт").click()
+            page.wait_for_timeout(700)
+
+            def preview_value():
+                return page.locator(
+                    ".q-field", has_text="Positive, который уйдёт в ComfyUI"
+                ).locator("textarea").input_value()
+
+            first_preview = preview_value()
+            page.wait_for_timeout(2200)
+            second_preview = preview_value()
+            check("промпт формы остаётся после обновлений страницы",
+                  "preview persistence test" in first_preview
+                  and second_preview == first_preview,
+                  f"{first_preview[:70]} -> {second_preview[:70]}")
+
             print("\n6) Recheck: два кадра в галерее")
             page.get_by_role("button", name="Заменить фото").click()
             page.wait_for_timeout(300)

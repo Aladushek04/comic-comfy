@@ -356,11 +356,31 @@ def _fail(out, result, message):
     return result
 
 
+def _augment(text, miss):
+    """Добавляет промахи в готовый positive или усиливает уже имеющиеся теги.
+
+    Возвращает (новый текст, что изменилось). Пустой второй список значит
+    «повтор ничего не изменит».
+    """
+    low = text.lower()
+    add = [x.strip() for x in miss.split(",") if x.strip() and x.strip().lower() not in low]
+    if add:
+        return ", ".join([text.rstrip(", ")] + add), add
+    out, bumped = text, []
+    for tag in [x.strip() for x in miss.split(",") if x.strip()]:
+        if tag.lower() in out.lower() and f"({tag}" not in out:
+            out = re.sub(re.escape(tag), f"(({tag}:1.2))", out, count=1,
+                         flags=re.IGNORECASE)
+            bumped.append(tag)
+    return out, bumped
+
+
 def _recheck(req, desc, name, out, seed):
     """Проверка кадра моделью и один повторный проход.
 
-    Возвращает (всё_цело, кадр_уточнения | None). Второй кадр идёт по той же
-    цепочке, что и первый: он попадает в result.frames, run.json и галерею.
+    Возвращает (всё_цело, кадр_уточнения | None). Описание основного прохода
+    не меняется: правка живёт в копии, иначе второй вариант уходил бы в
+    ComfyUI с добавками от уточнения первого кадра.
     """
     out("recheck", "   проверка кадра моделью")
     pp.comfy_free()
@@ -381,16 +401,28 @@ def _recheck(req, desc, name, out, seed):
         return True, None
 
     out("recheck", "   не доехало: " + miss, missing=miss)
+    local = dict(desc)
     # Промах = чего не хватает на кадре, поэтому усиливаем ПРОМПТ, а не негатив.
-    subj = desc.get("subject", "")
+    if req.positive_override:
+        # Полный positive — это и есть запрос; добавлять теги в описание
+        # бессмысленно, иначе повтор уйдёт с тем же графом.
+        text, changes = _augment(req.positive_override, miss)
+        if not changes:
+            out("recheck", "   positive переопределён и уже содержит промахи — "
+                           "повтор не изменит результата")
+            return True, None
+        out("recheck", "   positive переопределён, изменено: " + ", ".join(changes))
+        return _one_more(req, local, out, seed, positive=text)
+
+    ok_all, frame = True, None
+    subj = local.get("subject", "")
     low = subj.lower()
     add = [x.strip() for x in miss.split(",") if x.strip() and x.strip().lower() not in low]
-    ok_all, frame = True, None
     if add:
-        desc["subject"] = ", ".join([subj] + add)
+        local["subject"] = ", ".join([subj] + add)
         out("recheck", "   промпт дополнен: " + ", ".join(add))
         out("recheck", "   повторный проход с усиленным промптом")
-        ok_all, frame = _one_more(req, desc, out, seed)
+        ok_all, frame = _one_more(req, local, out, seed)
     else:
         subj2, bumped = subj, []
         for tag in [x.strip() for x in miss.split(",") if x.strip()]:
@@ -399,22 +431,23 @@ def _recheck(req, desc, name, out, seed):
                                flags=re.IGNORECASE)
                 bumped.append(tag)
         if bumped:
-            desc["subject"] = subj2
+            local["subject"] = subj2
             out("recheck", "   усилено весом: " + ", ".join(bumped))
-            ok_all, frame = _one_more(req, desc, out, seed)
+            ok_all, frame = _one_more(req, local, out, seed)
         else:
             out("recheck", "   повтор не изменит результата — пропускаю")
     return ok_all, frame
 
 
-def _one_more(req, desc, out, seed=None):
+def _one_more(req, desc, out, seed=None, positive=None):
     sd = seed if seed is not None else (req.seed if req.seed is not None else _seed(req, 0))
+    refined_positive = positive if positive is not None else req.positive_override
     ok, name2 = pp.generate(
         req.workflow, desc["subject"], desc.get("negative_extra", ""),
         denoise=req.denoise, seed=sd, landscape=pp.image_is_landscape(str(req.image)),
         style_weight=req.style_weight, image_name=pp.ensure_input(str(req.image)),
         cn_strength=req.cn_strength, overrides=req.overrides,
-        positive=req.positive_override, negative=req.negative_override,
+        positive=refined_positive, negative=req.negative_override,
         progress=out.progress, client_id=req.client_id)
     if not ok or not name2:
         return False, None
@@ -430,4 +463,6 @@ def _one_more(req, desc, out, seed=None):
         "workflow": req.workflow, "cn_strength": req.cn_strength,
         "style_weight": req.style_weight, "denoise": req.denoise,
         "refined": True, "subject": desc.get("subject", ""),
+        # Для полного переопределения именно этот текст ушёл в /prompt.
+        "positive": refined_positive or "",
     }

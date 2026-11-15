@@ -333,6 +333,8 @@ class ComicPage:
 
     def prompt_panel(self):
         with ui.expansion("Промпт и переопределения", icon="notes").classes("w-full"):
+            ui.label("Это промпт текущей формы. У сохранённого кадра свой промпт — "
+                     "в галерее, в «Промпт этого кадра».").classes("text-xs opacity-60")
             ui.label("Полный positive или negative заменяет собранный текст целиком и "
                      "главнее описания и тегов негатива.").classes("text-xs opacity-70")
             self.w["pos_preview"] = ui.textarea(
@@ -751,9 +753,10 @@ class ComicPage:
                             ui.link("скачать", f"/media/job/{snap['id']}/{thumb_name}"
                                     "?download=1").props("target=_blank").classes(
                                 "text-[10px]")
-            if frame.get("subject"):
+            prompt_text = frame.get("positive") or frame.get("subject")
+            if prompt_text:
                 with ui.expansion("Промпт этого кадра", icon="notes").classes("w-full"):
-                    ui.label(frame["subject"]).classes("text-xs whitespace-pre-wrap")
+                    ui.label(prompt_text).classes("text-xs whitespace-pre-wrap")
             overrides = snap["request"].get("overrides") or {}
             parts = [f"{key}={value}" for key, value in
                      (overrides.get("fields") or {}).items()]
@@ -846,7 +849,8 @@ class ComicPage:
             self.w["error"].set_text(
                 short(snap["error"].splitlines()[0], 300) if snap.get("error") else "")
 
-        # Автоописание — только для того фото, что сейчас в форме.
+        # Промпт формы живёт отдельно от промпта сохранённого кадра:
+        # таймер не должен затирать «Пересчитать промпт».
         same_photo = (bool(self.state["upload_tag"])
                       and snap.get("source_tag") == self.state["upload_tag"])
         if snap.get("description") and snap["status"] in ("described", "done", "partial"):
@@ -856,10 +860,7 @@ class ComicPage:
                 if not current or current == (self.state["desc_auto"] or "").strip():
                     self.w["desc"].set_value(subject)
                     self.state["desc_auto"] = subject
-            if snap.get("positive"):
-                self.w["pos_preview"].set_value(snap["positive"])
-            if snap.get("negative"):
-                self.w["neg_preview"].set_value(snap["negative"])
+                    self.recalc(silent=True)
 
         new = [e for e in snap["events"] if e["seq"] > self.state["last_seq"]]
         for event in new:

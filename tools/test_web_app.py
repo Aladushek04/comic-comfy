@@ -976,6 +976,67 @@ def test_comfy_rule():
         comfy.stop()
 
 
+def test_recheck_isolation():
+    print("\n16) Recheck не меняет промпт следующих вариантов")
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy):
+            img = TMP / "variants.png"
+            make(img, (11, 77, 33))
+            r = jobs.run_job(jobs.JobRequest(
+                image=str(img), workflow="07_photo_thepit",
+                subject="adult woman, plain", variants=2, recheck=True, seed=5))
+            check("два основных кадра и уточнённый",
+                  len(r.frames) == 3
+                  and [f["refined"] for f in r.frames] == [False, True, False],
+                  str([(f["file"], f["refined"]) for f in r.frames]))
+            texts = []
+            for payload in comfy.state.prompts:
+                texts.append(next(n["inputs"]["text"] for n in payload["prompt"].values()
+                                  if n["class_type"] == "CLIPTextEncode"
+                                  and "theofficialpit" in str(n["inputs"]["text"])))
+            check("уточнение добавило тег только своему кадру",
+                  "silver bracelet" in texts[1]
+                  and "silver bracelet" not in texts[0]
+                  and "silver bracelet" not in texts[2],
+                  str([t[-60:] for t in texts]))
+            check("второй вариант ушёл с исходным промптом", texts[0] == texts[2],
+                  str([t[-60:] for t in texts]))
+    finally:
+        lm.stop()
+        comfy.stop()
+
+
+def test_recheck_with_override():
+    print("\n17) Recheck при полном переопределении positive")
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy):
+            img = TMP / "override_recheck.png"
+            make(img, (44, 55, 66))
+            r = jobs.run_job(jobs.JobRequest(
+                image=str(img), workflow="07_photo_thepit",
+                subject="adult woman, ignored", positive_override="MY POSITIVE, adult woman",
+                recheck=True, seed=3))
+            check("уточнённый кадр создан",
+                  len(r.frames) == 2 and r.frames[-1]["refined"] is True,
+                  str([(f["file"], f["refined"]) for f in r.frames]))
+            texts = [next(n["inputs"]["text"] for n in p["prompt"].values()
+                          if n["class_type"] == "CLIPTextEncode"
+                          and "MY POSITIVE" in str(n["inputs"]["text"]))
+                     for p in comfy.state.prompts]
+            check("повтор ушёл с изменённым переопределением",
+                  texts[0] == "MY POSITIVE, adult woman"
+                  and "silver bracelet" in texts[1] and texts[1] != texts[0],
+                  str(texts))
+            check("фактический positive уточнённого кадра в галерее",
+                  "silver bracelet" in (r.frames[-1].get("positive") or ""),
+                  str(r.frames[-1].get("positive"))[:100])
+    finally:
+        lm.stop()
+        comfy.stop()
+
+
 def _png_bytes():
     buf = io.BytesIO()
     Image.new("RGB", (8, 8), (1, 2, 3)).save(buf, "PNG")
@@ -1000,6 +1061,8 @@ def main():
         test_recheck_frames()
         test_source_tag()
         test_comfy_rule()
+        test_recheck_isolation()
+        test_recheck_with_override()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
