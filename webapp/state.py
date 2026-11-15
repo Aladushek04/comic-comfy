@@ -40,3 +40,14 @@ def fmt_setting(value, suffix=""):
     if isinstance(value, float) and value.is_integer():
         value = int(value)
     return f"{value}{suffix}"
+
+
+def missing_job_text(job_id):
+    """Подпись, когда задания из адреса больше нет.
+
+    Снятое по сроку задание — не «не запущено»: кадры и их паспорт лежат
+    в out\\<фото>_<хэш>\\, и человек должен узнать, где их искать.
+    """
+    if not job_id:
+        return "Задание не запущено"
+    return "История задания истекла: файлы кадров остались в out\\<фото>_<хэш>"

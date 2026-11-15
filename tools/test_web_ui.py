@@ -432,6 +432,13 @@ def main():
             wait_text(page2, "Готово · кадров 1", 40000)
             page2.close()
             control(comfy, delay=1)
+            print("\n12) истёкшая история задания")
+            page3 = ctx.new_page()
+            page3.goto(f"http://127.0.0.1:{port}/?job=deadbeef00")
+            wait_text(page3, "История задания истекла", 15000)
+            check("истёкшее задание объясняет себя",
+                  "Задание не запущено" not in body(page3))
+            page3.close()
             browser.close()
 
         print(f"\nскриншоты: {shots}")

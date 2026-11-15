@@ -33,7 +33,7 @@ import settings as st
 from PIL import Image
 from webapp import catalog
 from webapp.service import JobService, UploadError
-from webapp.state import fmt_setting, pass_steps
+from webapp.state import fmt_setting, missing_job_text, pass_steps
 
 TMP = Path(tempfile.mkdtemp(prefix="comic_web_test_"))
 passed, failed = [], []
@@ -859,6 +859,15 @@ def test_job_retention():
         comfy.stop()
 
 
+def test_expired_job_text():
+    print("\n23) истёкшее задание объясняет себя")
+    check("без задания — прежняя подпись",
+          missing_job_text(None) == "Задание не запущено", missing_job_text(None))
+    text = missing_job_text("deadbeef00")
+    check("с id — истёкшая история", "истекла" in text and "out" in text, text)
+    check("это не «не запущено»", "не запущено" not in text, text)
+
+
 def test_upload_limits():
     print("\n21) загрузка: предел картинки до декодирования")
     from webapp import service as svc_mod
@@ -1350,6 +1359,7 @@ def main():
         test_job_autostart()
         test_upload_limits()
         test_job_retention()
+        test_expired_job_text()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

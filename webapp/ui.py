@@ -20,7 +20,7 @@ from starlette.responses import FileResponse, Response
 
 from . import catalog
 from .service import JobService, UploadError
-from .state import fmt_setting, pass_steps
+from .state import fmt_setting, missing_job_text, pass_steps
 
 _service = None
 _routes_done = False
@@ -817,7 +817,7 @@ class ComicPage:
             "связь: есть" if ui.context.client.connected else "связь: нет")
         snap = self.svc.snapshot(self.state["job_id"]) if self.state["job_id"] else None
         if snap is None:
-            self.w["stage"].set_text("Задание не запущено")
+            self.w["stage"].set_text(missing_job_text(self.state["job_id"]))
             self.w["elapsed"].set_text("")
             self.w["pass"].set_text("")
             self.w["queue"].set_text("")
