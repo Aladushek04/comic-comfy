@@ -1014,6 +1014,56 @@ def test_controlnet_strength_flag():
     check("main передаёт силу ControlNet", got.get("cn_strength") == 0.3, str(got))
 
 
+def test_passport_records_generation_settings():
+    print("\n23) run.json помнит силу ControlNet и вес стиля")
+    img = TMP / "settings.png"
+    make(img, (9, 9, 9))
+    saved = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT = TMP / "root_settings"
+    pp.OUTPUT_DIR = TMP / "out_settings"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        for name, cn in (("07_photo_thepit_00001_.png", 0.0),
+                         ("07_photo_thepit_00002_.png", 0.25)):
+            (pp.OUTPUT_DIR / name).write_bytes(b"png")
+            with contextlib.redirect_stdout(io.StringIO()):
+                pp.save_run(str(img), "07_photo_thepit",
+                            {"subject": "x", "negative_extra": ""}, 42, 0.75, name,
+                            cn_strength=cn, style_weight=0.9)
+        folder = pp.ROOT / "out" / pp.image_tag(img)
+        book = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+        check("сила ControlNet в паспорте",
+              [r["cn_strength"] for r in book["runs"]] == [0.0, 0.25],
+              str([r.get("cn_strength") for r in book["runs"]]))
+        check("вес стиля в паспорте", all(r["style_weight"] == 0.9 for r in book["runs"]))
+        check("два кадра различаются настройками, а не только файлом",
+              book["runs"][0] != book["runs"][1], "записи совпали")
+        check("seed и denoise по-прежнему пишутся",
+              all(r["seed"] == 42 and r["denoise"] == 0.75 for r in book["runs"]))
+
+        seen = {}
+        saved_save, saved_gen, saved_resolve = pp.save_run, pp.generate, pp.resolve_comfy
+        pp.save_run = lambda *a, **k: (seen.update(k) or None)
+        pp.generate = lambda *a, **k: (True, "f.png")
+        pp.resolve_comfy = lambda c=None: "http://stub"
+        img2 = TMP / "settings2.png"
+        make(img2, (4, 4, 4))
+        try:
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    run_main(["--image", str(img2), "--style", "thepit", "--no-llm",
+                              "--subject", "adult woman", "--cn-strength", "0.3",
+                              "--style-weight", "0.7", "--generate"])
+            except SystemExit:
+                pass
+        finally:
+            pp.save_run, pp.generate, pp.resolve_comfy = saved_save, saved_gen, saved_resolve
+        check("main передаёт настройки в паспорт",
+              seen.get("cn_strength") == 0.3 and seen.get("style_weight") == 0.7, str(seen))
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved
+
+
 def main():
     patch_roots()
     try:
@@ -1039,6 +1089,7 @@ def main():
         test_check_install_strictness()
         test_batch_scene_cache_no_lm()
         test_controlnet_strength_flag()
+        test_passport_records_generation_settings()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

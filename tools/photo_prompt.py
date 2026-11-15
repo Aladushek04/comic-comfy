@@ -570,12 +570,18 @@ def workflow_from_file(name):
     return best
 
 
-def save_run(image_path, workflow, desc, seed, denoise, name):
+def save_run(image_path, workflow, desc, seed, denoise, name,
+             cn_strength=None, style_weight=None):
     """Складывает кадр и его паспорт в папку out/<фото>_<хэш>/.
 
     Сборка пишется в каждый кадр, а не одна на папку: в одной папке лежат кадры
     разных стилей, и общее поле «workflow» врало. У старых записей сборка
     восстанавливается из имени файла — префикс SaveImage и есть имя сборки.
+
+    В запись идут все настройки, от которых зависит кадр: `cn_strength` и
+    `style_weight` тоже, иначе два кадра с одинаковым seed выглядят одинаково
+    подписанными, хотя сделаны с разной силой ControlNet или LoRA.
+    `None` означает «как в сборке».
 
     Возвращает папку или None, если кадра нет в OUTPUT_DIR: паспорт на
     несуществующий файл хуже, чем отсутствие паспорта.
@@ -606,6 +612,7 @@ def save_run(image_path, workflow, desc, seed, denoise, name):
     book.setdefault("runs", []).append({
         "workflow": workflow,
         "seed": seed, "denoise": denoise, "file": name,
+        "cn_strength": cn_strength, "style_weight": style_weight,
         "subject": desc.get("subject", ""), "negative_extra": desc.get("negative_extra", ""),
     })
     book.pop("workflow", None)
@@ -894,7 +901,8 @@ def run_batch(args, workflow):
                 failed += 1
                 print("   кадр не получен")
                 continue
-            folder = save_run(str(f), workflow, desc, sd, args.denoise, name)
+            folder = save_run(str(f), workflow, desc, sd, args.denoise, name,
+                              cn_strength=args.cn_strength, style_weight=args.style_weight)
             if folder is None:
                 failed += 1
                 continue
@@ -1092,7 +1100,8 @@ def main():
             ok, name = generate(a.workflow, desc["subject"], desc.get("negative_extra", ""),
                                 denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image), cn_strength=a.cn_strength)
             ok_all &= ok
-            if name and save_run(a.image, a.workflow, desc, sd, a.denoise, name) is None:
+            if name and save_run(a.image, a.workflow, desc, sd, a.denoise, name,
+                                 cn_strength=a.cn_strength, style_weight=a.style_weight) is None:
                 ok_all = False
             if a.recheck and i == 0 and name:
                 print("   проверка кадра моделью")
@@ -1118,7 +1127,8 @@ def main():
                         ok, name2 = generate(a.workflow, desc["subject"], desc.get("negative_extra", ""),
                                              denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image), cn_strength=a.cn_strength)
                         ok_all &= ok
-                        if name2 and save_run(a.image, a.workflow, desc, sd, a.denoise, name2) is None:
+                        if name2 and save_run(a.image, a.workflow, desc, sd, a.denoise, name2,
+                                   cn_strength=a.cn_strength, style_weight=a.style_weight) is None:
                             ok_all = False
                     else:
                         # Слово уже в промпте, но не отрисовалось — усиливаем вес.
@@ -1134,7 +1144,8 @@ def main():
                             ok, name2 = generate(a.workflow, desc["subject"], desc.get("negative_extra", ""),
                                                  denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image), cn_strength=a.cn_strength)
                             ok_all &= ok
-                            if name2 and save_run(a.image, a.workflow, desc, sd, a.denoise, name2) is None:
+                            if name2 and save_run(a.image, a.workflow, desc, sd, a.denoise, name2,
+                                   cn_strength=a.cn_strength, style_weight=a.style_weight) is None:
                                 ok_all = False
                         else:
                             print("   повтор не изменит результата — пропускаю")
