@@ -172,6 +172,11 @@ def read_cache(image_path, scene=None):
     if (data.get("scene") or "") != (scene or ""):
         # Имя файла могло совпасть, но описание — от другой сцены.
         return None
+    if scene and not data.get("scene_applied"):
+        # Записи до 3af4b58 писались под ключом сцены даже когда сцену применить
+        # не удалось: доверять их полю scene нельзя, сцену надо переписать.
+        print("   кэш сцены без метки (старая версия) — сцену переписываю заново")
+        return None
     if data.get("sha1") and data["sha1"] != fingerprint(image_path):
         return None
     return data
@@ -185,6 +190,8 @@ def write_cache(image_path, desc, scene=None):
     data["sha1"] = fingerprint(image_path)
     data["source"] = str(image_path)
     data["scene"] = scene or ""
+    # Метка «поле scene правдиво»: без неё запись считается старой и не берётся.
+    data["scene_applied"] = True
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return p
 
@@ -809,7 +816,7 @@ def run_batch(args, workflow):
             described += 1
             fresh = True
 
-        if args.scene and need_llm:
+        if args.scene and need_llm and not cached:
             if model is None:
                 model = pick_model(lm_models(), args.model)
             print(f"   сцена: {args.scene}")

@@ -896,6 +896,83 @@ def test_comfy_url_setting():
             os.environ["COMFY_URL"] = saved_env
 
 
+def test_batch_scene_cache_no_lm():
+    print("\n21) --batch --scene с готовой сценой не зовёт модель")
+    folder = TMP / "batch_scene_cache"
+    make(folder / "a.png", (6, 6, 6))
+    img = folder / "a.png"
+    calls = []
+    saved = (pp.describe, pp.rewrite_scene, pp.lm_models, pp.pick_model,
+             pp.unload_all, pp.unload_model, pp.resolve_comfy)
+    pp.describe = lambda p, m: (calls.append("describe") or
+                                {"subject": "adult woman, tree", "negative_extra": "",
+                                 "notes": ""})
+    pp.rewrite_scene = lambda d, s, m: (calls.append("rewrite") or
+                                        {"subject": "adult woman, tree, " + s,
+                                         "negative_extra": "", "notes": "", "scene": s})
+    pp.lm_models = lambda: (calls.append("lm_models") or {"models": []})
+    pp.pick_model = lambda r, w: (calls.append("pick_model") or "m")
+    pp.unload_all = lambda r: (calls.append("unload_all") or [])
+    pp.unload_model = lambda r, m: (calls.append("unload_model") or [])
+    pp.resolve_comfy = lambda c: "http://x"
+    try:
+        pp.write_cache(str(img), {"subject": "adult woman, tree, в горах", "negative_extra": "",
+                                  "notes": "", "scene": "в горах"}, "в горах")
+        rc, text = capture(lambda: pp.run_batch(batch_args(folder, scene="в горах", generate=False),
+                                                "07_photo_thepit"))
+        check("кэш сцены: код 0", rc == 0, str(rc))
+        check("кэш сцены: модель не тронута", calls == [], str(calls))
+
+        calls.clear()
+        rc, text = capture(lambda: pp.run_batch(batch_args(folder, scene="в горах", dry_run=True, generate=False),
+                                                "07_photo_thepit"))
+        check("dry-run с кэшем сцены: код 0 и без модели", rc == 0 and calls == [],
+              f"{rc} {calls}")
+
+        # только базовое описание: фото не пересматриваем, переписываем сцену
+        pp.cache_path(str(img), "в горах").unlink()
+        pp.write_cache(str(img), {"subject": "adult woman, tree", "negative_extra": "",
+                                  "notes": ""})
+        calls.clear()
+        rc, text = capture(lambda: pp.run_batch(batch_args(folder, scene="в горах", generate=False),
+                                                "07_photo_thepit"))
+        check("базовый кэш: фото заново не описывают", "describe" not in calls, str(calls))
+        check("базовый кэш: сцена переписана", "rewrite" in calls, str(calls))
+        check("базовый кэш: сцена закэширована",
+              pp.read_cache(str(img), "в горах") is not None)
+
+        # запись старой версии без метки scene_applied
+        p = pp.cache_path(str(img), "в горах")
+        data = json.loads(p.read_text(encoding="utf-8"))
+        data.pop("scene_applied", None)
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        check("старая запись без метки не читается", pp.read_cache(str(img), "в горах") is None)
+
+        calls.clear()
+        capture(lambda: pp.run_batch(batch_args(folder, scene="в горах", generate=False), "07_photo_thepit"))
+        check("старую запись переписывают", "rewrite" in calls, str(calls))
+        check("после перезаписи метка есть",
+              bool((pp.read_cache(str(img), "в горах") or {}).get("scene_applied")))
+
+        # одиночный запуск: старая запись тоже не считается готовой сценой
+        img2 = TMP / "old_scene.png"
+        make(img2, (7, 8, 9))
+        p2 = pp.cache_path(str(img2), "в горах")
+        p2.parent.mkdir(parents=True, exist_ok=True)
+        p2.write_text(json.dumps({"subject": "adult woman, christmas tree",
+                                  "negative_extra": "", "notes": "", "scene": "в горах",
+                                  "sha1": pp.fingerprint(str(img2)), "source": str(img2)},
+                                 ensure_ascii=False), encoding="utf-8")
+        _, calls2 = run_main(["--image", str(img2), "--style", "thepit", "--scene", "в горах"])
+        check("одиночный путь: старая запись не берётся",
+              any(c[0] == "scene" for c in calls2), str(calls2))
+        check("одиночный путь: кэш переписан с меткой",
+              bool((pp.read_cache(str(img2), "в горах") or {}).get("scene_applied")))
+    finally:
+        (pp.describe, pp.rewrite_scene, pp.lm_models, pp.pick_model,
+         pp.unload_all, pp.unload_model, pp.resolve_comfy) = saved
+
+
 def main():
     patch_roots()
     try:
@@ -919,6 +996,7 @@ def main():
         test_comfy_url_setting()
         test_scene_failure_not_cached()
         test_check_install_strictness()
+        test_batch_scene_cache_no_lm()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
