@@ -753,10 +753,21 @@ class ComicPage:
                             ui.link("скачать", f"/media/job/{snap['id']}/{thumb_name}"
                                     "?download=1").props("target=_blank").classes(
                                 "text-[10px]")
-            prompt_text = frame.get("positive") or frame.get("subject")
-            if prompt_text:
+            positive = frame.get("positive") or ""
+            negative = frame.get("negative") or ""
+            if positive:
                 with ui.expansion("Промпт этого кадра", icon="notes").classes("w-full"):
-                    ui.label(prompt_text).classes("text-xs whitespace-pre-wrap")
+                    ui.label("Positive (ушёл в ComfyUI)").classes(
+                        "text-[10px] uppercase opacity-50")
+                    ui.label(positive).classes("text-xs whitespace-pre-wrap")
+                    if negative:
+                        ui.label("Negative").classes("text-[10px] uppercase opacity-50 mt-2")
+                        ui.label(negative).classes("text-xs whitespace-pre-wrap")
+            elif frame.get("subject"):
+                with ui.expansion("Промпт этого кадра", icon="notes").classes("w-full"):
+                    ui.label(frame["subject"]).classes("text-xs whitespace-pre-wrap")
+                    ui.label("Точный промпт не записан: кадр старой версии.").classes(
+                        "text-xs text-orange-600 mt-1")
             overrides = snap["request"].get("overrides") or {}
             parts = [f"{key}={value}" for key, value in
                      (overrides.get("fields") or {}).items()]

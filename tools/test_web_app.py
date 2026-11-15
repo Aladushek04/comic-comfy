@@ -1032,6 +1032,43 @@ def test_recheck_with_override():
             check("фактический positive уточнённого кадра в галерее",
                   "silver bracelet" in (r.frames[-1].get("positive") or ""),
                   str(r.frames[-1].get("positive"))[:100])
+            check("основной кадр хранит своё переопределение",
+                  r.frames[0]["positive"] == "MY POSITIVE, adult woman",
+                  r.frames[0]["positive"])
+    finally:
+        lm.stop()
+        comfy.stop()
+
+
+def test_frame_prompt_passport():
+    print("\n18) паспорт и карточка кадра помнят фактический промпт")
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy):
+            img = TMP / "prompt_book.png"
+            make(img, (13, 31, 57))
+            r = jobs.run_job(jobs.JobRequest(
+                image=str(img), workflow="07_photo_thepit",
+                subject="adult woman, exact text", seed=1,
+                negative_extra="zzz-drop", style_weight=0.8))
+            sent = comfy.state.prompts[0]["prompt"]
+            pos = next(n["inputs"]["text"] for n in sent.values()
+                       if n["class_type"] == "CLIPTextEncode"
+                       and "theofficialpit" in str(n["inputs"]["text"]))
+            neg = next(n["inputs"]["text"] for n in sent.values()
+                       if n["class_type"] == "CLIPTextEncode"
+                       and str(n["inputs"]["text"]).startswith("zzz-drop"))
+            check("positive кадра совпадает с отправленным",
+                  r.frames[0]["positive"] == pos, r.frames[0]["positive"][:80])
+            check("negative кадра совпадает с отправленным",
+                  r.frames[0]["negative"] == neg, r.frames[0]["negative"][:80])
+            book = book_for(img)["runs"][-1]
+            check("run.json хранит фактический positive", book.get("positive") == pos,
+                  str(book.get("positive"))[:80])
+            check("run.json хранит фактический negative", book.get("negative") == neg,
+                  str(book.get("negative"))[:80])
+            check("в positive есть и шаблон стиля, и описание",
+                  "theofficialpit" in pos and "exact text" in pos, pos[:100])
     finally:
         lm.stop()
         comfy.stop()
@@ -1063,6 +1100,7 @@ def main():
         test_comfy_rule()
         test_recheck_isolation()
         test_recheck_with_override()
+        test_frame_prompt_passport()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

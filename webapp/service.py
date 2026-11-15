@@ -195,7 +195,8 @@ class JobService:
         for frame in (result.frames if result else []):
             frames.append({k: frame.get(k) for k in
                            ("file", "folder", "seed", "workflow", "cn_strength",
-                            "style_weight", "denoise", "refined", "subject", "positive")})
+                            "style_weight", "denoise", "refined", "subject", "positive",
+                            "negative")})
         desc = (result.description if result else None) or None
         return {
             "id": job.id,

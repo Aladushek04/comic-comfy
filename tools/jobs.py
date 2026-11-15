@@ -291,20 +291,23 @@ def run_job(req, emit=None):
         for i in range(n):
             sd = _seed(req, i)
             out("variant", f"   вариант {i + 1}/{n}, seed {sd}", index=i + 1, total=n, seed=sd)
+            report = {}
             ok, name = pp.generate(
                 req.workflow, desc["subject"], desc.get("negative_extra", ""),
                 denoise=req.denoise, seed=sd, landscape=landscape,
                 style_weight=req.style_weight, image_name=pp.ensure_input(str(req.image)),
                 cn_strength=req.cn_strength, overrides=req.overrides,
                 positive=req.positive_override, negative=req.negative_override,
-                progress=out.progress, client_id=req.client_id)
+                progress=out.progress, client_id=req.client_id, report=report)
             ok_all &= bool(ok)
             folder = None
             if name:
                 folder = pp.save_run(str(req.image), req.workflow, desc, sd, req.denoise, name,
                                      cn_strength=req.cn_strength,
                                      style_weight=req.style_weight,
-                                     overrides=req.overrides or None)
+                                     overrides=req.overrides or None,
+                                     positive=report.get("positive"),
+                                     negative=report.get("negative"))
                 if folder is None:
                     ok_all = False
                 else:
@@ -313,6 +316,8 @@ def run_job(req, emit=None):
                         "workflow": req.workflow, "cn_strength": req.cn_strength,
                         "style_weight": req.style_weight, "denoise": req.denoise,
                         "refined": False, "subject": desc.get("subject", ""),
+                        "positive": report.get("positive", ""),
+                        "negative": report.get("negative", ""),
                     })
                     result.folders.append(str(folder))
                     out("save", f"   кадр сохранён: {name}", file=name, folder=str(folder))
@@ -442,18 +447,21 @@ def _recheck(req, desc, name, out, seed):
 def _one_more(req, desc, out, seed=None, positive=None):
     sd = seed if seed is not None else (req.seed if req.seed is not None else _seed(req, 0))
     refined_positive = positive if positive is not None else req.positive_override
+    report = {}
     ok, name2 = pp.generate(
         req.workflow, desc["subject"], desc.get("negative_extra", ""),
         denoise=req.denoise, seed=sd, landscape=pp.image_is_landscape(str(req.image)),
         style_weight=req.style_weight, image_name=pp.ensure_input(str(req.image)),
         cn_strength=req.cn_strength, overrides=req.overrides,
         positive=refined_positive, negative=req.negative_override,
-        progress=out.progress, client_id=req.client_id)
+        progress=out.progress, client_id=req.client_id, report=report)
     if not ok or not name2:
         return False, None
     folder = pp.save_run(str(req.image), req.workflow, desc, sd, req.denoise, name2,
                          cn_strength=req.cn_strength, style_weight=req.style_weight,
-                         overrides=req.overrides or None, refined=True)
+                         overrides=req.overrides or None, refined=True,
+                         positive=report.get("positive"),
+                         negative=report.get("negative"))
     if folder is None:
         return False, None
     out("save", f"   кадр сохранён: {name2}", file=name2, folder=str(folder),
@@ -463,6 +471,7 @@ def _one_more(req, desc, out, seed=None, positive=None):
         "workflow": req.workflow, "cn_strength": req.cn_strength,
         "style_weight": req.style_weight, "denoise": req.denoise,
         "refined": True, "subject": desc.get("subject", ""),
-        # Для полного переопределения именно этот текст ушёл в /prompt.
-        "positive": refined_positive or "",
+        # Фактический запрос: для полного переопределения это он, а не subject.
+        "positive": report.get("positive") or refined_positive or "",
+        "negative": report.get("negative", ""),
     }

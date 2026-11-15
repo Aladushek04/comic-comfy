@@ -596,7 +596,8 @@ def workflow_from_file(name):
 
 
 def save_run(image_path, workflow, desc, seed, denoise, name,
-             cn_strength=None, style_weight=None, overrides=None, refined=False):
+             cn_strength=None, style_weight=None, overrides=None, refined=False,
+             positive=None, negative=None):
     """Складывает кадр и его паспорт в папку out/<фото>_<хэш>/.
 
     Сборка пишется в каждый кадр, а не одна на папку: в одной папке лежат кадры
@@ -606,6 +607,8 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
     В запись идут все настройки, от которых зависит кадр: `cn_strength` и
     `style_weight` тоже, иначе два кадра с одинаковым seed выглядят одинаково
     подписанными, хотя сделаны с разной силой ControlNet или LoRA.
+    `positive` и `negative` — фактический запрос (шаблон стиля, переопределения
+    и негатив вместе): по одному `subject` его не восстановить.
     `None` означает «как в сборке».
 
     Возвращает папку или None, если кадра нет в OUTPUT_DIR: паспорт на
@@ -640,6 +643,7 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
         "cn_strength": cn_strength, "style_weight": style_weight,
         "overrides": overrides or None,
         "refined": bool(refined),
+        "positive": positive, "negative": negative,
         "subject": desc.get("subject", ""), "negative_extra": desc.get("negative_extra", ""),
     })
     book.pop("workflow", None)
@@ -1124,7 +1128,7 @@ def _ws_watch(base, client_id, pid, progress, stop, ready=None):
 
 def generate(workflow, subject, negative_extra, denoise=None, seed=None, landscape=False,
              style_weight=None, image_name=None, cn_strength=None, overrides=None,
-             positive=None, negative=None, progress=None, client_id=None):
+             positive=None, negative=None, progress=None, client_id=None, report=None):
     try:
         payload = build_payload(workflow, subject, negative_extra, denoise=denoise, seed=seed,
                                 landscape=landscape, style_weight=style_weight,
@@ -1134,6 +1138,9 @@ def generate(workflow, subject, negative_extra, denoise=None, seed=None, landsca
         sys.exit(str(e))
     api = payload["prompt"]
     positive_text, negative_text = payload["positive"], payload["negative"]
+    if isinstance(report, dict):
+        # Фактический запрос: его сохраняют паспорт кадра и галерея.
+        report.update({"positive": positive_text, "negative": negative_text})
 
     print("   positive:", positive_text[:160] + ("…" if len(positive_text) > 160 else ""))
     print("   negative:", negative_text[:160] + ("…" if len(negative_text) > 160 else ""))
@@ -1264,17 +1271,20 @@ def run_batch(args, workflow):
         for v in range(max(1, args.variants)):
             sd = (args.seed + v) if args.seed is not None else random.randint(1, 2_000_000_000)
             print(f"\n=== [{i}/{len(descs)}] {f.name}, вариант {v + 1}, seed {sd}")
+            report = {}
             ok, name = generate(workflow, desc["subject"], desc.get("negative_extra", ""),
                                 denoise=args.denoise, seed=sd,
                                 landscape=image_is_landscape(str(f)), style_weight=args.style_weight,
                                 cn_strength=args.cn_strength,
-                                image_name=ensure_input(str(f)))
+                                image_name=ensure_input(str(f)), report=report)
             if not ok:
                 failed += 1
                 print("   кадр не получен")
                 continue
             folder = save_run(str(f), workflow, desc, sd, args.denoise, name,
-                              cn_strength=args.cn_strength, style_weight=args.style_weight)
+                              cn_strength=args.cn_strength, style_weight=args.style_weight,
+                              positive=report.get("positive"),
+                              negative=report.get("negative"))
             if folder is None:
                 failed += 1
                 continue

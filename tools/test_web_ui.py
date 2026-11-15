@@ -312,6 +312,19 @@ def main():
             check("оба файла реально отдаются",
                   all(http_ok(f"http://127.0.0.1:{port}{h}") for h in gallery["links"]),
                   str(gallery["links"]))
+            snap_frames = api_job(port, job)["frames"]
+            check("снимок хранит фактический positive и negative",
+                  "theofficialpit" in snap_frames[0]["positive"]
+                  and "underage" in snap_frames[0]["negative"],
+                  str(snap_frames[0].get("positive"))[:80])
+            page.get_by_role("button", name="Промпт этого кадра").first.click()
+            page.wait_for_timeout(400)
+            card_text = page.locator(".q-card", has_text="Результат").first.inner_text()
+            low = card_text.lower()
+            check("карточка кадра показывает отправленный positive",
+                  "positive (ушёл в comfyui)" in low
+                  and "theofficialpit" in low and "negative" in low,
+                  card_text[-160:])
             page.screenshot(path=str(shots / "after-result.png"), full_page=True)
 
             print("\n7) две вкладки не путают задания")
