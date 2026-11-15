@@ -9,6 +9,7 @@ ComfyUI был запущен заранее: задание сначала оп
 Ничего не запускается само по себе: только когда пользователь нажал
 «Старт» и только после фазы описания.
 """
+import atexit
 import json
 import os
 import subprocess
@@ -18,6 +19,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import settings
+
+_ACTIVE = []
 
 
 def config_path():
@@ -141,7 +144,9 @@ def ensure(emit=None):
         if pp.comfy_probe(cfg["url"]):
             if emit:
                 emit("comfy", f"ComfyUI поднят: {cfg['url']}", url=cfg["url"])
-            return Handle(url=cfg["url"], proc=proc, stop_after=cfg["stop_after"])
+            handle = Handle(url=cfg["url"], proc=proc, stop_after=cfg["stop_after"])
+            _ACTIVE.append(handle)
+            return handle
         if proc.poll() is not None:
             break
         time.sleep(1)
@@ -153,16 +158,35 @@ def ensure(emit=None):
         f"headless ComfyUI не поднялся за {int(cfg['timeout'])} с")
 
 
+def _terminate(handle):
+    if handle is None or handle.proc is None:
+        return
+    if handle.proc.poll() is None:
+        handle.proc.terminate()
+        try:
+            handle.proc.wait(timeout=15)
+        except Exception:
+            handle.proc.kill()
+    if handle in _ACTIVE:
+        _ACTIVE.remove(handle)
+
+
 def stop(handle, emit=None):
     """Гасит только тот сервер, который подняли мы, и только если так настроено."""
-    if handle is None or not handle.stop_after or handle.proc is None:
+    if handle is None or not handle.stop_after:
         return
-    if handle.proc.poll() is not None:
-        return
-    handle.proc.terminate()
-    try:
-        handle.proc.wait(timeout=15)
-    except Exception:
-        handle.proc.kill()
+    _terminate(handle)
     if emit:
         emit("comfy", "ComfyUI остановлен — память свободна", url=handle.url)
+
+
+def _stop_all():
+    """Выход из приложения (в том числе Ctrl+C) не должен оставлять сервер в памяти."""
+    for handle in list(_ACTIVE):
+        try:
+            _terminate(handle)
+        except Exception:
+            pass
+
+
+atexit.register(_stop_all)

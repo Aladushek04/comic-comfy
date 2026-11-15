@@ -9,6 +9,8 @@
     .venv-web\\Scripts\\python.exe tools\\test_web_ui.py --shots ui-shots
 """
 import argparse
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -174,6 +176,20 @@ def main():
     log = TMP / "app.log"
     app = None
     try:
+        print("\n0) Ctrl+C останавливает без трейсбека")
+        from webapp import run as web_run
+        from webapp import ui as web_ui
+        saved_start = web_ui.start
+        web_ui.start = lambda **kwargs: (_ for _ in ()).throw(KeyboardInterrupt())
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = web_run.main(["--no-browser", "--port", str(free_port())])
+        finally:
+            web_ui.start = saved_start
+        check("код 0 и сообщение об остановке",
+              code == 0 and "остановлено" in buf.getvalue(), buf.getvalue()[:160])
+
         app, _ = start_app(lm, comfy, port, log)
         with sync_playwright() as pw:
             browser = pw.chromium.launch()

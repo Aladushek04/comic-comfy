@@ -40,7 +40,12 @@ def main(argv=None):
         print(f"внимание: сервер слушает {a.host}, а не только loopback", file=sys.stderr)
     from webapp.ui import start
     print(f"comic-comfy: http://{a.host}:{a.port}")
-    start(host=a.host, port=a.port, show=not a.no_browser)
+    try:
+        start(host=a.host, port=a.port, show=not a.no_browser)
+    except KeyboardInterrupt:
+        # Ctrl+C — обычная остановка, а не авария: без трейсбека.
+        print("\ncomic-comfy: остановлено")
+        return 0
     return 0
 
 

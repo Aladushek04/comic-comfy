@@ -1135,10 +1135,19 @@ def test_comfy_launch_plan():
             check("сервер поднят и возвращён handle",
                   handle is not None and handle.url == "http://127.0.0.1:8123",
                   str(handle))
+            check("поднятый сервер взят на учёт", handle in cl._ACTIVE)
             check("старт виден в событиях",
                   any(e["stage"] == "comfy_launch" for e in events), str(events))
             cl.stop(handle)
             check("stop гасит только свой сервер", fake.terminated is True)
+            check("после stop учёт чист", handle not in cl._ACTIVE)
+
+            orphan = cl.Handle(url="http://127.0.0.1:8123", proc=FakeProc(),
+                               stop_after=False)
+            cl._ACTIVE.append(orphan)
+            cl._stop_all()
+            check("выход из приложения гасит и stop_after=false",
+                  orphan.proc.terminated is True and orphan not in cl._ACTIVE)
 
             pp.comfy_state = lambda explicit=None: ("http://127.0.0.1:9999", "")
             check("уже работающий сервер не трогаем", cl.ensure() is None)
