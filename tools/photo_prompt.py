@@ -51,7 +51,8 @@ def resolve_comfy(explicit=None):
             return cand
     sys.exit("ComfyUI не отвечает ни на 8199, ни на 8188 — запусти его и повтори")
 
-# Стилевой блок берём из генератора по префиксу имени сборки.
+# Запасной вариант: основной стилевой блок приходит из графа (meta.positive_template),
+# эту таблицу используем только для старых .api.json без meta.
 STYLE_PREFIX = {
     "01_scene_thepit": "comic book illustration, theofficialpit style, thick lips, ",
     "01_scene_comic": "comic book illustration, theofficialpit style, ComicPitXX, ",
@@ -62,9 +63,6 @@ STYLE_PREFIX = {
     "07_photo_bimbo": "comic book illustration, theofficialpit style, bimbofusion artstyle, ",
     "08_photo_gta": "GTA V loading screen artwork, gtav, copic-makers, western comics (style), copic_markers_painting, ",
 }
-
-STYLE_SUFFIX = ("bold black outlines, flat colors, clean skin, high contrast, limited palette, "
-                "clean silhouette")
 
 STYLE_ALIAS = {
     "thepit": "07_photo_thepit",    "comic": "07_photo_comic",
@@ -212,12 +210,16 @@ def rewrite_scene(desc, scene, model):
         print("   сцена не переписалась:", e)
         return None
 
-# CLIP у SDXL видит ~77 токенов. Всё, что дальше, отбрасывается — поэтому списки короткие,
-# а важное (что подавить именно на этом фото) идёт первым.
+# ComfyUI режет текст на чанки по 77 токенов и кодирует их подряд (SDTokenizer: batched_tokens),
+# поэтому длинный промпт не обрезается. Проверено токенизатором: GTA-блок — 1 чанк,
+# со субъектом — 2, 120 тегов — 7. Важное всё равно ставим в начало: дальние теги влияют слабее.
 NEG_CORE = ("photorealistic, 3d render, bad anatomy, bad hands, extra fingers, "
             "watermark, text, signature, blurry, low quality")
 
 NEG_GUARD = "child, loli, shota, underage"
+
+# Плейсхолдер субъекта в шаблоне промпта из build_workflows.py.
+SUBJECT_SLOT = "{{subject}}"
 
 SYSTEM = """You describe photographs for a text-to-image model.
 Return ONLY a JSON object with three string fields: subject, negative_extra, notes.
@@ -474,14 +476,11 @@ def free_llm(model, unload_everything=False):
     return unload_model(lm_models(), model)
 
 
-def build_negative(negative_extra):
-    """Сначала то, что важно подавить на этом фото, потом короткое ядро, потом рамка.
-
-    Порядок важен: CLIP обрезает хвост, поэтому специфичное идёт первым.
-    """
+def join_tags(*chunks):
+    """Склеивает теги без дублей, сохраняя порядок."""
     parts, seen = [], set()
-    for chunk in (negative_extra or "", NEG_CORE, NEG_GUARD):
-        for tag in chunk.split(","):
+    for chunk in chunks:
+        for tag in str(chunk or "").split(","):
             t = tag.strip()
             if t and t.lower() not in seen:
                 seen.add(t.lower())
@@ -489,9 +488,27 @@ def build_negative(negative_extra):
     return ", ".join(parts)
 
 
-def build_positive(style_prefix, subject):
-    """Стиль — только триггер и пара слов, чтобы субъект не уезжал за 77 токенов."""
-    return style_prefix + subject.strip().rstrip(",") + ", bold outlines, flat colors"
+def compose_negative(negative_extra, meta=None):
+    """Сначала то, что важно подавить на этом фото, потом негатив сборки, потом рамка.
+
+    Негатив берётся из графа: у GTA там «night, rain, dark», у bimbo — «white lenses,
+    opaque lenses, grey skin». Раньше CLI подменял его своим коротким ядром целиком.
+    """
+    base = (meta or {}).get("negative") or NEG_CORE
+    return join_tags(negative_extra, base, NEG_GUARD)
+
+
+def compose_positive(meta, subject, workflow=""):
+    """Промпт = шаблон сборки с подставленным субъектом.
+
+    Шаблон приходит из графа (meta.positive_template), поэтому CLI выдаёт ровно тот
+    промпт, что и панель, вместе со стилевыми настройками сборки. Если meta нет
+    (старый .api.json) — собираем из таблицы STYLE_PREFIX, как раньше.
+    """
+    tpl = (meta or {}).get("positive_template") or ""
+    if tpl:
+        return join_tags(tpl.replace(SUBJECT_SLOT, str(subject).strip().rstrip(",")))
+    return join_tags(STYLE_PREFIX.get(workflow, ""), subject, "bold outlines, flat colors")
 
 
 def image_is_landscape(path):
@@ -576,21 +593,29 @@ def print_comfy_error(status):
             return
 
 
+def load_workflow(workflow):
+    """Граф и его стилевые настройки. meta пишет build_workflows.py из самого графа."""
+    path = WF_DIR / (workflow + ".api.json")
+    if not path.exists():
+        sys.exit(f"нет файла {path} — сначала собери воркфлоу")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return data["prompt"], data.get("meta") or {}
+
+
 def generate(workflow, subject, negative_extra, denoise=None, seed=None, landscape=False, style_weight=None, image_name=None):
-    api_path = WF_DIR / (workflow + ".api.json")
-    if not api_path.exists():
-        sys.exit(f"нет файла {api_path} — сначала собери воркфлоу")
-    api = json.loads(api_path.read_text(encoding="utf-8"))["prompt"]
+    api, meta = load_workflow(workflow)
 
-    prefix = STYLE_PREFIX.get(workflow)
+    prefix = meta.get("positive_template") or STYLE_PREFIX.get(workflow)
     if not prefix:
-        sys.exit(f"для {workflow} не задан стилевой префикс в STYLE_PREFIX")
+        sys.exit(f"для {workflow} не задан стилевой блок: пересобери воркфлоу")
 
-    positive = build_positive(prefix, subject)
-    negative = build_negative(negative_extra)
+    positive = compose_positive(meta, subject, workflow)
+    negative = compose_negative(negative_extra, meta)
 
     patched = 0
     samplers = []
+    style_lora = meta.get("style_lora") or ""
+    weight_set = False
     if image_name:
         for node in api.values():
             if node["class_type"] == "LoadImage":
@@ -598,9 +623,13 @@ def generate(workflow, subject, negative_extra, denoise=None, seed=None, landsca
                 print(f"   исходник: {image_name}")
     for node in api.values():
         if node["class_type"] == "LoraLoaderModelOnly" and style_weight is not None:
-            if abs(float(node["inputs"].get("strength_model", 0)) - 0.9) < 1e-9:
+            # Стилевая LoRA ищется по имени из meta, а не по «весу 0.9»: у bimbo 0.6,
+            # у GTA 0.85, поэтому прежняя проверка молча ничего не меняла.
+            if style_lora and node["inputs"].get("lora_name") == style_lora:
+                old = node["inputs"].get("strength_model")
                 node["inputs"]["strength_model"] = float(style_weight)
-                print(f"   вес стилевой LoRA: {style_weight}")
+                weight_set = True
+                print(f"   вес стилевой LoRA {style_lora}: {old} -> {style_weight}")
         if node["class_type"] == "EmptyLatentImage" and landscape:
             w = node["inputs"].get("width")
             h = node["inputs"].get("height")
@@ -619,6 +648,9 @@ def generate(workflow, subject, negative_extra, denoise=None, seed=None, landsca
             samplers.append(node)
     if patched == 0:
         sys.exit("не нашёл текстовых узлов для подстановки")
+    if style_weight is not None and not weight_set:
+        sys.exit(f"--style-weight: не понял, какая LoRA стилевая в {workflow} "
+                 f"(meta.style_lora={style_lora!r}) — пересобери воркфлоу")
 
     for s in samplers:
         if seed is not None:
@@ -794,7 +826,8 @@ def main():
     ap.add_argument("--negative-extra", default="", help="дописать в негатив вручную")
     ap.add_argument("--negative-drop", default="", help="вычеркнуть слова из негатива LLM")
     ap.add_argument("--denoise", type=float, help="перебить denoise основного сэмплера")
-    ap.add_argument("--style-weight", type=float, help="перебить вес стилевой LoRA (сейчас 0.9)")
+    ap.add_argument("--style-weight", type=float,
+                    help="перебить вес стилевой LoRA (по умолчанию как в сборке: 0.9 / 0.85 / 0.6)")
     ap.add_argument("--seed", type=int)
     ap.add_argument("--force", action="store_true", help="не брать описание из кэша")
     ap.add_argument("--dry-run", action="store_true", help="показать промпт, ничего не запускать")
@@ -911,11 +944,11 @@ def main():
         print("   пресет:", preset_path(a.save_preset).name)
 
     if a.dry_run:
-        prefix = STYLE_PREFIX.get(a.workflow, "")
+        _, meta = load_workflow(a.workflow)
         print("\nитоговый промпт:")
-        print(" ", build_positive(prefix, desc["subject"]))
+        print(" ", compose_positive(meta, desc["subject"], a.workflow))
         print("\nитоговый негатив:")
-        print(" ", build_negative(desc["negative_extra"]))
+        print(" ", compose_negative(desc["negative_extra"], meta))
         return
 
     if a.generate:

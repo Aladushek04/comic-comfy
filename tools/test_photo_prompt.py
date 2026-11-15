@@ -431,6 +431,91 @@ def test_unload_only_own_model():
         pp.lm_models, pp.post = saved
 
 
+def capture_payload(workflow, subject="adult woman, test", extra="", weight=None, wf_dir=None):
+    """Прогоняет generate() с заглушкой ComfyUI и возвращает (тексты, LoRA) из запроса."""
+    sent = {}
+    saved = (pp.post, pp.get, pp.time, pp.WF_DIR)
+    pp.post = lambda url, payload, timeout=300: (sent.update(payload["prompt"]) or {"prompt_id": "p"})
+    pp.get = lambda url, timeout=30: {"p": {"status": {"status_str": "success"},
+                                            "outputs": {"9": {"images": [{"filename": "x.png"}]}}}}
+    pp.time = _Clock()
+    if wf_dir:
+        pp.WF_DIR = wf_dir
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.generate(workflow, subject, extra, seed=1, style_weight=weight)
+    finally:
+        pp.post, pp.get, pp.time, pp.WF_DIR = saved
+    texts = [n["inputs"]["text"] for n in sent.values() if n["class_type"] == "CLIPTextEncode"]
+    loras = {n["inputs"]["lora_name"]: n["inputs"]["strength_model"]
+             for n in sent.values() if n["class_type"] == "LoraLoaderModelOnly"}
+    return texts, loras
+
+
+def test_style_from_graph():
+    print("\n12) CLI берёт стиль из графа, а не из своей таблицы")
+    names = ("07_photo_thepit", "07_photo_comic", "07_photo_jp", "07_photo_bimbo", "08_photo_gta")
+    for name in names:
+        data = json.loads((pp.WF_DIR / (name + ".api.json")).read_text(encoding="utf-8"))
+        meta = data.get("meta") or {}
+        nonzero = [n["inputs"] for n in data["prompt"].values()
+                   if n["class_type"] == "LoraLoaderModelOnly" and n["inputs"]["strength_model"]]
+        check(f"{name}: шаблон с {{{{subject}}}}", "{{subject}}" in (meta.get("positive_template") or ""),
+              str(meta)[:120])
+        check(f"{name}: негатив и стилевая LoRA из графа",
+              bool(meta.get("negative")) and len(nonzero) == 1
+              and meta.get("style_lora") == nonzero[0]["lora_name"]
+              and meta.get("style_weight") == nonzero[0]["strength_model"],
+              f"{meta.get('style_lora')} {meta.get('style_weight')} vs {nonzero}")
+
+    texts, _ = capture_payload("08_photo_gta")
+    pos, neg = texts
+    for tag in ("warm golden sunlight", "saturated colors", "Los Santos", "palm trees",
+                "lens flare", "advertising poster"):
+        check(f"GTA сохранил «{tag}»", tag in pos, pos[:160])
+    for tag in ("dark", "gloomy", "night", "rain"):
+        check(f"GTA негатив сохранил «{tag}»", tag in neg, neg[:160])
+    check("GTA: субъект между светом и композицией",
+          pos.index("warm golden sunlight") < pos.index("adult woman") < pos.index("bold black outlines"),
+          pos[:200])
+
+    texts, _ = capture_payload("07_photo_bimbo")
+    pos, neg = texts
+    for tag in ("warm skin tone", "natural skin color", "dark lenses"):
+        check(f"bimbo сохранил «{tag}»", tag in pos, pos[:160])
+    check("bimbo негатив сохранил «white lenses»", "white lenses" in neg, neg[:160])
+
+    _, loras = capture_payload("07_photo_bimbo", weight=0.45)
+    check("bimbo: вес 0.6 -> 0.45", loras.get("style\\bimbofusion.safetensors") == 0.45, str(loras))
+    _, loras = capture_payload("08_photo_gta", weight=0.45)
+    check("GTA: вес 0.85 -> 0.45", loras.get("GTAV_IL_MIX.safetensors") == 0.45, str(loras))
+    _, loras = capture_payload("07_photo_thepit", weight=0.55)
+    check("thepit: вес 0.9 -> 0.55", loras.get("thepit2_1768210.safetensors") == 0.55, str(loras))
+    check("прочие LoRA остались на нуле",
+          all(v == 0 for k, v in loras.items() if k != "thepit2_1768210.safetensors"), str(loras))
+
+    legacy = TMP / "wf_legacy"
+    legacy.mkdir(parents=True, exist_ok=True)
+    data = json.loads((pp.WF_DIR / "07_photo_thepit.api.json").read_text(encoding="utf-8"))
+    data.pop("meta", None)
+    (legacy / "07_photo_thepit.api.json").write_text(json.dumps(data, ensure_ascii=False),
+                                                    encoding="utf-8")
+    texts, _ = capture_payload("07_photo_thepit", wf_dir=legacy)
+    check("граф без meta: промпт собран по STYLE_PREFIX",
+          texts[0].startswith("comic book illustration"), texts[0][:100])
+    check("граф без meta: негатив собран", "bad anatomy" in texts[1], texts[1][:100])
+
+    data["meta"] = dict(data.get("meta") or {}, style_lora="")
+    (legacy / "07_photo_thepit.api.json").write_text(json.dumps(data, ensure_ascii=False),
+                                                     encoding="utf-8")
+    code = None
+    try:
+        capture_payload("07_photo_thepit", weight=0.5, wf_dir=legacy)
+    except SystemExit as e:
+        code = e.code
+    check("--style-weight без опознанной LoRA -> отказ", code not in (0, None), str(code))
+
+
 def main():
     patch_roots()
     try:
@@ -445,6 +530,7 @@ def main():
         test_build_workflows_exit_codes()
         test_dry_run_does_not_touch_lm()
         test_unload_only_own_model()
+        test_style_from_graph()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

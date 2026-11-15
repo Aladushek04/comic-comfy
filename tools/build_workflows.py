@@ -222,6 +222,8 @@ WORKFLOWS["03_edit_qwen_fast"] = FAST
 # ---------------------------------------------------------------- 07: фото -> стиль
 WORKFLOWS["07_photo_thepit"] = {
     "title": "07 Фото в стиль · ThePit V2",
+    # Где в промпте стоит субъект: отсюда CLI собирает тот же текст, что и панель.
+    "style": {"sample": "adult woman, portrait"},
     "nodes": [
         {"id": 1, "type": "CheckpointLoaderSimple", "w": {"ckpt_name": SDXL}},
         {"id": 2, "type": "LoraLoaderModelOnly",
@@ -278,6 +280,9 @@ WORKFLOWS["07_photo_thepit"] = {
 # ---------------------------------------------------------------- 08: фото -> GTA постер
 WORKFLOWS["08_photo_gta"] = {
     "title": "08 Фото → арт GTA",
+    # У GTA в промпте нет субъекта: он вставляется после «saturated colors»,
+    # чтобы солнечный свет и палитра остались перед описанием человека.
+    "style": {"after": "saturated colors"},
     "nodes": [
         {"id": 1, "type": "CheckpointLoaderSimple", "w": {"ckpt_name": SDXL}},
         {"id": 2, "type": "LoraLoaderModelOnly",
@@ -575,6 +580,48 @@ def _auto_title(n, wv):
     return _TITLES.get(t)
 
 
+SUBJECT_SLOT = "{{subject}}"
+NEG_SIGNS = ("photo, photorealistic", "worst quality")
+
+
+def style_meta(spec, api):
+    """Стилевые настройки графа для CLI: шаблон промпта, негатив, стилевая LoRA.
+
+    Без этого photo_prompt.py переписывал оба промпта целиком и терял зашитое
+    в сборку: солнечный свет и ночной негатив у GTA, тёплую палитру у bimbo.
+    Шаблон выводится из самого промпта графа, поэтому расхождению взяться неоткуда.
+    """
+    if not spec.get("style"):
+        return None
+    texts = [n["inputs"].get("text", "") for n in api.values()
+             if n["class_type"] == "CLIPTextEncode"]
+    neg_i = next((i for i, t in enumerate(texts) if t.startswith(NEG_SIGNS)), None)
+    if neg_i is None or len(texts) < 2:
+        return None
+    pos_i = next(i for i in range(len(texts)) if i != neg_i)
+
+    sample = str(spec["style"].get("sample") or "")
+    after = str(spec["style"].get("after") or "")
+    if sample and sample in texts[pos_i]:
+        template = texts[pos_i].replace(sample, SUBJECT_SLOT, 1)
+    elif after and after in texts[pos_i]:
+        template = texts[pos_i].replace(after, after + ", " + SUBJECT_SLOT, 1)
+    else:
+        return None
+
+    loras = [(n["inputs"]["lora_name"], float(n["inputs"]["strength_model"]))
+             for n in api.values()
+             if n["class_type"] == "LoraLoaderModelOnly"
+             and float(n["inputs"]["strength_model"]) != 0]
+    unique = loras[0] if len(loras) == 1 else None
+    return {
+        "positive_template": template,
+        "negative": texts[neg_i],
+        "style_lora": unique[0] if unique else "",
+        "style_weight": unique[1] if unique else None,
+    }
+
+
 def build(name, spec):
     nodes = spec["nodes"]
     order = topo(nodes)
@@ -656,8 +703,12 @@ def build(name, spec):
 
     with open(OUT + "\\" + name + ".json", "w", encoding="utf-8") as f:
         json.dump(workflow, f, ensure_ascii=False, indent=2)
+    payload = {"prompt": api}
+    meta = style_meta(spec, api)
+    if meta:
+        payload["meta"] = meta
     with open(OUT + "\\" + name + ".api.json", "w", encoding="utf-8") as f:
-        json.dump({"prompt": api}, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
     return api
 
 
