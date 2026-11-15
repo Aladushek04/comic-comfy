@@ -16,6 +16,7 @@
 """
 import argparse
 import base64
+import hashlib
 import json
 import os
 import random
@@ -73,14 +74,93 @@ OUTPUT_DIR = Path(r"G:\Comfy-Desktop\ComfyUI-Shared\output\comic")
 INPUT_DIR = Path(r"G:\Comfy-Desktop\ComfyUI-Shared\input")
 
 
-def ensure_input(image_path):
-    """Кладёт фото в общую папку input и возвращает имя для LoadImage."""
+_FINGERPRINTS = {}
+
+
+def fingerprint(image_path):
+    """Отпечаток содержимого (12 hex). Имя файла ничего не гарантирует.
+
+    same.png из двух папок — разные фотографии с одним именем, поэтому ключом
+    должен быть хэш байтов, а не stem. Кэш по (mtime, size) экономит чтение:
+    при повторном вызове в одном прогоне файл уже посчитан.
+    """
     src = Path(image_path)
-    dst = INPUT_DIR / src.name
-    if not dst.exists() or dst.stat().st_mtime < src.stat().st_mtime:
+    st = src.stat()
+    key = (str(src.resolve()), st.st_mtime_ns, st.st_size)
+    if key not in _FINGERPRINTS:
+        h = hashlib.sha1()
+        with open(src, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                h.update(block)
+        _FINGERPRINTS[key] = h.hexdigest()[:12]
+    return _FINGERPRINTS[key]
+
+
+def image_tag(image_path):
+    """Читаемое и уникальное имя: <stem>_<хэш>."""
+    src = Path(image_path)
+    return f"{src.stem}_{fingerprint(src)}"
+
+
+def ensure_input(image_path):
+    """Кладёт фото в общую папку input и возвращает имя для LoadImage.
+
+    Имя включает отпечаток содержимого, поэтому два разных same.png больше не
+    делят один файл, и неважно, чей mtime новее: у разных фото разные имена.
+    Одинаковые байты дают одно имя и одну копию.
+    """
+    src = Path(image_path)
+    name = image_tag(src) + src.suffix.lower()
+    dst = INPUT_DIR / name
+    if not dst.exists() or dst.stat().st_size != src.stat().st_size:
         INPUT_DIR.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
-    return src.name
+    return name
+
+
+def scene_slug(scene):
+    if not scene:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "-", str(scene).lower()).strip("-")[:40].strip("-")
+
+
+def cache_path(image_path, scene=None):
+    """Кэш привязан к содержимому файла и к сцене.
+
+    Раньше ключом был stem: same.png и same.jpg попадали в один файл, а --scene
+    при попадании в кэш молча игнорировался. Теперь другая сцена — другой файл.
+    """
+    tag = image_tag(image_path)
+    slug = scene_slug(scene)
+    if slug:
+        tag += "__" + slug
+    return ROOT / "out" / (tag + ".prompt.json")
+
+
+def read_cache(image_path, scene=None):
+    """Описание с диска, если оно снято с этого же содержимого. Иначе None."""
+    p = cache_path(image_path, scene)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if data.get("sha1") and data["sha1"] != fingerprint(image_path):
+        return None
+    return data
+
+
+def write_cache(image_path, desc, scene=None):
+    """Пишет описание вместе с отпечатком и сценой — кэш сам себя проверяет."""
+    p = cache_path(image_path, scene)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    data = dict(desc)
+    data["sha1"] = fingerprint(image_path)
+    data["source"] = str(image_path)
+    data["scene"] = scene or ""
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return p
 
 
 def resolve_workflow(workflow, style):
@@ -270,7 +350,7 @@ def prep_image(image_path, max_side=1280):
             im.thumbnail((max_side, max_side))
             tmp = ROOT / "out" / "tmp"
             tmp.mkdir(parents=True, exist_ok=True)
-            dst = tmp / (Path(image_path).stem + f"_{max_side}.png")
+            dst = tmp / f"{image_tag(image_path)}_{max_side}.png"
             im.save(dst)
             print(f"   фото уменьшено до {im.size[0]}x{im.size[1]} (было больше {max_side})")
             return str(dst)
@@ -380,8 +460,8 @@ def preset_path(name):
 
 
 def save_run(image_path, workflow, desc, seed, denoise, name):
-    """Складывает кадр и его паспорт в папку out/<фото>/."""
-    folder = ROOT / "out" / Path(image_path).stem
+    """Складывает кадр и его паспорт в папку out/<фото>_<хэш>/."""
+    folder = ROOT / "out" / image_tag(image_path)
     folder.mkdir(parents=True, exist_ok=True)
     if name:
         src = OUTPUT_DIR / name
@@ -456,7 +536,7 @@ def generate(workflow, subject, negative_extra, denoise=None, seed=None, landsca
         for node in api.values():
             if node["class_type"] == "LoadImage":
                 node["inputs"]["image"] = image_name
-                print(f"   ????????: {image_name}")
+                print(f"   исходник: {image_name}")
     for node in api.values():
         if node["class_type"] == "LoraLoaderModelOnly" and style_weight is not None:
             if abs(float(node["inputs"].get("strength_model", 0)) - 0.9) < 1e-9:
@@ -531,17 +611,19 @@ def run_batch(args, workflow):
     model = pick_model(lm_models(), args.model) if need_llm else None
     descs = {}
     for i, f in enumerate(files, 1):
-        out = ROOT / "out" / (f.stem + ".prompt.json")
         print(f"\n=== [{i}/{len(files)}] {f.name}")
+        fresh = False
+        cached = read_cache(str(f), args.scene) if need_llm and not args.force else None
         if args.from_json:
             desc = json.loads(Path(args.from_json).read_text(encoding="utf-8"))
-        elif out.exists() and not args.force and need_llm:
-            desc = json.loads(out.read_text(encoding="utf-8"))
-            print("   из кэша")
+        elif cached:
+            desc = cached
+            print(f"   из кэша {cache_path(str(f), args.scene).name}")
         elif args.no_llm:
             desc = {"subject": args.subject or "", "negative_extra": "", "notes": "без LLM"}
         else:
             desc = describe(str(f), model)
+            fresh = True
             if args.scene:
                 new = rewrite_scene(desc, args.scene, model)
                 if new:
@@ -549,20 +631,22 @@ def run_batch(args, workflow):
         if args.scene and args.no_llm:
             desc["subject"] = (desc["subject"].rstrip(", ") + ", " + args.scene).strip(", ")
 
+        desc["subject"] = with_adult(desc.get("subject", ""))
+        if not desc["subject"]:
+            print("   пустое описание — пропускаю")
+            continue
+        # Кэш — до подмешивания ключей командной строки, иначе флаги прогона
+        # остаются в описании навсегда.
+        if fresh:
+            print("   сохранено:", write_cache(str(f), desc, args.scene).name)
+
         extra = [x.strip() for x in (desc.get("negative_extra") or "").split(",") if x.strip()]
         drop = [x.strip().lower() for x in args.negative_drop.split(",") if x.strip()]
         if drop:
             extra = [x for x in extra if x.lower() not in drop]
         extra += [x.strip() for x in args.negative_extra.split(",") if x.strip()]
         desc["negative_extra"] = ", ".join(dict.fromkeys(extra))
-        desc["subject"] = with_adult(desc.get("subject", ""))
-        if not desc["subject"]:
-            print("   пустое описание — пропускаю")
-            continue
         descs[f] = desc
-        if need_llm:
-            (ROOT / "out").mkdir(exist_ok=True)
-            out.write_text(json.dumps(desc, ensure_ascii=False, indent=2), encoding="utf-8")
         print("   subject:", desc["subject"][:110])
 
     if need_llm and not args.keep_llm:
@@ -628,7 +712,6 @@ def main():
     if a.generate and not a.dry_run:
         COMFY = resolve_comfy(a.comfy)
 
-    out = ROOT / "out" / (Path(a.image).stem + ".prompt.json")
     t_desc = t_unload = 0.0
     desc = None
     came_from_llm = False
@@ -642,37 +725,53 @@ def main():
     elif a.from_json:
         desc = json.loads(Path(a.from_json).read_text(encoding="utf-8"))
         print(f"0) описание из {a.from_json}")
-    elif out.exists() and not a.force and not a.no_llm:
-        desc = json.loads(out.read_text(encoding="utf-8"))
-        print(f"0) описание из кэша {out} (--force чтобы пересмотреть фото)")
     elif a.no_llm:
         if not a.subject:
             sys.exit("--no-llm требует --subject")
         desc = {"subject": a.subject, "negative_extra": "", "notes": "без LLM"}
     else:
-        models = lm_models()
-        model = pick_model(models, a.model)
-        print(f"1) смотрю фото моделью {model}")
-        t = time.time()
-        desc = describe(a.image, model)
-        t_desc = time.time() - t
-        came_from_llm = True
-        if a.scene:
-            print(f"   сцена: {a.scene}")
-            new = rewrite_scene(desc, a.scene, model)
-            if new:
-                new["negative_extra"] = ", ".join(
-                    dict.fromkeys([x.strip() for x in (desc.get("negative_extra") or "").split(",") if x.strip()]
-                                  + [x.strip() for x in (new.get("negative_extra") or "").split(",") if x.strip()]))
-                desc = new
-        if not a.keep_llm:
+        # Ключ кэша — содержимое файла и сцена, а не stem: same.png и same.jpg
+        # больше не делят описание, а --scene не теряется при попадании в кэш.
+        cached = None if a.force else read_cache(a.image, a.scene)
+        if cached:
+            desc = cached
+            print(f"0) описание из кэша {cache_path(a.image, a.scene).name} "
+                  f"(--force чтобы пересмотреть фото)")
+        else:
+            legacy = ROOT / "out" / (Path(a.image).stem + ".prompt.json")
+            if legacy.exists():
+                print(f"   старый кэш {legacy.name} не беру: в нём нет отпечатка файла")
+            models = lm_models()
+            model = pick_model(models, a.model)
+            print(f"1) смотрю фото моделью {model}")
             t = time.time()
-            freed = unload_all(lm_models())
-            t_unload = time.time() - t
-            print(f"2) выгружено: {', '.join(freed) if freed else 'нечего'} ({t_unload:.1f} с)")
+            desc = describe(a.image, model)
+            t_desc = time.time() - t
+            came_from_llm = True
+            if a.scene:
+                print(f"   сцена: {a.scene}")
+                new = rewrite_scene(desc, a.scene, model)
+                if new:
+                    new["negative_extra"] = ", ".join(
+                        dict.fromkeys([x.strip() for x in (desc.get("negative_extra") or "").split(",") if x.strip()]
+                                      + [x.strip() for x in (new.get("negative_extra") or "").split(",") if x.strip()]))
+                    desc = new
+            if not a.keep_llm:
+                t = time.time()
+                freed = unload_all(lm_models())
+                t_unload = time.time() - t
+                print(f"2) выгружено: {', '.join(freed) if freed else 'нечего'} ({t_unload:.1f} с)")
 
     if a.scene and a.no_llm:
         desc["subject"] = (desc["subject"].rstrip(", ") + ", " + a.scene).strip(", ")
+
+    # Кэш пишем до подмешивания ключей командной строки: иначе --negative-extra
+    # остаётся в описании навсегда и всплывает в следующем прогоне без флага.
+    desc["subject"] = with_adult(desc.get("subject", ""))
+    if came_from_llm and not a.dry_run and desc["subject"].strip():
+        print("   сохранено:", write_cache(a.image, desc, a.scene))
+    elif not a.dry_run:
+        print("   кэш не тронут")
 
     extra = [x.strip() for x in (desc.get("negative_extra") or "").split(",") if x.strip()]
     drop = [x.strip().lower() for x in a.negative_drop.split(",") if x.strip()]
@@ -680,7 +779,6 @@ def main():
         extra = [x for x in extra if x.lower() not in drop]
     extra += [x.strip() for x in a.negative_extra.split(",") if x.strip()]
     desc["negative_extra"] = ", ".join(dict.fromkeys(extra))
-    desc["subject"] = with_adult(desc.get("subject", ""))
 
     print("   subject:", desc["subject"] or "(пусто)")
     if desc.get("negative_extra"):
@@ -694,13 +792,6 @@ def main():
 
     if not desc["subject"].strip():
         sys.exit("описание не получилось — генерацию не запускаю. Проверь заметку выше.")
-
-    if came_from_llm and not a.dry_run:
-        (ROOT / "out").mkdir(exist_ok=True)
-        out.write_text(json.dumps(desc, ensure_ascii=False, indent=2), encoding="utf-8")
-        print("   сохранено:", out)
-    else:
-        print("   кэш не тронут")
 
     if a.save_preset:
         preset_path(a.save_preset).parent.mkdir(parents=True, exist_ok=True)

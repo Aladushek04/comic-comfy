@@ -404,7 +404,7 @@ WORKFLOWS["05_style_return"] = {
 
 # ---------------------------------------------------------------- 06: noct qwen 2.1
 WORKFLOWS["06_scene_noct"] = {
-    "title": "06 ????? ? Noct Q Anime",
+    "title": "06 Ночь — Noct Q Anime",
     "nodes": [
         {"id": 1, "type": "UNETLoader", "w": {"unet_name": NOCT, "weight_dtype": "default"}},
         {"id": 2, "type": "CLIPLoader", "w": {"clip_name": NOCT_TE, "type": "qwen_image", "device": "default"}},
