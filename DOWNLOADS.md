@@ -11,9 +11,11 @@
 3. `base_path` из `extra_model_paths.yaml` — этот файл всё равно правят при установке,
    чтобы ComfyUI видел общие модели.
 
-Дальше `photo_prompt.py` считает `input` и `output` соседями `models` (`ComfyUI-Shared\input`,
-`ComfyUI-Shared\output`); если у тебя иначе — задай `COMFY_INPUT` и `COMFY_OUTPUT`.
-Адрес ComfyUI — `COMFY_URL` (по умолчанию `http://127.0.0.1:8199`).
+Дальше `photo_prompt.py` берёт `input` и `output` отдельно от `models`: явные `COMFY_INPUT`
+и `COMFY_OUTPUT`, затем `COMFY_SHARED` + подпапка, затем `comic_paths.json` в корне проекта
+(образец — `comic_paths.example.json`), и только потом соседи `models` (`ComfyUI-Shared\input`,
+`ComfyUI-Shared\output`). Файл нужен, когда модели лежат на другом диске, а кадры остаются
+рядом с ComfyUI. Адрес ComfyUI — `COMFY_URL` (по умолчанию `http://127.0.0.1:8199`).
 
 Раскладка, которую ждут графы:
 

@@ -1,5 +1,5 @@
 comic_shared:
-  base_path: G:\Comfy-Desktop\ComfyUI-Shared\models
+  base_path: E:\ComfyUI-Shared\models
   checkpoints: checkpoints
   loras: loras
   controlnet: controlnet

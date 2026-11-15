@@ -441,6 +441,10 @@ def pick_model(resp, wanted):
     ms = model_list(resp)
     if wanted:
         return wanted
+    keys = {str(m.get("key", "")) for m in ms}
+    pinned = getattr(settings, "LM_MODEL", "")
+    if pinned and pinned in keys:
+        return pinned
     vision = [m for m in ms if m.get("capabilities", {}).get("vision")
               and "@?" not in str(m.get("key", ""))]
     # Предпочтение: свежая Qwen3.8 (быстрее и точнее в негативе), затем любая загруженная.

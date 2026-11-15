@@ -6,6 +6,8 @@ run.err.log
 web.out.log
 web.err.log
 .playwright-mcp/
+.superpowers/
+*.lock
 
 # регенерируется генератором
 *.api.json
@@ -17,6 +19,7 @@ __pycache__/
 
 # локальный запуск headless ComfyUI: машинные пути, в git не попадает
 comfy_launch.json
+comic_paths.json
 
 # секреты
 token

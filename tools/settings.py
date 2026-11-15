@@ -7,9 +7,16 @@
      чтобы ComfyUI видел общие модели;
   3. раскладка рядом с репозиторием (ROOT\\models, ROOT\\input, ROOT\\output).
 
-Общая папка ComfyUI-Shared — родитель models; input/output лежат рядом с models.
-Так устроена установка Desktop, и CLI обязан смотреть туда же, куда пишет ComfyUI.
+В установке Desktop input/output лежат рядом с models — это последний запасной вариант,
+а не правило: CLI обязан смотреть туда же, куда пишет ComfyUI.
+
+Модели могут переехать на другой диск, а input/output остаться рядом с ComfyUI.
+Поэтому input/output ищутся отдельно: явный COMFY_INPUT/COMFY_OUTPUT, затем
+COMFY_SHARED + подпапка, затем `comic_paths.json` в корне проекта (локальный,
+в git не попадает; образец — comic_paths.example.json), затем подпапка рядом
+с каталогом моделей. Явные env сильнее файла, файл сильнее вывода из base_path.
 """
+import json
 import os
 import re
 import sys
@@ -47,10 +54,28 @@ def read_yaml_base_path(yaml_path):
     return None
 
 
-def resolve(env=None, yaml_path=None):
+def read_paths(path):
+    """input/output и закреплённая модель из локального comic_paths.json.
+
+    Битый или нечитаемый файл считается отсутствующим: настройки импортируются
+    всеми точками входа, и падать из-за опечатки в одном локальном файле нельзя.
+    """
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {key: str(data[key]) for key in ("input", "output", "lm_model")
+            if isinstance(data.get(key), str) and data[key].strip()}
+
+
+def resolve(env=None, yaml_path=None, paths_path=None):
     """Все пути разом. env — словарь (для проверок), yaml_path — подменить файл."""
     env = os.environ if env is None else env
     yaml_path = YAML if yaml_path is None else yaml_path
+    root = Path(env.get("COMIC_ROOT") or ROOT)
+    paths_path = root / "comic_paths.json" if paths_path is None else Path(paths_path)
 
     models = env.get("COMFY_MODELS")
     if models:
@@ -60,13 +85,25 @@ def resolve(env=None, yaml_path=None):
 
     shared = env.get("COMFY_SHARED")
     shared_dir = Path(shared) if shared else models_dir.parent
+    cfg = read_paths(paths_path)
+
+    def pick(env_key, field, folder):
+        """input/output независимо от models: env -> COMFY_SHARED -> файл -> рядом с models."""
+        if env.get(env_key):
+            return Path(env[env_key])
+        if shared:
+            return shared_dir / folder
+        if cfg.get(field):
+            return Path(cfg[field])
+        return shared_dir / folder
 
     return {
-        "root": Path(env.get("COMIC_ROOT") or ROOT),
+        "root": root,
         "models": models_dir,
         "shared": shared_dir,
-        "input": Path(env.get("COMFY_INPUT") or shared_dir / "input"),
-        "output": Path(env.get("COMFY_OUTPUT") or shared_dir / "output"),
+        "input": pick("COMFY_INPUT", "input", "input"),
+        "output": pick("COMFY_OUTPUT", "output", "output"),
+        "lm_model": env.get("LM_MODEL") or cfg.get("lm_model") or "",
         "url": env.get("COMFY_URL") or "http://127.0.0.1:8199",
     }
 
@@ -81,3 +118,4 @@ OUTPUT_ROOT = _PATH["output"]
 OUTPUT_DIR = OUTPUT_ROOT / "comic"
 WF_DIR = ROOT / "workflows"
 COMFY_URL = _PATH["url"]
+LM_MODEL = _PATH["lm_model"]

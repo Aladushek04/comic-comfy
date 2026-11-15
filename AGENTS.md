@@ -11,10 +11,26 @@
   `COMFY_SHARED`, `COMFY_INPUT`, `COMFY_OUTPUT`, `COMFY_URL`, иначе из `base_path`
   в `extra_model_paths.yaml`, иначе из раскладки рядом с репозиторием. Скрипты должны
   работать на чужой машине без правок кода — только через env или yaml.
+  `comic_paths.json` в корне (образец — `comic_paths.example.json`, сам файл в git не
+  попадает) задаёт `input`/`output` отдельно от каталога моделей: модели могут уехать на
+  другой диск, а кадры остаться рядом с ComfyUI. Явные `COMFY_*` сильнее файла.
+  Там же `lm_model` — ключ модели описания по умолчанию (env `LM_MODEL` сильнее);
+  пусто — автоподбор vision-модели, где qwen3.8 предпочтительнее.
   `LM_URL` (по умолчанию `http://127.0.0.1:1234`) задаёт адрес LM Studio — нужен для
   нестандартного порта и для проверок с заглушками.
   Явно заданный адрес ComfyUI (`--comfy` или `COMFY_URL`) не подменяется локальным: не
   ответил — отказ, а не тихий переход на 8199/8188 (там другие модели и папка вывода).
+- **У Desktop своя настройка моделей.** `%APPDATA%\Comfy Desktop\settings.json` (`modelsDirs`,
+  `inputDir`, `outputDir`) — из него Desktop генерирует `instance-model-paths\inst-*.yaml`
+  (править этот файл бессмысленно, он перезаписывается) и передаёт ComfyUI свои
+  `--extra-model-paths-config`, `--input-directory`, `--output-directory`. `extra_model_paths.yaml`
+  в корне проекта получает только headless (`comfy_launch.plan()`). Перенос моделей — это две
+  правки, а не одна. И `settings.py` выводит input/output как `models_dir.parent`: смена одного
+  `base_path` уводит CLI на новый диск, оставляя Desktop на старом; лечится `COMFY_SHARED`
+  или явными `COMFY_INPUT`/`COMFY_OUTPUT`.
+  При запуске Desktop сам перегенерирует `inst-*.yaml` из `modelsDirs` (в `app.asar` это
+  `syncCustomModelFolders` → `ensureModelPathsConfig`), поэтому правки `settings.json` при
+  закрытом приложении достаточно; после старта всё равно проверить `base_path` в YAML.
 - Воркфлоу: `G:\AI\comic-comfy\workflows` — источник правды; копия для панели ComfyUI:
   `...\ComfyUI\user\default\workflows`. Что открывать в какой ситуации — `G:\AI\comic-comfy\INDEX.md`.
   Четырнадцать сборок, схема имени `номер_назначение_стиль`: 01_scene_{thepit,comic,jp}, 02_edit_mask,

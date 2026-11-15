@@ -553,11 +553,40 @@ def test_portable_paths():
 
     yaml = TMP / "extra_model_paths.yaml"
     yaml.write_text("comic_shared:\n  base_path: Q:\\models\n", encoding="utf-8")
-    got = st.resolve(env={}, yaml_path=yaml)
+    no_paths = TMP / "нет-путей.json"
+    got = st.resolve(env={}, yaml_path=yaml, paths_path=no_paths)
     check("base_path читается из yaml", str(got["models"]) == "Q:\\models", str(got["models"]))
-    check("input/output рядом с models",
+    check("без comic_paths.json input/output рядом с models",
           got["input"] == got["models"].parent / "input"
           and got["output"] == got["models"].parent / "output", str(got))
+
+    paths = TMP / "comic_paths.json"
+    paths.write_text(json.dumps({"input": "R:\\in", "output": "R:\\out",
+                                 "lm_model": "pinned@iq3_m"}), encoding="utf-8")
+    got = st.resolve(env={}, yaml_path=yaml, paths_path=paths)
+    check("comic_paths.json задаёт input/output отдельно от models",
+          str(got["input"]) == "R:\\in" and str(got["output"]) == "R:\\out",
+          f'{got["input"]} / {got["output"]}')
+    check("comic_paths.json не меняет models", str(got["models"]) == "Q:\\models", str(got["models"]))
+    check("comic_paths.json задаёт модель описания", got["lm_model"] == "pinned@iq3_m",
+          str(got.get("lm_model")))
+    got = st.resolve(env={"LM_MODEL": "env@q8"}, yaml_path=yaml, paths_path=paths)
+    check("LM_MODEL важнее файла", got["lm_model"] == "env@q8", str(got.get("lm_model")))
+    got = st.resolve(env={"COMFY_INPUT": str(TMP / "env_in")}, yaml_path=yaml, paths_path=paths)
+    check("COMFY_INPUT важнее comic_paths.json", got["input"] == TMP / "env_in", str(got["input"]))
+    got = st.resolve(env={"COMFY_SHARED": str(TMP / "shared")}, yaml_path=yaml, paths_path=paths)
+    check("COMFY_SHARED важнее comic_paths.json",
+          got["input"] == TMP / "shared" / "input"
+          and got["output"] == TMP / "shared" / "output", str(got["input"]))
+    bad = TMP / "битый-пути.json"
+    bad.write_text("{", encoding="utf-8")
+    got = st.resolve(env={}, yaml_path=yaml, paths_path=bad)
+    check("битый comic_paths.json — как отсутствующий",
+          got["input"] == got["models"].parent / "input", str(got["input"]))
+    got = st.resolve(env={}, yaml_path=yaml, paths_path=no_paths)
+    check("без comic_paths.json модель не задана", got["lm_model"] == "",
+          str(got.get("lm_model")))
+
     got = st.resolve(env={"COMFY_MODELS": str(TMP / "m")}, yaml_path=yaml)
     check("env важнее yaml", got["models"] == TMP / "m", str(got["models"]))
     got = st.resolve(env={}, yaml_path=TMP / "нет-такого.yaml")
@@ -1271,6 +1300,28 @@ def test_style_prompts_consistent():
           any("0.85–0.9" in d and "смена места" in d for d in descs), str(descs)[:240])
 
 
+def test_default_model():
+    print("\n29) модель описания по умолчанию закрепляется локально")
+    resp = {"models": [
+        {"key": "gemma@q4", "capabilities": {"vision": True}},
+        {"key": "qwen3.8-x@iq3_m", "capabilities": {"vision": True}},
+        {"key": "text-only", "capabilities": {}},
+    ]}
+    saved = st.LM_MODEL
+    try:
+        st.LM_MODEL = "qwen3.8-x@iq3_m"
+        check("закреплённая модель важнее порядка списка",
+              pp.pick_model(resp, None) == "qwen3.8-x@iq3_m", pp.pick_model(resp, None))
+        st.LM_MODEL = "нет-на-диске@iq4"
+        check("недоступная закреплённая — откат к vision",
+              pp.pick_model(resp, None) == "qwen3.8-x@iq3_m", pp.pick_model(resp, None))
+        st.LM_MODEL = "qwen3.8-x@iq3_m"
+        check("явный выбор сильнее закрепления",
+              pp.pick_model(resp, "gemma@q4") == "gemma@q4")
+    finally:
+        st.LM_MODEL = saved
+
+
 def main():
     patch_roots()
     try:
@@ -1301,6 +1352,7 @@ def main():
         test_utf8_streams()
         test_passport_not_lost()
         test_style_prompts_consistent()
+        test_default_model()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

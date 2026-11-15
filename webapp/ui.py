@@ -15,6 +15,7 @@ from pathlib import Path
 import comfy_launch as cl
 import jobs
 import photo_prompt as pp
+import settings
 from nicegui import app, ui
 from starlette.responses import FileResponse, Response
 
@@ -489,9 +490,11 @@ class ComicPage:
 
         ui.label("Описание").classes("text-xs uppercase opacity-60 mt-1")
         with ui.row().classes("w-full gap-3 flex-wrap items-end"):
+            models = self.state.get("lm_models") or []
+            pinned = settings.LM_MODEL if settings.LM_MODEL in models else None
             self.w["model"] = ui.select(
-                self.state.get("lm_models") or [],
-                label="Модель описания (пусто — первая vision)",
+                models, value=pinned,
+                label="Модель описания (пусто — по умолчанию)",
                 with_input=True, new_value_mode="add-unique", clearable=True).props(
                 "outlined dense").classes("grow min-w-64")
             self.w["recheck"] = ui.checkbox("Recheck: проверить кадр моделью")
