@@ -9,6 +9,7 @@
 а перезагрузка возвращает ту же.
 """
 import asyncio
+import os
 import uuid
 from pathlib import Path
 
@@ -63,6 +64,47 @@ STAGE_LABEL = {
 
 ROLE_LABEL = {"style": "стиль", "body": "тело", "character": "персонаж",
               "hands": "кисти", "lora": "LoRA"}
+
+# Тема — состояние интерфейса, а не задания: файл рядом с кадрами, но не внутри
+# папки фото. env COMIC_THEME_FILE нужен проверкам, чтобы не переписывать выбор.
+THEME_FILE = Path(os.environ.get("COMIC_THEME_FILE") or pp.ROOT / "out" / "theme.json")
+
+# Цвета подписей: в светлой теме исходные, в тёмной — светлее, иначе на #121212
+# красный и оранжевый уходят в грязь. Рамки превью держим теми же переменными:
+# Tailwind `border` без цвета на тёмной странице почти не виден.
+THEME_CSS = """
+<style>
+  .comic-error { color: #dc2626; }
+  .comic-warn { color: #ea580c; }
+  .comic-frame { border: 1px solid rgba(0, 0, 0, .12); }
+  body.body--dark .comic-error { color: #f87171; }
+  body.body--dark .comic-warn { color: #fbbf24; }
+  body.body--dark .comic-frame { border-color: rgba(255, 255, 255, .24); }
+</style>
+"""
+
+
+def read_theme():
+    """Сохранённый выбор: True — тёмная, False — светлая.
+
+    По умолчанию тёмная: файла нет или он битый — это не повод показывать
+    светлую страницу тому, кто просил тёмную.
+    """
+    try:
+        data = pp.read_json(THEME_FILE)
+    except (OSError, ValueError):
+        return True
+    if not isinstance(data, dict) or not isinstance(data.get("dark"), bool):
+        return True
+    return data["dark"]
+
+
+def save_theme(dark):
+    """Тема переживает перезапуск сервера, поэтому пишется на диск."""
+    try:
+        pp.write_json(THEME_FILE, {"dark": bool(dark)})
+    except OSError as e:
+        ui.notify(f"тему не удалось сохранить: {e}", type="warning")
 
 
 def service():
@@ -225,6 +267,8 @@ class ComicPage:
     # ------------------------------------------------------------ страница
     def build(self):
         ui.page_title("comic-comfy")
+        ui.add_head_html(THEME_CSS)
+        self.dark = ui.dark_mode(read_theme())
         with ui.column().classes("w-full max-w-[1440px] mx-auto gap-3 p-3 md:p-4"):
             self.header()
             if not self.usable:
@@ -233,7 +277,7 @@ class ComicPage:
             for s in self.styles:
                 if s["problems"]:
                     ui.label(f"{s['workflow']}: " + "; ".join(s["problems"])).classes(
-                        "text-xs text-red-600")
+                        "text-xs comic-error")
             with ui.row().classes("w-full items-start gap-4 flex-wrap lg:flex-nowrap"):
                 with ui.column().classes(
                         "w-full lg:w-[420px] shrink-0 gap-3 min-w-0 order-2 lg:order-1"):
@@ -261,7 +305,27 @@ class ComicPage:
                 self.w["lm_badge"] = ui.badge("LM Studio: проверяю", color="grey")
                 ui.button("Проверить сервисы", on_click=self.refresh_health).props(
                     "flat dense no-caps")
-        self.w["comfy_note"] = ui.label("").classes("text-xs text-orange-600")
+                self.w["theme_button"] = ui.button(
+                    icon="light_mode", on_click=self.toggle_theme,
+                ).props('flat dense round aria-label="Включить светлую тему"').classes(
+                    "comic-theme")
+                with self.w["theme_button"]:
+                    self.w["theme_tip"] = ui.tooltip("Светлая тема")
+        self.w["comfy_note"] = ui.label("").classes("text-xs comic-warn")
+        self.update_theme_button()
+
+    def toggle_theme(self):
+        """Тёмная тема по умолчанию, светлая — такой же выбор; помним оба."""
+        self.dark.toggle()
+        save_theme(self.dark.value)
+        self.update_theme_button()
+
+    def update_theme_button(self):
+        dark = bool(self.dark.value)
+        action = "Включить светлую тему" if dark else "Включить тёмную тему"
+        self.w["theme_button"].props(
+            f'icon={"light_mode" if dark else "dark_mode"} aria-label="{action}"')
+        self.w["theme_tip"].set_text("Светлая тема" if dark else "Тёмная тема")
 
     def no_graphs(self):
         with ui.card().classes("w-full"):
@@ -270,7 +334,7 @@ class ComicPage:
                      "страницу.").classes("text-sm opacity-70")
             for s in self.styles:
                 ui.label(f"{s['workflow']}: " + "; ".join(s["problems"])).classes(
-                    "text-xs text-red-600")
+                    "text-xs comic-error")
 
     # ------------------------------------------------------------ левая часть
     def upload_card(self):
@@ -283,7 +347,7 @@ class ComicPage:
             with ui.column().classes("w-full gap-2") as box:
                 self.w["preview_box"] = box
                 with ui.element("div").classes(
-                        "w-full flex items-center justify-center rounded border").style(
+                        "comic-frame w-full flex items-center justify-center rounded").style(
                         "height:42vh"):
                     self.w["preview"] = ui.image().classes("w-full h-full object-contain")
                 with ui.row().classes("items-center gap-2"):
@@ -390,7 +454,7 @@ class ComicPage:
             self.w["progress"] = ui.linear_progress(value=0).props("instant-feedback")
             self.w["progress"].set_visibility(False)
             self.w["queue"] = ui.label("").classes("text-xs opacity-70")
-            self.w["error"] = ui.label("").classes("text-red-600 text-sm whitespace-pre-wrap")
+            self.w["error"] = ui.label("").classes("comic-error text-sm whitespace-pre-wrap")
 
     def result_card(self):
         with ui.card().classes("w-full"):
@@ -479,7 +543,7 @@ class ComicPage:
         self._combos = []
         meta = self.meta()
         if meta is None:
-            ui.label("Сборка не готова: пересоберите графы.").classes("text-sm text-red-600")
+            ui.label("Сборка не готова: пересоберите графы.").classes("text-sm comic-error")
             return
         fields = meta.get("fields") or {}
         info = self.state.get("info")
@@ -556,7 +620,7 @@ class ComicPage:
                  f"denoise {graph['denoise']} · CN {graph['cn_strength']}").classes(
             "text-xs opacity-60 mt-1")
         self.w["models_note"] = ui.label(self.models_note()).classes(
-            "text-xs text-orange-600")
+            "text-xs comic-warn")
         ui.label("Модель описания (LM Studio) и чекпойнт генерации (ComfyUI) — "
                  "разные настройки: первая смотрит фото, второй рисует.").classes(
             "text-xs opacity-50")
@@ -740,7 +804,7 @@ class ComicPage:
                     "text-sm opacity-50 py-8 text-center w-full")
                 if snap.get("error"):
                     ui.label(short(snap["error"], 400)).classes(
-                        "text-red-600 text-sm whitespace-pre-wrap")
+                        "comic-error text-sm whitespace-pre-wrap")
                 return
             selected = min(self.state.get("selected") or 0, len(frames) - 1)
             frame = frames[selected]
@@ -754,7 +818,7 @@ class ComicPage:
                          f"{fmt_setting(frame.get('style_weight'))} · denoise "
                          f"{fmt_setting(frame.get('denoise'))}").classes("text-xs opacity-70")
             with ui.element("div").classes(
-                    "w-full flex items-center justify-center rounded border").style(
+                    "comic-frame w-full flex items-center justify-center rounded").style(
                     "height:62vh"):
                 ui.image(url).classes("w-full h-full object-contain")
             with ui.row().classes("gap-3 items-center flex-wrap"):
@@ -792,7 +856,7 @@ class ComicPage:
                 with ui.expansion("Промпт этого кадра", icon="notes").classes("w-full"):
                     ui.label(frame["subject"]).classes("text-xs whitespace-pre-wrap")
                     ui.label("Точный промпт не записан: кадр старой версии.").classes(
-                        "text-xs text-orange-600 mt-1")
+                        "text-xs comic-warn mt-1")
             overrides = snap["request"].get("overrides") or {}
             parts = [f"{key}={value}" for key, value in
                      (overrides.get("fields") or {}).items()]
@@ -807,7 +871,7 @@ class ComicPage:
             if snap.get("error"):
                 tone = "Частично: " if frames else "Ошибка: "
                 ui.label(tone + short(snap["error"], 400)).classes(
-                    "text-red-600 text-sm whitespace-pre-wrap")
+                    "comic-error text-sm whitespace-pre-wrap")
 
     def select_frame(self, index):
         self.state["selected"] = index
@@ -934,4 +998,4 @@ def start(host="127.0.0.1", port=8080, show=True, reload=False):
     register_routes()
     register_page()
     ui.run(host=host, port=port, title="comic-comfy", show=show, reload=reload,
-           uvicorn_logging_level="warning", language="ru")
+           dark=True, uvicorn_logging_level="warning", language="ru")

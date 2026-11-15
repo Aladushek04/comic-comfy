@@ -91,6 +91,7 @@ def start_app(lm, comfy, port, log):
         "LM_URL": lm.url,
         "COMFY_OUTPUT": str(TMP / "output"),
         "COMFY_INPUT": str(TMP / "input"),
+        "COMIC_THEME_FILE": str(TMP / "theme.json"),
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1",
     })
@@ -213,6 +214,33 @@ def main():
                   len(size) == 2 and size[1]["x"] > size[0]["x"] + size[0]["w"] - 5
                   and size[1]["w"] > size[0]["w"], str(size))
             page.screenshot(path=str(shots / "after-empty.png"), full_page=True)
+
+            print("\n1б) тёмная тема и переключатель")
+            card_bg = page.evaluate(
+                "() => getComputedStyle(document.querySelector('.q-card')).backgroundColor")
+            check("тёмная тема по умолчанию: страница, карточки",
+                  page.evaluate(
+                      "() => document.body.classList.contains('body--dark')") is True
+                  and card_bg == "rgb(29, 29, 29)", card_bg)
+            page.locator(".comic-theme").click()
+            page.wait_for_function(
+                "() => !document.body.classList.contains('body--dark')", timeout=10000)
+            light_bg = page.evaluate(
+                "() => getComputedStyle(document.querySelector('.q-card')).backgroundColor")
+            check("переключатель даёт светлую тему", light_bg == "rgb(255, 255, 255)",
+                  light_bg)
+            page.reload()
+            wait_text(page, "Задание не запущено")
+            page.wait_for_timeout(500)
+            check("выбор темы пережил перезагрузку",
+                  page.evaluate(
+                      "() => document.body.classList.contains('body--dark')") is False)
+            page.locator(".comic-theme").click()
+            page.wait_for_function(
+                "() => document.body.classList.contains('body--dark')", timeout=10000)
+            check("переключатель возвращает тёмную тему",
+                  page.evaluate(
+                      "() => document.body.classList.contains('body--dark')") is True)
 
             print("\n2) расширенные настройки внутри панели")
             page.get_by_role("button", name="Расширенные настройки").first.click()

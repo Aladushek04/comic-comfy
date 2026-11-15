@@ -53,6 +53,11 @@
   `requirements-web-dev.txt`). Ctrl+C в `run.py` — штатная остановка без трейсбека;
   вопрос cmd «Terminate batch job?» — это cmd, сервер уже остановлен.
   **Своё окружение `.venv-web`**: NiceGUI не ставится в venv ComfyUI.
+  Тема: тёмная по умолчанию (`ui.run(dark=True)` плюс `ui.dark_mode` на странице), переключатель —
+  кнопка в шапке, выбор лежит в `out\theme.json` (env `COMIC_THEME_FILE`, им пользуются проверки).
+  Тёмную страницу делает `Quasar.Dark.set` через `ui.dark_mode`: если просто навесить класс
+  `body--dark`, карточки останутся белыми. Красный и оранжевый в тёмной теме — классы
+  `.comic-error` / `.comic-warn`, иначе `text-red-600` на #121212 уходит в грязь.
 - Headless ComfyUI: `tools\comfy_launch.py`, локальный `comfy_launch.json` (образец —
   `comfy_launch.example.json`), env `COMFY_MAIN` / `COMFY_PYTHON` / `COMFY_STOP_AFTER`.
 
@@ -237,7 +242,7 @@ ComfyUI не трогает. Без готового описания (кэш, `
    фактический positive/negative кадра пишутся в `run.json` и в карточку кадра
    (`generate(..., report=...)`); по `subject` их не восстановить — шаблон стиля,
    переопределения и негатив собираются в графе.
-   Проверка: `python tools\test_web_app.py` (176) и `python tools\test_web_ui.py` (31).
+   Проверка: `python tools\test_web_app.py` (176) и `python tools\test_web_ui.py` (35).
 
 0.15. **Обрывы и мусор: четыре правила, которые нельзя терять.**
    Первое: задания и черновики загрузок живут по сроку — `JobService.purge()` снимает
@@ -368,8 +373,8 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 - `python tools\test_photo_prompt.py` — 208 проверок CLI и пайплайна (модели не нужны).
 - `python tools\test_web_app.py` — 176 проверок заданий, очереди и веб-слоя на HTTP-заглушках
   (LM Studio и ComfyUI подменяются, GPU не нужен).
-- `python tools\test_web_ui.py` — 31 браузерная проверка Chromium на тех же заглушках:
-  раскладка, расширенная панель, сохранение ввода после health-check, замена фото, второй кадр
+- `python tools\test_web_ui.py` — 35 браузерных проверок Chromium на тех же заглушках:
+  раскладка, тёмная тема и её переключение, расширенная панель, сохранение ввода после health-check, замена фото, второй кадр
   Recheck, две вкладки, потеря связи браузера, отказ WebSocket ComfyUI, промпт формы,
   истёкшая история задания.
 - Переменные кодировки не нужны: `settings.utf8_streams()` в точках входа ставит UTF-8 сам,
