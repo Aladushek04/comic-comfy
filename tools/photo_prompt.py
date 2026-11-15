@@ -784,8 +784,10 @@ def run_batch(args, workflow):
     skipped = []
     for i, f in enumerate(files, 1):
         print(f"\n=== [{i}/{len(files)}] {f.name}")
-        fresh = False
+        fresh = False        # описание для этой сцены готово сейчас и его можно кэшировать
         cached = read_cache(str(f), args.scene) if need_llm and not args.force else None
+        base_desc = (read_cache(str(f))
+                     if need_llm and not args.force and args.scene and not cached else None)
         if args.from_json:
             desc = json.loads(Path(args.from_json).read_text(encoding="utf-8"))
         elif cached:
@@ -797,16 +799,33 @@ def run_batch(args, workflow):
             print("   в кэше нет описания, а --dry-run модель не грузит — пропускаю")
             skipped.append(f.name)
             continue
+        elif base_desc:
+            print("   фото уже описано — переписываю только сцену")
+            desc = base_desc
         else:
             if model is None:
                 model = pick_model(lm_models(), args.model)
             desc = describe(str(f), model)
             described += 1
             fresh = True
-            if args.scene:
-                new = rewrite_scene(desc, args.scene, model)
-                if new:
-                    desc = new
+
+        if args.scene and need_llm:
+            if model is None:
+                model = pick_model(lm_models(), args.model)
+            print(f"   сцена: {args.scene}")
+            new = rewrite_scene(desc, args.scene, model)
+            described += 1
+            if not new:
+                # Не пишем исходный текст под ключом сцены: иначе следующий запуск
+                # возьмёт его из кэша и сцену уже не попробует.
+                print("   сцену применить не удалось — пропускаю файл")
+                if fresh:
+                    print("   описание фото сохранено без сцены:",
+                          write_cache(str(f), desc, None).name)
+                skipped.append(f.name)
+                continue
+            desc = new
+            fresh = True
         if args.scene and args.no_llm:
             desc["subject"] = (desc["subject"].rstrip(", ") + ", " + args.scene).strip(", ")
 
@@ -844,7 +863,9 @@ def run_batch(args, workflow):
             return 1
         return 0
     if not descs:
-        print("\nни одного описания — генерировать нечего")
+        print(f"\nкадров: 0, провалов: {len(skipped)}"
+              + (f", без описания: {len(skipped)} ({', '.join(skipped)})" if skipped else "")
+              + " — генерировать нечего")
         return 1
 
     COMFY = resolve_comfy(args.comfy)
@@ -922,6 +943,7 @@ def main():
     t_desc = t_unload = 0.0
     desc = None
     came_from_llm = False
+    scene_failed = False
 
     if a.preset:
         p = preset_path(a.preset)
@@ -940,6 +962,9 @@ def main():
         # Ключ кэша — содержимое файла и сцена, а не stem: same.png и same.jpg
         # больше не делят описание, а --scene не теряется при попадании в кэш.
         cached = None if a.force else read_cache(a.image, a.scene)
+        # Фото уже описано для другой сцены: сцену можно переписать без повторного
+        # просмотра фото (экономит проход VLM).
+        base_desc = None if (a.force or not a.scene) else read_cache(a.image)
         if cached:
             desc = cached
             print(f"0) описание из кэша {cache_path(a.image, a.scene).name} "
@@ -960,11 +985,15 @@ def main():
             legacy_cache_hint(a.image)
             models = lm_models()
             model = pick_model(models, a.model)
-            print(f"1) смотрю фото моделью {model}")
-            t = time.time()
-            desc = describe(a.image, model)
-            t_desc = time.time() - t
-            came_from_llm = True
+            if base_desc:
+                print("1) фото уже описано — переписываю только сцену")
+                desc = base_desc
+            else:
+                print(f"1) смотрю фото моделью {model}")
+                t = time.time()
+                desc = describe(a.image, model)
+                t_desc = time.time() - t
+                came_from_llm = True
             if a.scene:
                 print(f"   сцена: {a.scene}")
                 new = rewrite_scene(desc, a.scene, model)
@@ -973,11 +1002,23 @@ def main():
                         dict.fromkeys([x.strip() for x in (desc.get("negative_extra") or "").split(",") if x.strip()]
                                       + [x.strip() for x in (new.get("negative_extra") or "").split(",") if x.strip()]))
                     desc = new
+                    came_from_llm = True
+                else:
+                    # Сцену просили, но модель её не переписала. Писать это в кэш
+                    # под ключом сцены нельзя: следующий запуск взял бы чужой текст.
+                    scene_failed = True
             if not a.keep_llm:
                 t = time.time()
                 freed = free_llm(model, a.unload_all)
                 t_unload = time.time() - t
                 print(f"2) выгружено: {', '.join(freed) if freed else 'нечего'} ({t_unload:.1f} с)")
+
+    if scene_failed:
+        if not a.dry_run:
+            print("   описание фото сохранено без сцены:", write_cache(a.image, desc, None).name)
+        print("сцену применить не удалось (модель не вернула описание сцены) — кадр не генерирую")
+        print("описание фото не потеряно: повторный запуск попробует сцену снова")
+        sys.exit(1)
 
     if a.scene and a.no_llm:
         desc["subject"] = (desc["subject"].rstrip(", ") + ", " + a.scene).strip(", ")

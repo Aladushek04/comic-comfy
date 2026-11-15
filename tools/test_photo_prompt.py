@@ -119,7 +119,7 @@ def test_stale_fingerprint():
     check("чужой sha1 -> кэш не берётся", pp.read_cache(str(img)) is None)
 
 
-def run_main(argv, subject="adult woman, black dress", scene_result=None):
+def run_main(argv, subject="adult woman, black dress", scene_result=None, scene_fails=False):
     """main() с подменёнными моделью и ComfyUI; возвращает stdout."""
     calls = []
 
@@ -129,6 +129,8 @@ def run_main(argv, subject="adult woman, black dress", scene_result=None):
 
     def fake_scene(desc, scene, model):
         calls.append(("scene", scene))
+        if scene_fails:
+            return None
         return {"subject": subject + ", " + scene, "negative_extra": "missing glasses",
                 "notes": "тест", "scene": scene}
 
@@ -558,9 +560,18 @@ def test_portable_paths():
 
     # check_install: полный набор, отсутствие depth, пропавшая модель, пропавшая строка в доке
     models = TMP / "install_models"
-    needed = ci.workflow_models(tools.parent / "workflows")
-    for name in needed:
-        p = models / Path(name)
+    needed, broken = ci.workflow_models(tools.parent / "workflows")
+    check("все графы читаются", not broken, str(broken))
+
+    def install_path(name, rec):
+        for t in rec["types"]:
+            dirs = ci.expected_dirs(t)
+            if dirs:
+                return models / dirs[0] / name
+        return models / Path(name).name
+
+    for name, rec in needed.items():
+        p = install_path(name, rec)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"x")
     docs = TMP / "DOWNLOADS.md"
@@ -586,13 +597,13 @@ def test_portable_paths():
     missing.unlink()
     rc, out = check_install_run()
     check("пропала модель -> код 1", rc == 1 and "thepit2_1768210" in out, out[-200:])
-    check("пропажа названа", "нет на диске" in out, out[-200:])
+    check("пропажа названа", "ждёт в" in out, out[-200:])
 
     missing.write_bytes(b"x")
     docs.write_text("\n".join(n for n in needed if "bimbofusion" not in n), encoding="utf-8")
     rc, out = check_install_run()
     check("модель не описана в инструкции -> код 1",
-          rc == 1 and "не описано" in out, out[-200:])
+          rc == 1 and "нет в инструкции" in out, out[-200:])
 
 
 def test_passport_records_workflow():
@@ -732,13 +743,14 @@ def test_check_install_covers_all_loaders():
         {"type": "UnetLoaderGGUF", "widgets_values": ["qwen-q4.gguf"]},
         {"type": "IPAdapterModelLoader", "widgets_values": ["ip-adapter.safetensors"]},
     ]}), encoding="utf-8")
-    found = ci.workflow_models(wf)
+    found, broken = ci.workflow_models(wf)
     check("GGUF найден", any(n.endswith(".gguf") for n in found), str(sorted(found)))
     check("IP-Adapter найден", any("ip-adapter" in n for n in found), str(sorted(found)))
+    check("граф прочитан без ошибок", not broken, str(broken))
 
     models = TMP / "scan_models"
-    models.mkdir(exist_ok=True)
-    (models / "base.safetensors").write_bytes(b"x")
+    (models / "checkpoints").mkdir(parents=True, exist_ok=True)
+    (models / "checkpoints" / "base.safetensors").write_bytes(b"x")
     docs = TMP / "scan_docs.md"
     docs.write_text("base.safetensors qwen-q4.gguf ip-adapter.safetensors", encoding="utf-8")
 
@@ -754,13 +766,101 @@ def test_check_install_covers_all_loaders():
     check("обе пропажи названы",
           "qwen-q4.gguf" in out and "ip-adapter.safetensors" in out, out.strip()[-300:])
 
-    for n in ("qwen-q4.gguf", "ip-adapter.safetensors"):
-        (models / n).write_bytes(b"x")
+    (models / "diffusion_models").mkdir(exist_ok=True)
+    (models / "diffusion_models" / "qwen-q4.gguf").write_bytes(b"x")
+    (models / "ipadapter").mkdir(exist_ok=True)
+    (models / "ipadapter" / "ip-adapter.safetensors").write_bytes(b"x")
     rc, out = run_check()
     check("всё на месте -> код 0", rc == 0, out.strip()[-200:])
 
     rc, out = run_check(TMP / "нет-такой-папки")
     check("нет папки графов -> код 1", rc == 1, out.strip()[-200:])
+
+
+def test_check_install_strictness():
+    print("\n20) check_install: раздел модели и битый граф")
+    wf = TMP / "wf_strict"
+    wf.mkdir(exist_ok=True)
+    (wf / "good.json").write_text(json.dumps({"nodes": [
+        {"type": "CheckpointLoaderSimple", "widgets_values": ["base.safetensors"]}]}),
+        encoding="utf-8")
+    models = TMP / "strict_models"
+    (models / "loras").mkdir(parents=True, exist_ok=True)
+    (models / "loras" / "base.safetensors").write_bytes(b"x")
+    docs = TMP / "strict_docs.md"
+    docs.write_text("base.safetensors", encoding="utf-8")
+
+    def run_check():
+        r = subprocess.run([sys.executable, str(Path(__file__).parent / "check_install.py"),
+                            "--models", str(models), "--docs", str(docs), "--workflows", str(wf)],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+    rc, out = run_check()
+    check("чекпойнт в loras -> код 1", rc == 1, out.strip()[-200:])
+    check("сказано, что не в том разделе", "не в том разделе" in out, out.strip()[-300:])
+
+    (models / "checkpoints").mkdir(exist_ok=True)
+    (models / "loras" / "base.safetensors").rename(models / "checkpoints" / "base.safetensors")
+    rc, out = run_check()
+    check("на своём месте -> код 0", rc == 0, out.strip()[-200:])
+
+    (wf / "broken.json").write_text("{ это не json", encoding="utf-8")
+    rc, out = run_check()
+    check("битый граф -> код 1", rc == 1, out.strip()[-200:])
+    check("битый граф назван", "БИТЫЙ ГРАФ" in out and "broken.json" in out, out.strip()[-300:])
+
+    (wf / "broken.json").unlink()
+    (wf / "unknown.json").write_text(json.dumps({"nodes": [
+        {"type": "SomeNewLoader", "widgets_values": ["new.safetensors"]}]}), encoding="utf-8")
+    rc, out = run_check()
+    check("незнакомый загрузчик -> код 1", rc == 1, out.strip()[-200:])
+    check("подсказано, что делать", "добавь его в LOADERS" in out, out.strip()[-300:])
+
+
+def test_scene_failure_not_cached():
+    print("\n19) сбой сцены не закрепляется в кэше")
+    img = TMP / "scene_fail.png"
+    make(img, (2, 3, 4))
+    code = None
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            run_main(["--image", str(img), "--style", "thepit", "--scene", "в горах"],
+                     scene_fails=True)
+    except SystemExit as e:
+        code = e.code
+    check("неудачная сцена -> код 1", code == 1, str(code))
+    check("кэша под сценой нет", pp.read_cache(str(img), "в горах") is None)
+    check("описание фото сохранено без сцены", pp.read_cache(str(img)) is not None)
+
+    _, calls = run_main(["--image", str(img), "--style", "thepit", "--scene", "в горах"])
+    check("повтор снова пишет сцену, а не берёт чужой кэш",
+          any(c[0] == "scene" for c in calls), str(calls))
+    got = pp.read_cache(str(img), "в горах")
+    check("после успеха кэш сцены есть", got is not None)
+    check("в нём та самая сцена", "в горах" in (got or {}).get("subject", ""), str(got)[:120])
+
+    # пачка: файл со сбойной сценой пропускается и даёт код 1
+    folder = TMP / "batch_scene"
+    make(folder / "a.png", (4, 5, 6))
+    saved = (pp.describe, pp.rewrite_scene, pp.lm_models, pp.pick_model,
+             pp.unload_all, pp.resolve_comfy)
+    pp.describe = lambda p, m: {"subject": "adult woman, tree", "negative_extra": "", "notes": ""}
+    pp.rewrite_scene = lambda d, s, m: None
+    pp.lm_models, pp.pick_model, pp.unload_all = lambda: {}, lambda r, w: "m", lambda r: []
+    pp.resolve_comfy = lambda c: "http://x"
+    try:
+        rc, text = capture(lambda: pp.run_batch(
+            batch_args(folder, scene="в горах", force=True), "07_photo_thepit"))
+        check("пачка со сбойной сценой -> код 1", rc == 1, str(rc))
+        check("файл назван пропущенным", "без описания: 1 (a.png)" in text, text.strip()[-200:])
+        check("пачка не пишет кэш под сценой",
+              pp.read_cache(str(folder / "a.png"), "в горах") is None)
+        check("пачка сохранила базовое описание",
+              pp.read_cache(str(folder / "a.png")) is not None)
+    finally:
+        (pp.describe, pp.rewrite_scene, pp.lm_models, pp.pick_model,
+         pp.unload_all, pp.resolve_comfy) = saved
 
 
 def test_comfy_url_setting():
@@ -817,6 +917,8 @@ def main():
         test_partial_failure_visible()
         test_check_install_covers_all_loaders()
         test_comfy_url_setting()
+        test_scene_failure_not_cached()
+        test_check_install_strictness()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
