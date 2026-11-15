@@ -517,6 +517,17 @@ def recheck(desc, image_path, model):
         return None
 
 
+def print_comfy_error(status):
+    """Почему ComfyUI не отдал кадр: без этого провал выглядел как успех."""
+    for event, data in status.get("messages") or []:
+        if event in ("execution_error", "execution_interrupted"):
+            data = data or {}
+            node = data.get("node_type") or data.get("node_id") or "?"
+            msg = str(data.get("exception_message") or event).strip()
+            print(f"  ошибка узла {node}: {msg[:400]}")
+            return
+
+
 def generate(workflow, subject, negative_extra, denoise=None, seed=None, landscape=False, style_weight=None, image_name=None):
     api_path = WF_DIR / (workflow + ".api.json")
     if not api_path.exists():
@@ -580,13 +591,30 @@ def generate(workflow, subject, negative_extra, denoise=None, seed=None, landsca
             h = get(COMFY + "/history/" + pid)
         except Exception:
             continue
-        if pid in h:
-            st = h[pid]["status"]["status_str"]
-            imgs = [v for o in h[pid]["outputs"].values() for v in o.get("images", [])]
-            name = imgs[0]["filename"] if imgs else "?"
-            print(f"  {st} за {round(time.time()-t0,1)} с -> {name}")
-            return st == "success", name
-    print("  таймаут")
+        if pid not in h:
+            continue
+        hist = h[pid]
+        status = hist.get("status") or {}
+        st = status.get("status_str", "?")
+        # Успех = есть файл в outputs (SaveImage, PreviewImage, видео). Любой другой узел
+        # с полем filename тоже считается: важен результат, а не имя ключа.
+        files = [v for o in (hist.get("outputs") or {}).values()
+                 for items in (o or {}).values() if isinstance(items, list)
+                 for v in items if isinstance(v, dict) and v.get("filename")]
+        name = files[0]["filename"] if files else None
+        if st != "success":
+            print(f"  {st} за {round(time.time()-t0,1)} с")
+            print_comfy_error(status)
+            return False, None
+        if not name:
+            # Пустой outputs при status_str=success: граф без SaveImage, отмена или
+            # пустой выход. Кадра нет — это провал, а не успех.
+            print(f"  success за {round(time.time()-t0,1)} с, но изображения нет — считаю провалом")
+            print_comfy_error(status)
+            return False, None
+        print(f"  success за {round(time.time()-t0,1)} с -> {name}")
+        return True, name
+    print("  таймаут: кадр не появился")
     return False, None
 
 
@@ -655,20 +683,32 @@ def run_batch(args, workflow):
 
     if args.dry_run or not args.generate:
         print(f"\nготово описаний: {len(descs)} (генерация не запускалась)")
-        return
+        return 0
+    if not descs:
+        print("\nни одного описания — генерировать нечего")
+        return 1
 
     COMFY = resolve_comfy(args.comfy)
-    total = 0
+    frames, failed, folders = 0, 0, []
     for i, (f, desc) in enumerate(descs.items(), 1):
         for v in range(max(1, args.variants)):
             sd = (args.seed + v) if args.seed is not None else random.randint(1, 2_000_000_000)
             print(f"\n=== [{i}/{len(descs)}] {f.name}, вариант {v + 1}, seed {sd}")
-            generate(workflow, desc["subject"], desc.get("negative_extra", ""),
-                     denoise=args.denoise, seed=sd,
-                     landscape=image_is_landscape(str(f)), style_weight=args.style_weight,
-                     image_name=ensure_input(str(f)))
-            total += 1
-    print(f"\nвсего кадров: {total}")
+            ok, name = generate(workflow, desc["subject"], desc.get("negative_extra", ""),
+                                denoise=args.denoise, seed=sd,
+                                landscape=image_is_landscape(str(f)), style_weight=args.style_weight,
+                                image_name=ensure_input(str(f)))
+            if not ok:
+                failed += 1
+                print("   кадр не получен")
+                continue
+            frames += 1
+            folders.append(save_run(str(f), workflow, desc, sd, args.denoise, name))
+    print(f"\nкадров: {frames}, провалов: {failed}")
+    if folders:
+        print("  результаты:", ", ".join(sorted({p.name for p in folders})))
+    # Ноль кадров или хоть один провал — не успех: код возврата это покажет.
+    return 0 if frames and not failed else 1
 
 
 def main():
@@ -701,7 +741,7 @@ def main():
 
     workflow = resolve_workflow(a.workflow, a.style)
     if a.batch:
-        run_batch(a, workflow)
+        sys.exit(run_batch(a, workflow))
         return
     if not a.image:
         sys.exit("нужен --image или --batch")

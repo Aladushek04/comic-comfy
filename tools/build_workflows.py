@@ -690,13 +690,30 @@ def run(api, label):
     return False
 
 
+def pick_targets(target):
+    """Сборки по префиксу. Опечатка — ошибка, а не тихий ноль сделанного."""
+    names = [n for n in WORKFLOWS if n.startswith(target)]
+    if not names:
+        sys.exit(f"нет сборки, начинающейся с «{target}».\nЕсть: " + ", ".join(sorted(WORKFLOWS)))
+    return names
+
+
 if __name__ == "__main__":
+    # Имя проверяем до сборки: опечатка не должна переписывать файлы и молча ничего не делать.
+    targets = []
+    if "--run" in sys.argv:
+        i = sys.argv.index("--run")
+        if i + 1 >= len(sys.argv):
+            sys.exit("--run требует имя сборки, напр. --run 07_photo_thepit")
+        targets = pick_targets(sys.argv[i + 1])
+
     apis = {}
     for name, spec in WORKFLOWS.items():
         apis[name] = build(name, spec)
         print("собран", name)
-    if "--run" in sys.argv:
-        target = sys.argv[sys.argv.index("--run") + 1]
-        for name in WORKFLOWS:
-            if name.startswith(target):
-                run(apis[name], name)
+
+    if targets:
+        failed = [n for n in targets if not run(apis[n], n)]
+        if failed:
+            print("не прогнались:", ", ".join(failed))
+            sys.exit(1)

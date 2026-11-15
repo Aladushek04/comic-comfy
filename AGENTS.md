@@ -60,6 +60,14 @@ $py = "G:\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI\.venv\Scripts\python.ex
    входит в имя кэша; кэш пишется **до** подмешивания `--negative-extra`, иначе флаг оседал в
    описании навсегда. Проверка: `python tools\test_photo_prompt.py`.
 
+0.3. **Провал выдавал себя за успех.** Было: `generate()` возвращал `True` при `status_str`
+   `success` и пустом `outputs` (имя кадра `"?"`); `--batch` считал попытки, а не кадры
+   («всего кадров: 2» при двух провалах), не звал `save_run` и всегда выходил с 0;
+   `build_workflows.py --run` игнорировал результат `run()` и опечатку в имени сборки.
+   Теперь успех — только имя файла в `outputs`; причина провала печатается из
+   `status.messages`; пакет копирует кадр в `out\` и возвращает 1 при любом провале;
+   `--run` проверяет имя до сборки и возвращает 1. Проверка: `tools\test_photo_prompt.py`.
+
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
    съезжают на позицию влево, панель Issues пишет «Invalid input: sampler_name / cfg».
@@ -139,5 +147,9 @@ powershell -ExecutionPolicy Bypass -File G:\AI\comic-comfy\tools\civitai-search.
 ## Проверки перед словом «готово»
 
 - `python build_workflows.py` без ошибок, затем валидатор `widgets_values` по `/object_info`.
-- Прогон через `/prompt` + `status_str == success`.
+- Прогон через `/prompt`: успех — это **имя файла в `outputs`**, а не `status_str == success`.
+  `success` с пустым `outputs` бывает (граф без SaveImage, отмена) — это провал.
+- Код возврата: `photo_prompt.py` (одиночный и `--batch`) и `build_workflows.py --run` дают 1
+  при провале генерации, отказе API и опечатке в имени сборки. Проверять `$LASTEXITCODE`,
+  а не строку «готово» в логе.
 - Для инпейнта: разница вне маски ровно 0.

@@ -1,4 +1,5 @@
-"""Самопроверка P1: исходник и кэш больше не подменяются одноимёнными файлами.
+"""Самопроверка P1: исходник и кэш больше не подменяются одноимёнными файлами,
+а провал не выдаётся за успех.
 
 Проверки:
   1. same.png из двух папок -> два разных файла в input, оба с правильным содержимым.
@@ -6,15 +7,20 @@
   3. --scene даёт отдельный кэш и не теряется при попадании в кэш.
   4. Кэш с чужим отпечатком не берётся.
   5. Флаги командной строки (--negative-extra) не оседают в кэше.
+  6. generate() без картинки и пакетный режим при провале дают код 1.
+  7. build_workflows.py --run: опечатка в имени и отказ API -> код 1.
 
-Модели и ComfyUI не нужны: describe/lm_* подменяются.
+Модели и ComfyUI не нужны: describe/lm_*/generate подменяются.
 
     python tools/test_photo_prompt.py
 """
+import argparse
 import contextlib
 import io
 import json
 import shutil
+import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -26,6 +32,14 @@ from PIL import Image
 
 TMP = Path(tempfile.mkdtemp(prefix="photo_prompt_test_"))
 passed, failed = [], []
+
+
+def capture(fn):
+    """Выполняет fn, возвращает (результат, весь stdout)."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        val = fn()
+    return val, buf.getvalue()
 
 
 def check(name, cond, detail=""):
@@ -160,6 +174,140 @@ def test_scene_not_ignored_on_cache_hit():
     check("повтор сохраняет сцену", "beach at sunset" in out2)
 
 
+class _Clock:
+    """Время без сна: generate() ждёт до 900 с реального времени."""
+
+    def __init__(self):
+        self.t = 0.0
+
+    def time(self):
+        self.t += 1.0
+        return self.t
+
+    def sleep(self, seconds):
+        pass
+
+
+def fake_comfy(history):
+    pp.post = lambda url, payload, timeout=300: {"prompt_id": "pid-1"}
+    pp.get = lambda url, timeout=30: {"pid-1": history}
+
+
+def test_generate_requires_image():
+    print("\n7) generate(): success без кадра — не успех")
+    saved = (pp.post, pp.get, pp.time)
+    pp.time = _Clock()
+    try:
+        fake_comfy({"status": {"status_str": "success"}, "outputs": {}})
+        (ok, name), text = capture(lambda: pp.generate("07_photo_thepit", "adult woman", "", seed=1))
+        check("success без картинок -> провал", ok is False and name is None, f"{ok}, {name}")
+        check("сказано, что изображения нет", "изображения нет" in text, text.strip()[-120:])
+
+        fake_comfy({"status": {"status_str": "success"},
+                    "outputs": {"9": {"images": [{"filename": "comic/x_00001_.png"}]}}})
+        (ok, name), _ = capture(lambda: pp.generate("07_photo_thepit", "adult woman", "", seed=1))
+        check("success с картинкой -> успех", ok is True and name == "comic/x_00001_.png", f"{ok}, {name}")
+
+        fake_comfy({"status": {"status_str": "error", "messages": [
+            ["execution_error", {"node_type": "KSampler",
+                                 "exception_message": "CUDA out of memory"}]]}, "outputs": {}})
+        (ok, name), text = capture(lambda: pp.generate("07_photo_thepit", "adult woman", "", seed=1))
+        check("error -> провал", ok is False and name is None, f"{ok}, {name}")
+        check("причина видна в логе", "CUDA out of memory" in text and "KSampler" in text,
+              text.strip()[-160:])
+    finally:
+        pp.post, pp.get, pp.time = saved
+
+
+def batch_args(folder, **over):
+    ns = argparse.Namespace(
+        batch=str(folder), workflow=None, style="thepit", scene=None, variants=1,
+        model=None, subject=None, no_llm=False, from_json=None, preset=None, save_preset=None,
+        recheck=False, keep_llm=False, comfy=None, negative_extra="", negative_drop="",
+        denoise=None, style_weight=None, seed=7, force=False, dry_run=False, generate=True,
+    )
+    for k, v in over.items():
+        setattr(ns, k, v)
+    return ns
+
+
+def test_batch_reports_failure():
+    print("\n8) пакетный режим: кадры, run.json, код возврата")
+    folder = TMP / "batch"
+    for n in ("a.png", "b.png"):
+        make(folder / n, (30, 30, 30))
+    saved = (pp.describe, pp.lm_models, pp.pick_model, pp.unload_all,
+             pp.resolve_comfy, pp.generate)
+    pp.describe = lambda p, m: {"subject": "adult woman, test", "negative_extra": "", "notes": ""}
+    pp.lm_models, pp.pick_model = (lambda: {}), (lambda r, w: "m")
+    pp.unload_all = lambda r: []
+    pp.resolve_comfy = lambda c: "http://127.0.0.1:8199"
+    books = lambda: list((pp.ROOT / "out").rglob("run.json"))
+    try:
+        pp.generate = lambda *a, **k: (False, None)
+        rc, text = capture(lambda: pp.run_batch(batch_args(folder), "07_photo_thepit"))
+        check("всё упало -> код 1", rc == 1, str(rc))
+        check("кадров 0, провалов 2", "кадров: 0, провалов: 2" in text, text.strip()[-160:])
+        check("run.json не создан", books() == [], str(books()))
+
+        def fake_generate(*a, **k):
+            name = "07_photo_thepit_00001_.png"
+            pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            (pp.OUTPUT_DIR / name).write_bytes(b"png")
+            return True, name
+
+        pp.generate = fake_generate
+        rc, text = capture(lambda: pp.run_batch(batch_args(folder), "07_photo_thepit"))
+        check("все кадры -> код 0", rc == 0, str(rc))
+        check("кадров 2, провалов 0", "кадров: 2, провалов: 0" in text, text.strip()[-160:])
+        check("run.json на каждое фото", len(books()) == 2, str(books()))
+        check("в run.json записан кадр",
+              all(json.loads(b.read_text(encoding="utf-8"))["runs"][0]["file"] for b in books()))
+
+        # одиночный путь: провал генерации должен дать код 1, а не тихий ноль
+        img = TMP / "one.png"
+        make(img, (1, 2, 3))
+        pp.generate = lambda *a, **k: (False, None)
+        code = None
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_main(["--image", str(img), "--style", "thepit", "--no-llm",
+                          "--subject", "adult woman", "--generate"])
+        except SystemExit as e:
+            code = e.code
+        check("одиночный прогон при провале -> код 1", code == 1, str(code))
+    finally:
+        (pp.describe, pp.lm_models, pp.pick_model, pp.unload_all,
+         pp.resolve_comfy, pp.generate) = saved
+
+
+def test_build_workflows_exit_codes():
+    print("\n9) build_workflows.py --run: код возврата")
+    tool = str(Path(__file__).parent / "build_workflows.py")
+    r = subprocess.run([sys.executable, tool, "--run", "07_photo_tehpit"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    out = (r.stdout or "") + (r.stderr or "")
+    check("опечатка в имени -> код 1", r.returncode == 1, f"код {r.returncode}")
+    check("опечатка объяснена", "нет сборки" in out, out.strip()[-160:])
+    check("опечатка перечисляет сборки", "07_photo_thepit" in out, out.strip()[-160:])
+
+    r = subprocess.run([sys.executable, tool, "--run"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    check("--run без имени -> ошибка", r.returncode != 0, f"код {r.returncode}")
+
+    with socket.socket() as s:
+        s.settimeout(0.3)
+        busy = s.connect_ex(("127.0.0.1", 8199)) == 0
+    if busy:
+        print("  пропуск проверки отказа API: 8199 занят, не хочу ставить реальную генерацию")
+        return
+    r = subprocess.run([sys.executable, tool, "--run", "07_photo_thepit"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    out = (r.stdout or "") + (r.stderr or "")
+    check("отказ API -> код 1", r.returncode == 1, f"код {r.returncode}")
+    check("причина отказа в логе", "ОШИБКА" in out, out.strip()[-160:])
+
+
 def main():
     patch_roots()
     try:
@@ -169,6 +317,9 @@ def main():
         test_stale_fingerprint()
         test_cli_flags_not_cached()
         test_scene_not_ignored_on_cache_hit()
+        test_generate_requires_image()
+        test_batch_reports_failure()
+        test_build_workflows_exit_codes()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
