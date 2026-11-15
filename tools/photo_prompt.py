@@ -28,6 +28,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -185,13 +186,28 @@ def cache_path(image_path, scene=None):
     return ROOT / "out" / (tag + ".prompt.json")
 
 
+def read_json(path, retries=5):
+    """JSON с диска; на Windows короткий повтор.
+
+    os.replace делает старый файл на миг недоступным для чтения: без повтора
+    случайный читатель в этот момент получил бы PermissionError.
+    """
+    for attempt in range(retries):
+        try:
+            return json.loads(Path(path).read_text(encoding="utf-8"))
+        except PermissionError:
+            if attempt == retries - 1:
+                raise
+            time.sleep(0.02)
+
+
 def read_cache(image_path, scene=None):
     """Описание с диска, если оно снято с этого же содержимого и для этой же сцены."""
     p = cache_path(image_path, scene)
     if not p.exists():
         return None
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = read_json(p)
     except Exception:
         return None
     if (data.get("scene") or "") != (scene or ""):
@@ -207,18 +223,51 @@ def read_cache(image_path, scene=None):
     return data
 
 
+def write_json(path, data, indent=2):
+    """Пишет JSON целиком или не трогает файл: обрыв не оставляет половину.
+
+    Временный файл лежит рядом с целевым: os.replace атомарен только в пределах
+    одной файловой системы. fsync до замены — чтобы после сбоя питания на диске
+    остался прежний файл, а не пустой новый.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(data, ensure_ascii=False, indent=indent)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        # На Windows replace не проходит, пока файл открыт читателем: короткая
+        # пауза и повтор дешевле, чем сорванная запись паспорта из-за вкладки.
+        for attempt in range(10):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.02)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return path
+
+
 def write_cache(image_path, desc, scene=None):
     """Пишет описание вместе с отпечатком и сценой — кэш сам себя проверяет."""
     p = cache_path(image_path, scene)
-    p.parent.mkdir(parents=True, exist_ok=True)
     data = dict(desc)
     data["sha1"] = fingerprint(image_path)
     data["source"] = str(image_path)
     data["scene"] = scene or ""
     # Метка «поле scene правдиво»: без неё запись считается старой и не берётся.
     data["scene_applied"] = True
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    return p
+    return write_json(p, data)
 
 
 def legacy_cache_hint(image_path):
@@ -631,7 +680,7 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
     book = {"runs": []}
     if book_path.exists():
         try:
-            book = json.loads(book_path.read_text(encoding="utf-8"))
+            book = read_json(book_path)
         except Exception:
             pass
     for r in book.get("runs", []):
@@ -648,7 +697,7 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
     })
     book.pop("workflow", None)
     book["workflows"] = sorted({r["workflow"] for r in book["runs"] if r.get("workflow")})
-    book_path.write_text(json.dumps(book, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json(book_path, book)
     return folder
 
 

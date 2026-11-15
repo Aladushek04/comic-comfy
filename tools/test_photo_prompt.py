@@ -26,11 +26,13 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import check_install as ci
+import jobs
 import photo_prompt as pp
 import settings as st
 from PIL import Image
@@ -1067,6 +1069,97 @@ def test_passport_records_generation_settings():
         pp.ROOT, pp.OUTPUT_DIR = saved
 
 
+def test_atomic_json():
+    print("\n25) JSON пишется целиком или не пишется вовсе")
+    img = TMP / "root" / "atomic.png"
+    make(img, (12, 34, 56))
+    cache = pp.write_cache(str(img), {"subject": "adult woman, one", "negative_extra": ""})
+    saved_fsync = os.fsync
+    pp.os.fsync = lambda fd: (_ for _ in ()).throw(OSError("диск отвалился"))
+    try:
+        try:
+            pp.write_cache(str(img), {"subject": "adult woman, two"})
+            check("обрыв записи кэша виден", False)
+        except OSError:
+            check("обрыв записи кэша виден", True)
+    finally:
+        pp.os.fsync = saved_fsync
+    check("прежний кэш читается",
+          json.loads(cache.read_text(encoding="utf-8"))["subject"].endswith("one"))
+    check("временных файлов не осталось", not list(cache.parent.glob("*.tmp")),
+          str(list(cache.parent.glob("*.tmp"))))
+
+    saved_roots = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT, pp.OUTPUT_DIR = TMP / "root_atomic", TMP / "out_atomic"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        frame = "07_photo_thepit_00042_.png"
+        (pp.OUTPUT_DIR / frame).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "adult woman", "negative_extra": ""}, 1, None, frame)
+        book = pp.ROOT / "out" / pp.image_tag(str(img)) / "run.json"
+        runs_before = len(json.loads(book.read_text(encoding="utf-8"))["runs"])
+        pp.os.fsync = lambda fd: (_ for _ in ()).throw(OSError("диск отвалился"))
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    pp.save_run(str(img), "07_photo_thepit",
+                                {"subject": "adult woman", "negative_extra": ""}, 2, None, frame)
+                    check("обрыв записи паспорта виден", False)
+                except OSError:
+                    check("обрыв записи паспорта виден", True)
+        finally:
+            pp.os.fsync = saved_fsync
+        check("прежний паспорт читается",
+              len(json.loads(book.read_text(encoding="utf-8"))["runs"]) == runs_before)
+        check("паспорт не оставил .tmp", not list(book.parent.glob("*.tmp")))
+
+        good = jobs.run_job(jobs.JobRequest(
+            image=str(img), workflow="07_photo_thepit", subject="adult woman",
+            generate=False, save_preset="atomic"))
+        check("пресет записан", good.ok and pp.preset_path("atomic").exists(), str(good.error))
+        pp.os.fsync = lambda fd: (_ for _ in ()).throw(OSError("диск отвалился"))
+        try:
+            broken = jobs.run_job(jobs.JobRequest(
+                image=str(img), workflow="07_photo_thepit", subject="adult woman",
+                generate=False, save_preset="atomic"))
+            check("обрыв записи пресета виден",
+                  not broken.ok and "диск отвалился" in broken.error, str(broken.error))
+        finally:
+            pp.os.fsync = saved_fsync
+        preset = pp.preset_path("atomic")
+        check("прежний пресет читается",
+              json.loads(preset.read_text(encoding="utf-8"))["subject"] == "adult woman")
+        check("пресет не оставил .tmp", not list(preset.parent.glob("*.tmp")))
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved_roots
+
+    target = TMP / "atomic_race.json"
+    bad, stop = [], threading.Event()
+
+    def reader():
+        while not stop.is_set():
+            try:
+                pp.read_json(target)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                bad.append(repr(e))
+                return
+
+    pp.write_json(target, {"runs": []})
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+    try:
+        for n in range(30):
+            pp.write_json(target, {"runs": [{"seed": n}] * 50})
+    finally:
+        stop.set()
+        t.join(timeout=5)
+    check("чтение во время записи не видит половину", not bad, str(bad[:1]))
+
+
 def main():
     patch_roots()
     try:
@@ -1093,6 +1186,7 @@ def main():
         test_batch_scene_cache_no_lm()
         test_controlnet_strength_flag()
         test_passport_records_generation_settings()
+        test_atomic_json()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

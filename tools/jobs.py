@@ -259,8 +259,7 @@ def run_job(req, emit=None):
 
         if req.save_preset:
             path = pp.preset_path(req.save_preset)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(desc, ensure_ascii=False, indent=2), encoding="utf-8")
+            pp.write_json(path, desc)
             out("preset", "   пресет: " + path.name)
 
         # ---- 3. Итоговые промпты и проверка привязок ---------------------
