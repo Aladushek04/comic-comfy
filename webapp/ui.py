@@ -12,6 +12,7 @@ import asyncio
 import uuid
 from pathlib import Path
 
+import comfy_launch as cl
 import jobs
 import photo_prompt as pp
 from nicegui import app, ui
@@ -43,6 +44,7 @@ STAGE_LABEL = {
     "generate": "генерация",
     "variant": "вариант кадра",
     "comfy": "жду ComfyUI",
+    "comfy_launch": "поднимаю ComfyUI",
     "comfy_start": "ComfyUI начал",
     "comfy_cached": "граф из кэша",
     "sampling": "шаги сэмплера",
@@ -164,6 +166,8 @@ class ComicPage:
             "upload_tag": None,
             "desc_auto": "",
             "ws": "",
+            "health_synced": False,
+            "health_during": False,
             "styles": {s["workflow"]: s for s in styles},
         }
         self.w = {}
@@ -187,6 +191,15 @@ class ComicPage:
         self.w[key] = widget
         return widget
 
+    def models_note(self):
+        if self.state.get("info"):
+            return ""
+        if cl.available():
+            return ("ComfyUI не запущен: списки моделей появятся после первого запуска, "
+                    "пока — значения из графа.")
+        return ("ComfyUI не ответил: списки моделей недоступны, оставлены "
+                "значения из графа.")
+
     def apply_options(self):
         """Обновляет списки, не трогая то, что пользователь уже выбрал."""
         if not self.w:
@@ -206,9 +219,7 @@ class ComicPage:
             model.set_options(models, value=current)
         note = self.w.get("models_note")
         if note is not None:
-            note.set_text("" if info else
-                          "ComfyUI не ответил: списки моделей недоступны, оставлены "
-                          "значения из графа.")
+            note.set_text(self.models_note())
 
     # ------------------------------------------------------------ страница
     def build(self):
@@ -436,15 +447,26 @@ class ComicPage:
         info = await asyncio.to_thread(catalog.health, pp.LM)
         lm_ok = info["lm"]["ok"]
         comfy_ok = info["comfy"]["ok"]
-        self.state["comfy_url"] = info["comfy"]["url"]
-        self.state["comfy_error"] = info["comfy"]["error"]
-        self.w["comfy_badge"].set_text(
-            "ComfyUI: " + ("готов" if comfy_ok else "не отвечает"))
-        self.w["comfy_badge"].props(f'color={"positive" if comfy_ok else "negative"}')
         self.w["lm_badge"].set_text(
             "LM Studio: " + ("готов" if lm_ok else "не отвечает"))
         self.w["lm_badge"].props(f'color={"positive" if lm_ok else "warning"}')
-        self.w["comfy_note"].set_text(info["comfy"]["error"] or info["comfy"]["url"])
+        self.state["comfy_url"] = info["comfy"]["url"]
+        self.state["comfy_error"] = info["comfy"]["error"]
+        launchable = cl.available()
+        if comfy_ok:
+            self.w["comfy_badge"].set_text("ComfyUI: готов")
+            self.w["comfy_badge"].props('color="positive"')
+            self.w["comfy_note"].set_text(info["comfy"]["url"])
+        elif launchable:
+            self.w["comfy_badge"].set_text("ComfyUI: поднимется сам")
+            self.w["comfy_badge"].props('color="warning"')
+            self.w["comfy_note"].set_text(
+                "Headless ComfyUI запустится после выгрузки модели описания — "
+                "память не занята заранее.")
+        else:
+            self.w["comfy_badge"].set_text("ComfyUI: не отвечает")
+            self.w["comfy_badge"].props('color="negative"')
+            self.w["comfy_note"].set_text(info["comfy"]["error"] or info["comfy"]["url"])
         self.state["lm_models"] = info["lm"]["models"]
         self.state["info"] = (await asyncio.to_thread(
             catalog.object_info, info["comfy"]["url"])) if comfy_ok else None
@@ -530,10 +552,8 @@ class ComicPage:
                  f"{graph['scheduler']} · шагов {graph['steps']} · "
                  f"denoise {graph['denoise']} · CN {graph['cn_strength']}").classes(
             "text-xs opacity-60 mt-1")
-        self.w["models_note"] = ui.label(
-            "" if self.state.get("info") else
-            "ComfyUI не ответил: списки моделей недоступны, оставлены значения из графа."
-        ).classes("text-xs text-orange-600")
+        self.w["models_note"] = ui.label(self.models_note()).classes(
+            "text-xs text-orange-600")
         ui.label("Модель описания (LM Studio) и чекпойнт генерации (ComfyUI) — "
                  "разные настройки: первая смотрит фото, второй рисует.").classes(
             "text-xs opacity-50")
@@ -682,6 +702,7 @@ class ComicPage:
             negative_override=data["negative_override"],
             generate=generate, write_cache=not manual,
             client_id=uuid.uuid4().hex,
+            start_comfy=True,
         )
         try:
             job = self.svc.submit(req, upload_id=self.state["upload_id"])
@@ -689,7 +710,8 @@ class ComicPage:
             ui.notify(str(e), type="negative")
             return
         self.state.update(job_id=job.id, snap_id=None, last_seq=0, signature=None,
-                          selected=0, user_selected=False, ws="")
+                          selected=0, user_selected=False, ws="",
+                          health_synced=False, health_during=False)
         self.w["log"].clear()
         self.w["error"].set_text("")
         self.w["stage"].set_text("Задание в очереди" if self.svc.active_id()
@@ -878,6 +900,11 @@ class ComicPage:
             self.state["last_seq"] = max(self.state["last_seq"], event["seq"])
             if event.get("message"):
                 self.w["log"].push(f"[{fmt_time(event['t'])}] {event['message']}")
+        # Headless ComfyUI поднялся — обновляем бейдж и списки моделей.
+        if any(e["stage"] == "comfy" and (e.get("data") or {}).get("url") for e in new) \
+                and not self.state.get("health_during"):
+            self.state["health_during"] = True
+            ui.timer(0.5, self.refresh_health, once=True)
 
         signature = (snap["id"], snap["status"], len(snap["frames"]), snap["error"])
         if signature != self.state.get("signature"):
@@ -886,6 +913,11 @@ class ComicPage:
                 self.state["selected"] = refined[-1] if refined else 0
             self.state["signature"] = signature
             self.render_result(snap)
+
+        # После задания headless ComfyUI мог подняться или погаснуть — обновляем бейдж.
+        if not snap["running"] and not self.state.get("health_synced"):
+            self.state["health_synced"] = True
+            ui.timer(0.3, self.refresh_health, once=True)
 
 
 def register_page():

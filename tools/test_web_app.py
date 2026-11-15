@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import comfy_launch as cl
 import jobs
 import photo_prompt as pp
 import build_workflows as bw
@@ -1074,6 +1075,133 @@ def test_frame_prompt_passport():
         comfy.stop()
 
 
+def test_comfy_launch_plan():
+    print("\n19) headless ComfyUI: план запуска")
+    main = TMP / "fake_comfy" / "main.py"
+    main.parent.mkdir(parents=True, exist_ok=True)
+    main.write_text("", encoding="utf-8")
+    cfg = TMP / "comfy_launch.json"
+    cfg.write_text(json.dumps({
+        "main": str(main), "python": sys.executable, "port": 8123,
+        "stop_after": True, "startup_timeout": 2,
+    }), encoding="utf-8")
+    saved_env = {k: os.environ.get(k) for k in
+                 ("COMFY_LAUNCH_CONFIG", "COMFY_MAIN", "COMFY_PYTHON")}
+    os.environ["COMFY_LAUNCH_CONFIG"] = str(cfg)
+    for key in ("COMFY_MAIN", "COMFY_PYTHON"):
+        os.environ.pop(key, None)
+    try:
+        p = cl.plan()
+        check("план собран из локального конфига", p is not None and p["port"] == 8123,
+              str(p))
+        check("адрес и команда", p["url"] == "http://127.0.0.1:8123"
+              and str(main) in p["argv"], str(p["argv"]))
+        check("модельные пути и папки передаются",
+              "--extra-model-paths-config" in p["argv"]
+              and "--output-directory" in p["argv"]
+              and "--input-directory" in p["argv"], str(p["argv"]))
+        check("голова без окна и автооткрытия",
+              "--disable-auto-launch" in p["argv"], str(p["argv"]))
+        check("запуск разрешён", cl.available() is True)
+
+        class FakeProc:
+            def __init__(self):
+                self.terminated = False
+                self.rc = None
+
+            def poll(self):
+                return self.rc
+
+            def terminate(self):
+                self.terminated = True
+                self.rc = 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                self.terminated = True
+
+        saved = (pp.comfy_state, cl._spawn, pp.comfy_probe)
+        try:
+            fake = FakeProc()
+            pp.comfy_state = lambda explicit=None: ("http://127.0.0.1:8123", "нет")
+            cl._spawn = lambda config: fake
+            pp.comfy_probe = lambda url: True
+            events = []
+            handle = cl.ensure(
+                emit=lambda stage, message="", **data:
+                events.append({"stage": stage, "message": message, "data": data}))
+            check("сервер поднят и возвращён handle",
+                  handle is not None and handle.url == "http://127.0.0.1:8123",
+                  str(handle))
+            check("старт виден в событиях",
+                  any(e["stage"] == "comfy_launch" for e in events), str(events))
+            cl.stop(handle)
+            check("stop гасит только свой сервер", fake.terminated is True)
+
+            pp.comfy_state = lambda explicit=None: ("http://127.0.0.1:9999", "")
+            check("уже работающий сервер не трогаем", cl.ensure() is None)
+
+            pp.comfy_state = lambda explicit=None: ("http://127.0.0.1:8123", "нет")
+            pp.comfy_probe = lambda url: False
+            dead = FakeProc()
+            dead.rc = 1
+            cl._spawn = lambda config: dead
+            code = None
+            try:
+                cl.ensure()
+            except pp.PipelineError as e:
+                code = str(e)
+            check("провал запуска — понятная ошибка",
+                  code and "не поднялся" in code, str(code))
+        finally:
+            pp.comfy_state, cl._spawn, pp.comfy_probe = saved
+    finally:
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        os.environ.pop("COMFY_MAIN", None)
+        os.environ.pop("COMFY_PYTHON", None)
+        os.environ.pop("COMFY_LAUNCH_CONFIG", None)
+
+
+def test_job_autostart():
+    print("\n20) задание поднимает ComfyUI только перед генерацией")
+    lm, comfy = lm_stub(), comfy_stub()
+    saved = (cl.ensure, cl.stop)
+    calls = []
+    try:
+        with stand(lm, comfy):
+            class Handle:
+                stop_after = True
+                url = "http://127.0.0.1:8123"
+
+            cl.ensure = lambda emit=None: (calls.append("ensure") or Handle())
+            cl.stop = lambda handle, emit=None: calls.append("stop")
+            photo = TMP / "autostart.png"
+            make(photo, (5, 50, 5))
+            r = jobs.run_job(jobs.JobRequest(
+                image=str(photo), workflow="07_photo_thepit",
+                subject="adult woman, auto", seed=1, start_comfy=True))
+            check("задание успешно", r.ok, r.error)
+            check("сначала подъём, потом остановка", calls == ["ensure", "stop"],
+                  str(calls))
+            calls.clear()
+            jobs.run_job(jobs.JobRequest(
+                image=str(photo), workflow="07_photo_thepit",
+                subject="adult woman, auto", seed=2, generate=False,
+                start_comfy=True))
+            check("«только описание» не поднимает сервер", calls == [], str(calls))
+            check("сервер не поднимался для кэша без генерации", calls == [])
+    finally:
+        cl.ensure, cl.stop = saved
+        lm.stop()
+        comfy.stop()
+
+
 def _png_bytes():
     buf = io.BytesIO()
     Image.new("RGB", (8, 8), (1, 2, 3)).save(buf, "PNG")
@@ -1101,6 +1229,8 @@ def main():
         test_recheck_isolation()
         test_recheck_with_override()
         test_frame_prompt_passport()
+        test_comfy_launch_plan()
+        test_job_autostart()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

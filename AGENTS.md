@@ -35,6 +35,8 @@
   подписей), запуск `ComicWeb.cmd` или `webapp\run.py`, зависимости `requirements-web.txt`,
   проверки — `tools\test_web_ui.py` (Playwright, `requirements-web-dev.txt`).
   **Своё окружение `.venv-web`**: NiceGUI не ставится в venv ComfyUI.
+- Headless ComfyUI: `tools\comfy_launch.py`, локальный `comfy_launch.json` (образец —
+  `comfy_launch.example.json`), env `COMFY_MAIN` / `COMFY_PYTHON` / `COMFY_STOP_AFTER`.
 
 ## Как менять воркфлоу
 
@@ -72,6 +74,20 @@ ComfyUI не трогает. Без готового описания (кэш, `
 Выгрузка из LM Studio тоже не должна быть шире нужного: по умолчанию `free_llm()` снимает только
 инстансы модели этого прогона, чужие модели остаются и перечисляются в логе. Снести всё — только
 явный `--unload-all`.
+
+## Headless ComfyUI по требованию
+
+`tools\comfy_launch.py` поднимает ComfyUI только по нажатию «Старт» и только после фазы
+описания и выгрузки VLM. Открытие страницы и «Проверить сервисы» сервер не запускают.
+
+- Настройка: `comfy_launch.json` в корне (локальный, в git не попадает; образец —
+  `comfy_launch.example.json`) или env `COMFY_MAIN`, `COMFY_PYTHON`,
+  `COMFY_LAUNCH_CONFIG`. Порт — из конфига, иначе из `COMFY_URL`/настроек.
+- `stop_after: true` (по умолчанию) гасит поднятый нами сервер после кадра; чужой
+  запущенный сервер не трогаем. `COMFY_STOP_AFTER=0` оставляет его.
+- Явно заданный `COMFY_URL` на другой порт/хост не подменяется автозапуском.
+- Лог сервера: `out\logs\comfy_server.log`; ошибка старта попадает в задание с хвостом лога.
+
 
 ## Грабли, на которые уже наступали
 
@@ -201,7 +217,7 @@ ComfyUI не трогает. Без готового описания (кэш, `
    фактический positive/negative кадра пишутся в `run.json` и в карточку кадра
    (`generate(..., report=...)`); по `subject` их не восстановить — шаблон стиля,
    переопределения и негатив собираются в графе.
-   Проверка: `python tools\test_web_app.py` (130) и `python tools\test_web_ui.py` (29).
+   Проверка: `python tools\test_web_app.py` (144) и `python tools\test_web_ui.py` (29).
 
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
@@ -308,7 +324,7 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 ## Проверки перед словом «готово»
 
 - `python tools\test_photo_prompt.py` — 180 проверок CLI и пайплайна (модели не нужны).
-- `python tools\test_web_app.py` — 130 проверок заданий, очереди и веб-слоя на HTTP-заглушках
+- `python tools\test_web_app.py` — 144 проверки заданий, очереди и веб-слоя на HTTP-заглушках
   (LM Studio и ComfyUI подменяются, GPU не нужен).
 - `python tools\test_web_ui.py` — 29 браузерных проверок Chromium на тех же заглушках:
   раскладка, расширенная панель, сохранение ввода после health-check, замена фото, второй кадр

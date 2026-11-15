@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import comfy_launch as cl
 import photo_prompt as pp
 
 
@@ -54,6 +55,7 @@ class JobRequest:
     dry_run: bool = False
     write_cache: bool = True              # ручные правки в кэш не пишутся
     client_id: str | None = None
+    start_comfy: bool = False             # поднять headless ComfyUI после фазы описания
 
 
 @dataclass
@@ -146,6 +148,7 @@ def run_job(req, emit=None):
     scene_failed = False
     model = req.model
     t_desc = t_unload = 0.0
+    handle = None
 
     out("start", "", workflow=req.workflow, image=str(req.image),
         variants=max(1, req.variants))
@@ -279,6 +282,9 @@ def run_job(req, emit=None):
             return result
 
         # ---- 4. ComfyUI: очередь, шаги, кадры ------------------------------
+        if req.start_comfy:
+            # Только здесь: VLM уже выгружен, память под SDXL свободна.
+            handle = cl.ensure(emit=out)
         comfy = pp.resolve_comfy(req.comfy)
         pp.COMFY = comfy
         out("comfy", "ComfyUI: " + comfy, url=comfy)
@@ -347,6 +353,9 @@ def run_job(req, emit=None):
         return _fail(out, result, str(e))
     except Exception as e:                      # неожиданное — тоже ошибка задания
         return _fail(out, result, f"{type(e).__name__}: {e}")
+    finally:
+        if handle is not None:
+            cl.stop(handle, emit=out)
 
 
 def _fail(out, result, message):
