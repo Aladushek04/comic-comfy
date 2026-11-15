@@ -1,0 +1,18 @@
+# результаты генерации и служебные файлы
+out/
+preview_*.png
+run.log
+run.err.log
+
+# регенерируется генератором
+*.api.json
+__pycache__/
+*.pyc
+
+# секреты
+token
+*.token
+.civitai/
+
+# ????? ??????? ????????
+workflows/reference/

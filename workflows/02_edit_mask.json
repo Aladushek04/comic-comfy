@@ -1,0 +1,975 @@
+{
+  "last_node_id": 30,
+  "last_link_id": 22,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        80,
+        60
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            10
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            7,
+            18
+          ],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CheckpointLoaderSimple"
+      },
+      "widgets_values": [
+        "WAI-Nsfw-Illustrious-17.safetensors"
+      ],
+      "title": "Чекпойнт"
+    },
+    {
+      "id": 2,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        80,
+        320
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "thepit2_1768210.safetensors",
+        0.9
+      ],
+      "title": "LoRA · thepit2_1768210"
+    },
+    {
+      "id": 20,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        80,
+        580
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            13
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "Sexy_Detailer.safetensors",
+        0.0
+      ],
+      "title": "LoRA · Sexy_Detailer"
+    },
+    {
+      "id": 3,
+      "type": "LoadImage",
+      "pos": [
+        80,
+        840
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            6,
+            19
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "example.png"
+      ],
+      "title": "Изображение · example.png"
+    },
+    {
+      "id": 14,
+      "type": "LoadImage",
+      "pos": [
+        500,
+        60
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "mask.png"
+      ],
+      "title": "Изображение · mask.png"
+    },
+    {
+      "id": 15,
+      "type": "ImageToMask",
+      "pos": [
+        500,
+        320
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            4
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageToMask"
+      },
+      "widgets_values": [
+        "red"
+      ],
+      "title": "Маска из картинки"
+    },
+    {
+      "id": 4,
+      "type": "GrowMask",
+      "pos": [
+        500,
+        580
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            5
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "GrowMask"
+      },
+      "widgets_values": [
+        8,
+        true
+      ],
+      "title": "Маска: рост"
+    },
+    {
+      "id": 5,
+      "type": "FeatherMask",
+      "pos": [
+        500,
+        840
+      ],
+      "size": [
+        380,
+        240
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            9,
+            21
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FeatherMask"
+      },
+      "widgets_values": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "title": "Маска: мягкий край"
+    },
+    {
+      "id": 6,
+      "type": "VAEEncode",
+      "pos": [
+        920,
+        60
+      ],
+      "size": [
+        380,
+        120
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pixels",
+          "type": "IMAGE",
+          "link": 6
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            8
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEEncode"
+      },
+      "widgets_values": [],
+      "title": "В латент"
+    },
+    {
+      "id": 7,
+      "type": "SetLatentNoiseMask",
+      "pos": [
+        920,
+        320
+      ],
+      "size": [
+        380,
+        120
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 8
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            16
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SetLatentNoiseMask"
+      },
+      "widgets_values": [],
+      "title": "Маска в латент"
+    },
+    {
+      "id": 30,
+      "type": "CLIPSetLastLayer",
+      "pos": [
+        920,
+        580
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            11,
+            12
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPSetLastLayer"
+      },
+      "widgets_values": [
+        -2
+      ],
+      "title": "Clip skip -2"
+    },
+    {
+      "id": 8,
+      "type": "CLIPTextEncode",
+      "pos": [
+        920,
+        840
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 11
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            14
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "leather jacket, open collar, detailed fabric, flat colors, halftone dots"
+      ],
+      "title": "Промпт"
+    },
+    {
+      "id": 9,
+      "type": "CLIPTextEncode",
+      "pos": [
+        1340,
+        60
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 12
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            15
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "photo, photorealistic, 3d render, soft shading, airbrush, gradient, blurry, low quality, halftone dots, screentone, dotted texture, moire, freckles, skin texture, bad anatomy, bad hands, extra fingers, fewer fingers, watermark, text, signature, child, loli, shota, young"
+      ],
+      "title": "Негатив"
+    },
+    {
+      "id": 10,
+      "type": "KSampler",
+      "pos": [
+        1340,
+        320
+      ],
+      "size": [
+        380,
+        300
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 13
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 14
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 15
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 16
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            17
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        12345,
+        "randomize",
+        28,
+        6.0,
+        "euler_ancestral",
+        "normal",
+        0.85
+      ],
+      "title": "Сэмплер · denoise 0.85"
+    },
+    {
+      "id": 11,
+      "type": "VAEDecode",
+      "pos": [
+        1340,
+        580
+      ],
+      "size": [
+        380,
+        120
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 17
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 18
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            20
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": [],
+      "title": "Из латента"
+    },
+    {
+      "id": 12,
+      "type": "ImageCompositeMasked",
+      "pos": [
+        1340,
+        840
+      ],
+      "size": [
+        380,
+        210
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "destination",
+          "type": "IMAGE",
+          "link": 19
+        },
+        {
+          "name": "source",
+          "type": "IMAGE",
+          "link": 20
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 21
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            22
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageCompositeMasked"
+      },
+      "widgets_values": [
+        0,
+        0,
+        false
+      ],
+      "title": "Вклейка по маске"
+    },
+    {
+      "id": 13,
+      "type": "SaveImage",
+      "pos": [
+        1760,
+        60
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 22
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "comic/02_edit_mask"
+      ],
+      "title": "Сохранение"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "MODEL"
+    ],
+    [
+      2,
+      2,
+      0,
+      20,
+      0,
+      "MODEL"
+    ],
+    [
+      3,
+      14,
+      0,
+      15,
+      0,
+      "IMAGE"
+    ],
+    [
+      4,
+      15,
+      0,
+      4,
+      0,
+      "MASK"
+    ],
+    [
+      5,
+      4,
+      0,
+      5,
+      0,
+      "MASK"
+    ],
+    [
+      6,
+      3,
+      0,
+      6,
+      0,
+      "IMAGE"
+    ],
+    [
+      7,
+      1,
+      2,
+      6,
+      1,
+      "VAE"
+    ],
+    [
+      8,
+      6,
+      0,
+      7,
+      0,
+      "LATENT"
+    ],
+    [
+      9,
+      5,
+      0,
+      7,
+      1,
+      "MASK"
+    ],
+    [
+      10,
+      1,
+      1,
+      30,
+      0,
+      "CLIP"
+    ],
+    [
+      11,
+      30,
+      0,
+      8,
+      0,
+      "CLIP"
+    ],
+    [
+      12,
+      30,
+      0,
+      9,
+      0,
+      "CLIP"
+    ],
+    [
+      13,
+      20,
+      0,
+      10,
+      0,
+      "MODEL"
+    ],
+    [
+      14,
+      8,
+      0,
+      10,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      15,
+      9,
+      0,
+      10,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      16,
+      7,
+      0,
+      10,
+      3,
+      "LATENT"
+    ],
+    [
+      17,
+      10,
+      0,
+      11,
+      0,
+      "LATENT"
+    ],
+    [
+      18,
+      1,
+      2,
+      11,
+      1,
+      "VAE"
+    ],
+    [
+      19,
+      3,
+      0,
+      12,
+      0,
+      "IMAGE"
+    ],
+    [
+      20,
+      11,
+      0,
+      12,
+      1,
+      "IMAGE"
+    ],
+    [
+      21,
+      5,
+      0,
+      12,
+      2,
+      "MASK"
+    ],
+    [
+      22,
+      12,
+      0,
+      13,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7,
+      "offset": [
+        0,
+        0
+      ]
+    },
+    "linearData": {
+      "inputs": [
+        [
+          "3",
+          "image",
+          {
+            "description": "кадр, который правим"
+          }
+        ],
+        [
+          "14",
+          "image",
+          {
+            "description": "маска: белое = меняем, чёрное = не трогаем"
+          }
+        ],
+        [
+          "8",
+          "text",
+          {
+            "description": "что должно появиться в области маски"
+          }
+        ],
+        [
+          "10",
+          "denoise",
+          {
+            "description": "0.85 — одежда, 0.40 — макияж"
+          }
+        ],
+        [
+          "10",
+          "seed",
+          {
+            "description": "сид: randomize = каждый раз новый"
+          }
+        ],
+        [
+          "2",
+          "strength_model",
+          {
+            "description": "стиль: TheOfficialPit V2 (триггер thick lips)"
+          }
+        ],
+        [
+          "20",
+          "strength_model",
+          {
+            "description": "тело: Sexy_Detailer (0 = выкл)"
+          }
+        ]
+      ],
+      "outputs": [
+        "13"
+      ]
+    }
+  },
+  "version": 0.4
+}

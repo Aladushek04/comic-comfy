@@ -1,0 +1,711 @@
+{
+  "last_node_id": 12,
+  "last_link_id": 17,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "UnetLoaderGGUF",
+      "pos": [
+        80,
+        60
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UnetLoaderGGUF"
+      },
+      "widgets_values": [
+        "qwen-image-edit-2511-uncensored-Q4_K_M.gguf"
+      ],
+      "title": "Модель (GGUF)"
+    },
+    {
+      "id": 2,
+      "type": "CLIPLoader",
+      "pos": [
+        80,
+        320
+      ],
+      "size": [
+        380,
+        210
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            3,
+            6
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPLoader"
+      },
+      "widgets_values": [
+        "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+        "qwen_image",
+        "default"
+      ],
+      "title": "Текстовый энкодер"
+    },
+    {
+      "id": 3,
+      "type": "VAELoader",
+      "pos": [
+        80,
+        580
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            4,
+            7,
+            10,
+            16
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "qwen_image_vae.safetensors"
+      ],
+      "title": "VAE"
+    },
+    {
+      "id": 4,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        80,
+        840
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            11
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "qwen-image-edit-plus-nsfw-lora.safetensors",
+        0.7
+      ],
+      "title": "LoRA · qwen-image-edit-plus-nsfw-lora"
+    },
+    {
+      "id": 5,
+      "type": "LoadImage",
+      "pos": [
+        500,
+        60
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "example.png"
+      ],
+      "title": "Изображение · example.png"
+    },
+    {
+      "id": 6,
+      "type": "ImageScaleToTotalPixels",
+      "pos": [
+        500,
+        320
+      ],
+      "size": [
+        380,
+        210
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            5,
+            8,
+            9
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageScaleToTotalPixels"
+      },
+      "widgets_values": [
+        "lanczos",
+        1.0,
+        1
+      ],
+      "title": "Масштаб до 1 МП"
+    },
+    {
+      "id": 7,
+      "type": "TextEncodeQwenImageEditPlus",
+      "pos": [
+        500,
+        580
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 3
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 4
+        },
+        {
+          "name": "image1",
+          "type": "IMAGE",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            12
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TextEncodeQwenImageEditPlus"
+      },
+      "widgets_values": [
+        "change the jacket to a black leather jacket, keep face, hair and background unchanged"
+      ],
+      "title": "Промпт Qwen"
+    },
+    {
+      "id": 8,
+      "type": "TextEncodeQwenImageEditPlus",
+      "pos": [
+        500,
+        840
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 6
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 7
+        },
+        {
+          "name": "image1",
+          "type": "IMAGE",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            13
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TextEncodeQwenImageEditPlus"
+      },
+      "widgets_values": [
+        ""
+      ],
+      "title": "Негатив (пусто)"
+    },
+    {
+      "id": 9,
+      "type": "VAEEncode",
+      "pos": [
+        920,
+        60
+      ],
+      "size": [
+        380,
+        120
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pixels",
+          "type": "IMAGE",
+          "link": 9
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            14
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEEncode"
+      },
+      "widgets_values": [],
+      "title": "В латент"
+    },
+    {
+      "id": 10,
+      "type": "KSampler",
+      "pos": [
+        920,
+        320
+      ],
+      "size": [
+        380,
+        300
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 11
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 12
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 13
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            15
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        12345,
+        "randomize",
+        20,
+        4.0,
+        "euler",
+        "simple",
+        1.0
+      ],
+      "title": "Сэмплер · denoise 1"
+    },
+    {
+      "id": 11,
+      "type": "VAEDecode",
+      "pos": [
+        920,
+        580
+      ],
+      "size": [
+        380,
+        120
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 15
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 16
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            17
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": [],
+      "title": "Из латента"
+    },
+    {
+      "id": 12,
+      "type": "SaveImage",
+      "pos": [
+        920,
+        840
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 17
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "comic/03_edit_qwen_quality"
+      ],
+      "title": "Сохранение"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      4,
+      0,
+      "MODEL"
+    ],
+    [
+      2,
+      5,
+      0,
+      6,
+      0,
+      "IMAGE"
+    ],
+    [
+      3,
+      2,
+      0,
+      7,
+      0,
+      "CLIP"
+    ],
+    [
+      4,
+      3,
+      0,
+      7,
+      1,
+      "VAE"
+    ],
+    [
+      5,
+      6,
+      0,
+      7,
+      2,
+      "IMAGE"
+    ],
+    [
+      6,
+      2,
+      0,
+      8,
+      0,
+      "CLIP"
+    ],
+    [
+      7,
+      3,
+      0,
+      8,
+      1,
+      "VAE"
+    ],
+    [
+      8,
+      6,
+      0,
+      8,
+      2,
+      "IMAGE"
+    ],
+    [
+      9,
+      6,
+      0,
+      9,
+      0,
+      "IMAGE"
+    ],
+    [
+      10,
+      3,
+      0,
+      9,
+      1,
+      "VAE"
+    ],
+    [
+      11,
+      4,
+      0,
+      10,
+      0,
+      "MODEL"
+    ],
+    [
+      12,
+      7,
+      0,
+      10,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      13,
+      8,
+      0,
+      10,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      14,
+      9,
+      0,
+      10,
+      3,
+      "LATENT"
+    ],
+    [
+      15,
+      10,
+      0,
+      11,
+      0,
+      "LATENT"
+    ],
+    [
+      16,
+      3,
+      0,
+      11,
+      1,
+      "VAE"
+    ],
+    [
+      17,
+      11,
+      0,
+      12,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7,
+      "offset": [
+        0,
+        0
+      ]
+    },
+    "linearData": {
+      "inputs": [
+        [
+          "5",
+          "image",
+          {
+            "description": "кадр для правки"
+          }
+        ],
+        [
+          "7",
+          "prompt",
+          {
+            "description": "инструкция: что изменить, что оставить"
+          }
+        ],
+        [
+          "4",
+          "strength_model",
+          {
+            "description": "сила NSFW-LoRA, 0.6–0.9"
+          }
+        ],
+        [
+          "10",
+          "seed",
+          {
+            "description": "сид: randomize = каждый раз новый"
+          }
+        ],
+        [
+          "10",
+          "steps",
+          {
+            "description": "20 шагов ≈ 6.5 мин"
+          }
+        ],
+        [
+          "10",
+          "cfg",
+          {
+            "description": "CFG 4"
+          }
+        ]
+      ],
+      "outputs": [
+        "12"
+      ]
+    }
+  },
+  "version": 0.4
+}

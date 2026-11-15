@@ -1,0 +1,929 @@
+{
+  "last_node_id": 30,
+  "last_link_id": 22,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        80,
+        60
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            2
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            12,
+            15,
+            21
+          ],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CheckpointLoaderSimple"
+      },
+      "widgets_values": [
+        "WAI-Nsfw-Illustrious-17.safetensors"
+      ],
+      "title": "Чекпойнт"
+    },
+    {
+      "id": 2,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        80,
+        320
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            5
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "style\\johnpersons_original.safetensors",
+        0.9
+      ],
+      "title": "LoRA · johnpersons_original"
+    },
+    {
+      "id": 30,
+      "type": "CLIPSetLastLayer",
+      "pos": [
+        80,
+        580
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            3,
+            4
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPSetLastLayer"
+      },
+      "widgets_values": [
+        -2
+      ],
+      "title": "Clip skip -2"
+    },
+    {
+      "id": 4,
+      "type": "CLIPTextEncode",
+      "pos": [
+        80,
+        840
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            8,
+            17
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "comic book illustration, theofficialpit style, jpstyle, adult woman, short hair, leather jacket, city street at dusk, bold black outlines, flat colors, clean skin, high contrast"
+      ],
+      "title": "Промпт"
+    },
+    {
+      "id": 5,
+      "type": "CLIPTextEncode",
+      "pos": [
+        500,
+        60
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            9,
+            18
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "photo, photorealistic, 3d render, soft shading, airbrush, gradient, blurry, low quality, halftone dots, screentone, dotted texture, moire, freckles, skin texture, bad anatomy, bad hands, extra fingers, fewer fingers, watermark, text, signature, child, loli, shota, young"
+      ],
+      "title": "Негатив"
+    },
+    {
+      "id": 6,
+      "type": "EmptyLatentImage",
+      "pos": [
+        500,
+        320
+      ],
+      "size": [
+        380,
+        210
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            10
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "EmptyLatentImage"
+      },
+      "widgets_values": [
+        832,
+        1216,
+        1
+      ]
+    },
+    {
+      "id": 20,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        500,
+        580
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            6
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "detail\\hands_xl.safetensors",
+        0.0
+      ],
+      "title": "LoRA · hands_xl"
+    },
+    {
+      "id": 3,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        500,
+        840
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            7,
+            16
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "Sexy_Detailer.safetensors",
+        0.5
+      ],
+      "title": "LoRA · Sexy_Detailer"
+    },
+    {
+      "id": 7,
+      "type": "KSampler",
+      "pos": [
+        920,
+        60
+      ],
+      "size": [
+        380,
+        300
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 7
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 8
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 9
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            11
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        12345,
+        "randomize",
+        30,
+        6.0,
+        "euler_ancestral",
+        "normal",
+        1.0
+      ],
+      "title": "Сэмплер · denoise 1"
+    },
+    {
+      "id": 8,
+      "type": "VAEDecode",
+      "pos": [
+        920,
+        320
+      ],
+      "size": [
+        380,
+        120
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 11
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 12
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            13
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": [],
+      "title": "Из латента"
+    },
+    {
+      "id": 9,
+      "type": "ImageScaleBy",
+      "pos": [
+        920,
+        580
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 13
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            14
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageScaleBy"
+      },
+      "widgets_values": [
+        "lanczos",
+        1.5
+      ],
+      "title": "Апскейл"
+    },
+    {
+      "id": 10,
+      "type": "VAEEncode",
+      "pos": [
+        920,
+        840
+      ],
+      "size": [
+        380,
+        120
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pixels",
+          "type": "IMAGE",
+          "link": 14
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 15
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            19
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEEncode"
+      },
+      "widgets_values": [],
+      "title": "В латент"
+    },
+    {
+      "id": 11,
+      "type": "KSampler",
+      "pos": [
+        1340,
+        60
+      ],
+      "size": [
+        380,
+        300
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 16
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 17
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 18
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 19
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            20
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        12345,
+        "randomize",
+        18,
+        6.0,
+        "euler_ancestral",
+        "normal",
+        0.45
+      ],
+      "title": "Сэмплер · denoise 0.45"
+    },
+    {
+      "id": 12,
+      "type": "VAEDecode",
+      "pos": [
+        1340,
+        320
+      ],
+      "size": [
+        380,
+        120
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 20
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 21
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            22
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": [],
+      "title": "Из латента"
+    },
+    {
+      "id": 13,
+      "type": "SaveImage",
+      "pos": [
+        1340,
+        580
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 22
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "comic/01_scene_jp"
+      ],
+      "title": "Сохранение"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "MODEL"
+    ],
+    [
+      2,
+      1,
+      1,
+      30,
+      0,
+      "CLIP"
+    ],
+    [
+      3,
+      30,
+      0,
+      4,
+      0,
+      "CLIP"
+    ],
+    [
+      4,
+      30,
+      0,
+      5,
+      0,
+      "CLIP"
+    ],
+    [
+      5,
+      2,
+      0,
+      20,
+      0,
+      "MODEL"
+    ],
+    [
+      6,
+      20,
+      0,
+      3,
+      0,
+      "MODEL"
+    ],
+    [
+      7,
+      3,
+      0,
+      7,
+      0,
+      "MODEL"
+    ],
+    [
+      8,
+      4,
+      0,
+      7,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      9,
+      5,
+      0,
+      7,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      10,
+      6,
+      0,
+      7,
+      3,
+      "LATENT"
+    ],
+    [
+      11,
+      7,
+      0,
+      8,
+      0,
+      "LATENT"
+    ],
+    [
+      12,
+      1,
+      2,
+      8,
+      1,
+      "VAE"
+    ],
+    [
+      13,
+      8,
+      0,
+      9,
+      0,
+      "IMAGE"
+    ],
+    [
+      14,
+      9,
+      0,
+      10,
+      0,
+      "IMAGE"
+    ],
+    [
+      15,
+      1,
+      2,
+      10,
+      1,
+      "VAE"
+    ],
+    [
+      16,
+      3,
+      0,
+      11,
+      0,
+      "MODEL"
+    ],
+    [
+      17,
+      4,
+      0,
+      11,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      18,
+      5,
+      0,
+      11,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      19,
+      10,
+      0,
+      11,
+      3,
+      "LATENT"
+    ],
+    [
+      20,
+      11,
+      0,
+      12,
+      0,
+      "LATENT"
+    ],
+    [
+      21,
+      1,
+      2,
+      12,
+      1,
+      "VAE"
+    ],
+    [
+      22,
+      12,
+      0,
+      13,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7,
+      "offset": [
+        0,
+        0
+      ]
+    },
+    "linearData": {
+      "inputs": [
+        [
+          "1",
+          "ckpt_name",
+          {
+            "description": "чекпойнт: WAI / Hassaku / PornMaster"
+          }
+        ],
+        [
+          "4",
+          "text",
+          {
+            "description": "что нарисовать: персонаж, действие, одежда, фон"
+          }
+        ],
+        [
+          "5",
+          "text",
+          {
+            "description": "что исключить (общий негатив уже внутри)"
+          }
+        ],
+        [
+          "6",
+          "width",
+          {
+            "description": "832 для портрета"
+          }
+        ],
+        [
+          "6",
+          "height",
+          {
+            "description": "1216 для портрета"
+          }
+        ],
+        [
+          "2",
+          "strength_model",
+          {
+            "description": "стиль: оригинал John Persons (триггер jpstyle)"
+          }
+        ],
+        [
+          "3",
+          "strength_model",
+          {
+            "description": "тело: Sexy_Detailer (0 = выкл)"
+          }
+        ],
+        [
+          "20",
+          "strength_model",
+          {
+            "description": "кисти: hands_xl (0 = выкл)"
+          }
+        ],
+        [
+          "7",
+          "seed",
+          {
+            "description": "сид: randomize = каждый раз новый"
+          }
+        ],
+        [
+          "7",
+          "steps",
+          {
+            "description": "28–34 шага"
+          }
+        ],
+        [
+          "7",
+          "cfg",
+          {
+            "description": "5.5–6.5"
+          }
+        ]
+      ],
+      "outputs": [
+        "13"
+      ]
+    }
+  },
+  "version": 0.4
+}
