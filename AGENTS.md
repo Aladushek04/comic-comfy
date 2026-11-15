@@ -7,6 +7,10 @@
 
 - ComfyUI: `G:\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI` (Desktop 1.1.9, движок 0.45.2, torch 2.12.1+cu130).
 - Общие модели: `G:\Comfy-Desktop\ComfyUI-Shared\models` (models/input/output — тоже там).
+  **В коде этих путей нет.** `tools\settings.py` берёт их из `COMIC_ROOT`, `COMFY_MODELS`,
+  `COMFY_SHARED`, `COMFY_INPUT`, `COMFY_OUTPUT`, `COMFY_URL`, иначе из `base_path`
+  в `extra_model_paths.yaml`, иначе из раскладки рядом с репозиторием. Скрипты должны
+  работать на чужой машине без правок кода — только через env или yaml.
 - Воркфлоу: `G:\AI\comic-comfy\workflows` — источник правды; копия для панели ComfyUI:
   `...\ComfyUI\user\default\workflows`. Что открывать в какой ситуации — `G:\AI\comic-comfy\INDEX.md`.
   Четырнадцать сборок, схема имени `номер_назначение_стиль`: 01_scene_{thepit,comic,jp}, 02_edit_mask,
@@ -16,6 +20,8 @@
   Новые файлы раскладываются по подпапкам (`loras\detail`, `loras\comic`, `loras\style`, `loras\qwen`,
   `checkpoints\alt`), ComfyUI отдаёт их как `detail\hands_xl.safetensors`.
 - Генератор: `G:\AI\comic-comfy\tools\build_workflows.py`.
+- Загрузка: `tools\download-hf.ps1` (HF), `tools\download-civitai.ps1` (все нужные LoRA),
+  `tools\check_install.py` (сверяет 19 моделей из сборок с диском и с `DOWNLOADS.md`).
 - Правила стиля: `G:\AI\comic-comfy\STYLE.md`.
 - Дизайн и тайминги: `G:\AI\comic-comfy\docs\2026-11-12-comic-stack-design.md`.
 
@@ -98,6 +104,15 @@ ComfyUI не трогает. Без готового описания (кэш, `
    `{{subject}}`, негатив, имя и вес стилевой LoRA), CLI собирает промпт из шаблона, а вес ставит
    по имени LoRA. Проверка: `tools\test_photo_prompt.py`, пункт 12.
 
+0.6. **Чистая установка зависела от машины автора.** Было: `G:\...` зашиты в оба Python-скрипта
+   и в загрузчики; в списке загрузки не хватало 9 из 19 моделей (thepit2, P477Y, hands_xl,
+   три style-LoRA, GTAV_IL_MIX, Qwen-Lightning, depth); HF-скрипт принимал файл по «не меньше
+   минимума» (обрыв на 7 ГиБ проходил как готовый), а обещанной докачки `curl -C -` не было —
+   `-o` каждый раз начинал заново. Теперь пути идут через `tools\settings.py` (env или
+   `extra_model_paths.yaml`), загрузчики пишут `.part`, докачивают и сверяют **точный** размер
+   с сервером/API, а `tools\check_install.py` доказывает, что список полный. Проверка:
+   `tools\test_photo_prompt.py`, пункт 13.
+
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
    съезжают на позицию влево, панель Issues пишет «Invalid input: sampler_name / cfg».
@@ -115,20 +130,35 @@ ComfyUI не трогает. Без готового описания (кэш, `
 
 ## Civitai
 
-Токен лежит в `%USERPROFILE%\.civitai\token` (в чат и в репозиторий не попадает). Скачивание:
+Токен лежит в `%USERPROFILE%\.civitai\token` (в чат и в репозиторий не попадает). Все нужные
+сборкам LoRA качаются одним заходом, ID проверены через API:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File G:\AI\comic-comfy\tools\civitai-dl.ps1 `
-  -VersionId 2140775 -FileId 2034567 -OutName GTAV_IL_MIX.safetensors
+powershell -ExecutionPolicy Bypass -File tools\download-civitai.ps1
+powershell -ExecutionPolicy Bypass -File tools\download-civitai.ps1 -Verify   # только проверить ID
 ```
+
+Один файл:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\civitai-dl.ps1 `
+  -VersionId 1868373 -FileId 1768210 -OutName thepit2_1768210.safetensors
+```
+
+`civitai-dl.ps1` качает в `.part`, докачивает `-C -` и переименовывает только после сверки
+размера с API: недокачанный файл не считается готовым. ID для файлов, уже лежащих на диске,
+добываются хэшем: `GET /api/v1/model-versions/by-hash/<sha256>` — так проверены все ID
+в `DOWNLOADS.md`, вручную их не угадывать.
 
 Анонимно многие файлы отдают `401`, при этом `HEAD` может отвечать `200` — проверять только реальной
 загрузкой. Часть LoRA закрыта логином даже с токеном (Early Access) — тогда качать руками из браузера.
+Файлы на Civitai называются иначе, чем в графах: сохранять под именем из `DOWNLOADS.md` (`-OutName`),
+иначе сборки LoRA не найдут.
 
 Поиск по каталогу (печатает versionId/fileId/триггеры/размер, токен не выводит):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File G:\AI\comic-comfy\tools\civitai-search.ps1 `
+powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
   -Query "gta style" -Types LORA -Base Illustrious -Nsfw -Limit 8
 ```
 
@@ -184,6 +214,7 @@ powershell -ExecutionPolicy Bypass -File G:\AI\comic-comfy\tools\civitai-search.
 
 ## Проверки перед словом «готово»
 
+- `python tools\check_install.py` — все 19 моделей из сборок на диске и описаны в `DOWNLOADS.md`.
 - `python build_workflows.py` без ошибок, затем валидатор `widgets_values` по `/object_info`.
 - Прогон через `/prompt`: успех — это **имя файла в `outputs`**, а не `status_str == success`.
   `success` с пустым `outputs` бывает (граф без SaveImage, отмена) — это провал.

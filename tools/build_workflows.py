@@ -12,9 +12,13 @@ import json
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
-BASE = "http://127.0.0.1:8199"
-OUT = r"G:\AI\comic-comfy\workflows"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import settings
+
+BASE = settings.COMFY_URL
+OUT = str(settings.WF_DIR)
 
 # порядок сокетов и виджетов повторяет схемы /object_info
 DEFS = {

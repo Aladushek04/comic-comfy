@@ -19,6 +19,7 @@ import argparse
 import contextlib
 import io
 import json
+import re
 import shutil
 import socket
 import subprocess
@@ -28,7 +29,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import check_install as ci
 import photo_prompt as pp
+import settings as st
 from PIL import Image
 
 TMP = Path(tempfile.mkdtemp(prefix="photo_prompt_test_"))
@@ -516,6 +519,81 @@ def test_style_from_graph():
     check("--style-weight без опознанной LoRA -> отказ", code not in (0, None), str(code))
 
 
+def test_portable_paths():
+    print("\n13) пути и установка не зависят от машины автора")
+    tools = Path(__file__).parent
+    disk = re.compile(r"(?<![\w.])[A-Za-z]:\\")
+    bad = []
+    for p in sorted(tools.iterdir()):
+        if p.suffix.lower() not in (".py", ".ps1") or p.name == Path(__file__).name:
+            continue
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+            if disk.search(line):
+                bad.append(f"{p.name}:{i}")
+    check("в скриптах нет литералов диска", not bad, ", ".join(bad))
+
+    yaml = TMP / "extra_model_paths.yaml"
+    yaml.write_text("comic_shared:\n  base_path: Q:\\models\n", encoding="utf-8")
+    got = st.resolve(env={}, yaml_path=yaml)
+    check("base_path читается из yaml", str(got["models"]) == "Q:\\models", str(got["models"]))
+    check("input/output рядом с models",
+          got["input"] == got["models"].parent / "input"
+          and got["output"] == got["models"].parent / "output", str(got))
+    got = st.resolve(env={"COMFY_MODELS": str(TMP / "m")}, yaml_path=yaml)
+    check("env важнее yaml", got["models"] == TMP / "m", str(got["models"]))
+    got = st.resolve(env={}, yaml_path=TMP / "нет-такого.yaml")
+    check("без yaml — раскладка рядом с репозиторием", got["models"] == st.ROOT / "models",
+          str(got["models"]))
+
+    # CLI из любой папки: пути считаются от файла скрипта, не от текущего каталога
+    img = TMP / "cwd.png"
+    make(img, (7, 7, 7))
+    r = subprocess.run([sys.executable, str(tools / "photo_prompt.py"), "--image", str(img),
+                        "--style", "thepit", "--no-llm", "--subject", "adult woman",
+                        "--dry-run"], cwd=str(TMP), capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    check("CLI работает из чужого cwd", r.returncode == 0 and "итоговый промпт" in r.stdout,
+          (r.stdout + r.stderr).strip()[-200:])
+
+    # check_install: полный набор, отсутствие depth, пропавшая модель, пропавшая строка в доке
+    models = TMP / "install_models"
+    needed = ci.workflow_models(tools.parent / "workflows")
+    for name in needed:
+        p = models / Path(name)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"x")
+    docs = TMP / "DOWNLOADS.md"
+    docs.write_text("\n".join(needed), encoding="utf-8")
+
+    def check_install_run():
+        r = subprocess.run([sys.executable, str(tools / "check_install.py"),
+                            "--models", str(models), "--docs", str(docs)],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        return r.returncode, (r.stdout + r.stderr)
+
+    rc, out = check_install_run()
+    check("полный набор -> код 0", rc == 0, out[-200:])
+    check("все 19 моделей найдены", "моделей в сборках: 19" in out, out[-200:])
+
+    (models / "depth_anything_v2_vitl.pth").unlink()
+    rc, out = check_install_run()
+    check("depth не считается пропажей (его качает узел)", rc == 0, out[-200:])
+
+    missing = models / "loras" / "thepit2_1768210.safetensors"
+    if not missing.exists():
+        missing = next(p for p in models.rglob("thepit2_1768210.safetensors"))
+    missing.unlink()
+    rc, out = check_install_run()
+    check("пропала модель -> код 1", rc == 1 and "thepit2_1768210" in out, out[-200:])
+    check("пропажа названа", "нет на диске" in out, out[-200:])
+
+    missing.write_bytes(b"x")
+    docs.write_text("\n".join(n for n in needed if "bimbofusion" not in n), encoding="utf-8")
+    rc, out = check_install_run()
+    check("модель не описана в инструкции -> код 1",
+          rc == 1 and "не описано" in out, out[-200:])
+
+
 def main():
     patch_roots()
     try:
@@ -531,6 +609,7 @@ def main():
         test_dry_run_does_not_touch_lm()
         test_unload_only_own_model()
         test_style_from_graph()
+        test_portable_paths()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

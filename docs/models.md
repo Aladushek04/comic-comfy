@@ -1,6 +1,7 @@
 # Каталог моделей: что лежит и для чего
 
-Все пути — относительно `G:\Comfy-Desktop\ComfyUI-Shared\models`.
+Все пути — относительно папки моделей (`COMFY_MODELS` или `base_path` в `extra_model_paths.yaml`).
+Откуда что скачать — `DOWNLOADS.md`; проверить раскладку — `python tools\check_install.py`.
 ComfyUI показывает подпапки через обратный слэш: `detail\hands_xl.safetensors`.
 
 ## Чекпойнты
@@ -17,7 +18,10 @@ ComfyUI показывает подпапки через обратный слэ
 
 | Файл | Размер | Триггер | Для чего |
 |---|---|---|---|
-| `loras\thepit2_1768210.safetensors` | 0.43 | `thick lips` | основной стиль TheOfficialPit V2 |
+| `loras\thepit2_1768210.safetensors` | 0.43 | `thick lips` | основной стиль TheOfficialPit V2, прошит в 01/02/04/05/07 |
+| `loras\style\thepit_comic.safetensors` | 0.21 | `ComicPitXX` | комикс-вариант, прошит в 01/07 comic |
+| `loras\style\johnpersons_original.safetensors` | 0.21 | `jpstyle` | вариант John Persons, прошит в 01/07 jp |
+| `loras\style\bimbofusion.safetensors` | 0.21 | `bimbofusion artstyle` | тёплая палитра, вес 0.6, прошит в 07 bimbo |
 | `loras\theofficialpit_artstyle_IL.safetensors` | 0.21 | `th3p1txxx` | лёгкая версия стиля |
 | `loras\thepitstyle_v1.safetensors` | 0.21 | — | ещё один вариант ThePit (civitai model 2566177, v2883466), 57 загрузок, триггера нет |
 | `loras\style\style_fernando.safetensors` | 0.21 | `f3rn4nd0` | **новый**: западный комикс, толстые линии |

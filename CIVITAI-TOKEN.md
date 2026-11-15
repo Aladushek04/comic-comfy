@@ -2,23 +2,35 @@
 
 Токен не спрашивается заново и не вводится в чат.
 
-- **Где лежит:** `%USERPROFILE%\.civitai\token` (`C:\Users\isoko\.civitai\token`).
-  Права: наследование снято, доступ на чтение только у учётной записи `isoko`.
-- **Кто читает:** `G:\AI\comic-comfy\tools\civitai-dl.ps1`. Порядок поиска: переменная
-  окружения `CIVITAI_TOKEN`, затем файл выше.
-- **Как качать:**
+- **Где лежит:** `%USERPROFILE%\.civitai\token`. Права: доступ на чтение только у своей
+  учётной записи Windows.
+- **Кто читает:** `tools\download-civitai.ps1` и `tools\civitai-dl.ps1`. Порядок поиска:
+  переменная окружения `CIVITAI_TOKEN`, затем файл выше.
+- **Как качать всё нужное:**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File G:\AI\comic-comfy\tools\civitai-dl.ps1 `
-  -VersionId 2140775 -FileId 2034567 -OutName GTAV_IL_MIX.safetensors
+powershell -ExecutionPolicy Bypass -File tools\download-civitai.ps1
+```
+
+- **Как качать один файл:**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\civitai-dl.ps1 `
+  -VersionId 1868373 -FileId 1768210 -OutName thepit2_1768210.safetensors
 ```
 
 `VersionId` и `FileId` берутся из `https://civitai.com/api/v1/model-versions/<VersionId>`
-(поле `files[].id`). Если файл уже лежит и он больше 1 МБ — скрипт пропускает загрузку.
+(поле `files[].id`) либо по хэшу локального файла:
+`https://civitai.com/api/v1/model-versions/by-hash/<sha256>`. Готовые ID для всех нужных
+LoRA — в `DOWNLOADS.md`.
+
+- **Как качает:** в `<имя>.part`, докачка `curl -C -`, переименование только после сверки
+  размера с API. Файл, скачанный наполовину, готовым не считается и не пропускается.
+  Если размер получить не удалось, скрипт оставляет файл и честно пишет, что не проверял.
 
 - **Ограничения:** часть моделей закрыта Early Access — им не поможет и токен, качать из браузера.
   Анонимный `HEAD` часто отдаёт `200`, а реальный GET — `401`, поэтому проверять только загрузкой.
-  Скрипт после скачивания отвергает файлы меньше 1 МБ (вместо весов приходит страница ошибки).
+  Файл меньше 1 МБ — почти наверняка страница ошибки вместо весов, скрипт его удаляет.
 
-- **Никогда:** не печатать содержимое токена, не копировать его в `G:\AI\comic-comfy`,
+- **Никогда:** не печатать содержимое токена, не копировать его в репозиторий,
   не отправлять в чат и не коммитить.

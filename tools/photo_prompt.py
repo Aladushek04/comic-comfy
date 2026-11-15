@@ -3,7 +3,7 @@
 Зачем две фазы: на 16 ГБ VLM и SDXL не живут вместе. Сначала модель смотрит фото
 и пишет описание, потом выгружается, и только затем запускается ComfyUI.
 
-    python photo_prompt.py --image G:\\...\\photo.png --workflow 07_photo_thepit
+    python photo_prompt.py --image photo.png --workflow 07_photo_thepit
     python photo_prompt.py --image ... --workflow 07_photo_comic --generate
     python photo_prompt.py --image ... --workflow 07_photo_thepit --subject "..." --no-llm
 
@@ -30,10 +30,13 @@ import time
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import settings
+
 LM = "http://127.0.0.1:1234"
-COMFY = "http://127.0.0.1:8199"
-ROOT = Path(r"G:\AI\comic-comfy")
-WF_DIR = ROOT / "workflows"
+COMFY = settings.COMFY_URL
+ROOT = settings.ROOT
+WF_DIR = settings.WF_DIR
 
 
 def comfy_probe(url):
@@ -70,8 +73,8 @@ STYLE_ALIAS = {
     "bimbo": "07_photo_bimbo",
     "gta": "08_photo_gta",
 }
-OUTPUT_DIR = Path(r"G:\Comfy-Desktop\ComfyUI-Shared\output\comic")
-INPUT_DIR = Path(r"G:\Comfy-Desktop\ComfyUI-Shared\input")
+OUTPUT_DIR = settings.OUTPUT_DIR
+INPUT_DIR = settings.INPUT_DIR
 
 
 _FINGERPRINTS = {}
