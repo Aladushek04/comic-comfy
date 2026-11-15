@@ -669,7 +669,7 @@ def load_workflow(workflow):
     return data["prompt"], data.get("meta") or {}
 
 
-def generate(workflow, subject, negative_extra, denoise=None, seed=None, landscape=False, style_weight=None, image_name=None):
+def generate(workflow, subject, negative_extra, denoise=None, seed=None, landscape=False, style_weight=None, image_name=None, cn_strength=None):
     api, meta = load_workflow(workflow)
 
     prefix = meta.get("positive_template") or STYLE_PREFIX.get(workflow)
@@ -697,6 +697,10 @@ def generate(workflow, subject, negative_extra, denoise=None, seed=None, landsca
                 node["inputs"]["strength_model"] = float(style_weight)
                 weight_set = True
                 print(f"   вес стилевой LoRA {style_lora}: {old} -> {style_weight}")
+        if node["class_type"] == "ControlNetApplyAdvanced" and cn_strength is not None:
+            old = node["inputs"].get("strength")
+            node["inputs"]["strength"] = float(cn_strength)
+            print(f"   сила ControlNet: {old} -> {cn_strength}")
         if node["class_type"] == "EmptyLatentImage" and landscape:
             w = node["inputs"].get("width")
             h = node["inputs"].get("height")
@@ -884,6 +888,7 @@ def run_batch(args, workflow):
             ok, name = generate(workflow, desc["subject"], desc.get("negative_extra", ""),
                                 denoise=args.denoise, seed=sd,
                                 landscape=image_is_landscape(str(f)), style_weight=args.style_weight,
+                                cn_strength=args.cn_strength,
                                 image_name=ensure_input(str(f)))
             if not ok:
                 failed += 1
@@ -926,6 +931,9 @@ def main():
     ap.add_argument("--negative-extra", default="", help="дописать в негатив вручную")
     ap.add_argument("--negative-drop", default="", help="вычеркнуть слова из негатива LLM")
     ap.add_argument("--denoise", type=float, help="перебить denoise основного сэмплера")
+    ap.add_argument("--cn-strength", type=float,
+                    help="перебить силу ControlNet (глубина/поза); ниже — свободнее сцена, "
+                         "выше — точнее повтор исходной геометрии")
     ap.add_argument("--style-weight", type=float,
                     help="перебить вес стилевой LoRA (по умолчанию как в сборке: 0.9 / 0.85 / 0.6)")
     ap.add_argument("--seed", type=int)
@@ -1082,7 +1090,7 @@ def main():
             sd = (a.seed + i) if seeded else random.randint(1, 2_000_000_000)
             print(f"   вариант {i + 1}/{n}, seed {sd}")
             ok, name = generate(a.workflow, desc["subject"], desc.get("negative_extra", ""),
-                                denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image))
+                                denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image), cn_strength=a.cn_strength)
             ok_all &= ok
             if name and save_run(a.image, a.workflow, desc, sd, a.denoise, name) is None:
                 ok_all = False
@@ -1108,7 +1116,7 @@ def main():
                         print("   промпт дополнен:", ", ".join(add))
                         print("   повторный проход с усиленным промптом")
                         ok, name2 = generate(a.workflow, desc["subject"], desc.get("negative_extra", ""),
-                                             denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image))
+                                             denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image), cn_strength=a.cn_strength)
                         ok_all &= ok
                         if name2 and save_run(a.image, a.workflow, desc, sd, a.denoise, name2) is None:
                             ok_all = False
@@ -1124,7 +1132,7 @@ def main():
                             desc["subject"] = subj2
                             print("   усилено весом:", ", ".join(bumped))
                             ok, name2 = generate(a.workflow, desc["subject"], desc.get("negative_extra", ""),
-                                                 denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image))
+                                                 denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image), cn_strength=a.cn_strength)
                             ok_all &= ok
                             if name2 and save_run(a.image, a.workflow, desc, sd, a.denoise, name2) is None:
                                 ok_all = False

@@ -232,7 +232,7 @@ def batch_args(folder, **over):
         model=None, subject=None, no_llm=False, from_json=None, preset=None, save_preset=None,
         recheck=False, keep_llm=False, comfy=None, negative_extra="", negative_drop="",
         denoise=None, style_weight=None, seed=7, force=False, dry_run=False, generate=True,
-        unload_all=False,
+        unload_all=False, cn_strength=None,
     )
     for k, v in over.items():
         setattr(ns, k, v)
@@ -973,6 +973,47 @@ def test_batch_scene_cache_no_lm():
          pp.unload_all, pp.unload_model, pp.resolve_comfy) = saved
 
 
+def test_controlnet_strength_flag():
+    print("\n22) --cn-strength перебивает силу ControlNet")
+    def payload_for(**kw):
+        sent = {}
+        saved = (pp.post, pp.get, pp.time)
+        pp.post = lambda url, payload, timeout=300: (sent.update(payload["prompt"]) or
+                                                     {"prompt_id": "p"})
+        pp.get = lambda url, timeout=30: {"p": {"status": {"status_str": "success"},
+                                                "outputs": {"9": {"images": [
+                                                    {"filename": "x.png"}]}}}}
+        pp.time = _Clock()
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                pp.generate("07_photo_thepit", "adult woman", "", seed=1, **kw)
+        finally:
+            pp.post, pp.get, pp.time = saved
+        return [n["inputs"]["strength"] for n in sent.values()
+                if n["class_type"] == "ControlNetApplyAdvanced"]
+
+    check("без флага — как в сборке", payload_for() == [0.6], str(payload_for()))
+    check("с флагом — новое значение", payload_for(cn_strength=0.25) == [0.25],
+          str(payload_for(cn_strength=0.25)))
+
+    got = {}
+    saved_gen, saved_resolve = pp.generate, pp.resolve_comfy
+    pp.generate = lambda *a, **k: (got.update(k) or (False, None))
+    pp.resolve_comfy = lambda c=None: "http://stub"
+    img = TMP / "cn.png"
+    make(img, (6, 7, 8))
+    try:
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_main(["--image", str(img), "--style", "thepit", "--no-llm",
+                          "--subject", "adult woman", "--cn-strength", "0.3", "--generate"])
+        except SystemExit:
+            pass
+    finally:
+        pp.generate, pp.resolve_comfy = saved_gen, saved_resolve
+    check("main передаёт силу ControlNet", got.get("cn_strength") == 0.3, str(got))
+
+
 def main():
     patch_roots()
     try:
@@ -997,6 +1038,7 @@ def main():
         test_scene_failure_not_cached()
         test_check_install_strictness()
         test_batch_scene_cache_no_lm()
+        test_controlnet_strength_flag()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
