@@ -24,8 +24,11 @@ import os
 import random
 import re
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -33,7 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import settings
 
-LM = "http://127.0.0.1:1234"
+LM = os.environ.get("LM_URL") or "http://127.0.0.1:1234"
 COMFY = settings.COMFY_URL
 ROOT = settings.ROOT
 WF_DIR = settings.WF_DIR
@@ -571,7 +574,7 @@ def workflow_from_file(name):
 
 
 def save_run(image_path, workflow, desc, seed, denoise, name,
-             cn_strength=None, style_weight=None):
+             cn_strength=None, style_weight=None, overrides=None):
     """Складывает кадр и его паспорт в папку out/<фото>_<хэш>/.
 
     Сборка пишется в каждый кадр, а не одна на папку: в одной папке лежат кадры
@@ -613,6 +616,7 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
         "workflow": workflow,
         "seed": seed, "denoise": denoise, "file": name,
         "cn_strength": cn_strength, "style_weight": style_weight,
+        "overrides": overrides or None,
         "subject": desc.get("subject", ""), "negative_extra": desc.get("negative_extra", ""),
     })
     book.pop("workflow", None)
@@ -671,20 +675,155 @@ def load_workflow(workflow):
     """Граф и его стилевые настройки. meta пишет build_workflows.py из самого графа."""
     path = WF_DIR / (workflow + ".api.json")
     if not path.exists():
-        sys.exit(f"нет файла {path} — сначала собери воркфлоу")
+        raise PipelineError(f"нет файла {path} — сначала собери воркфлоу "
+                            f"(python tools\\build_workflows.py)")
     data = json.loads(path.read_text(encoding="utf-8"))
     return data["prompt"], data.get("meta") or {}
 
 
-def generate(workflow, subject, negative_extra, denoise=None, seed=None, landscape=False, style_weight=None, image_name=None, cn_strength=None):
+def workflow_meta(workflow):
+    """Только meta сборки: поля формы и стилевой шаблон, без копии графа."""
+    path = WF_DIR / (workflow + ".api.json")
+    if not path.exists():
+        raise PipelineError(f"нет файла {path} — сначала собери воркфлоу")
+    return json.loads(path.read_text(encoding="utf-8")).get("meta") or {}
+
+
+class PipelineError(RuntimeError):
+    """Ошибка пайплайна, которую показывают пользователю без трейсбека."""
+
+
+class BindingsError(PipelineError):
+    """Поле формы не совпало с графом: неверный граф не отправляем."""
+
+
+def binding(meta, key):
+    """Привязка поля из meta.fields. Нет привязки — отказ, а не догадка."""
+    fields = (meta or {}).get("fields") or {}
+    b = fields.get(key)
+    if not isinstance(b, dict) or not b.get("node"):
+        raise BindingsError(f"поле «{key}» не привязано к узлу графа: пересобери воркфлоу")
+    return b
+
+
+def check_bindings(api, meta, require_fields=False):
+    """Все привязки из meta должны существовать и быть записываемыми входами.
+
+    require_fields=True — режим формы: сборка без блока fields не показывается,
+    потому что интерфейсу неоткуда взять поля. CLI со старым .api.json работает
+    по-прежнему: там meta неполная, и это не повод отказывать в генерации.
+    """
+    problems = []
+    fields = (meta or {}).get("fields") or {}
+    if require_fields and not fields:
+        problems.append("в meta нет блока fields — форма не узнает поля, пересобери воркфлоу")
+    for key, b in fields.items():
+        node = api.get(str(b.get("node")))
+        if not node:
+            problems.append(f"поле «{key}»: узла {b.get('node')} нет в графе")
+            continue
+        name = b.get("input")
+        if name not in (node.get("inputs") or {}):
+            problems.append(f"поле «{key}»: у узла {b['node']} нет входа {name}")
+        elif isinstance(node["inputs"][name], list):
+            problems.append(f"поле «{key}»: вход {name} занят связью, писать нельзя")
+    for slot in (meta or {}).get("loras") or []:
+        node = api.get(str(slot.get("node")))
+        if not node or "lora_name" not in (node.get("inputs") or {}):
+            problems.append(f"слот LoRA {slot.get('role') or slot.get('node')}: "
+                            f"узла {slot.get('node')} нет в графе")
+        elif node["class_type"] != "LoraLoaderModelOnly":
+            problems.append(f"слот LoRA {slot.get('role')}: узел {slot.get('node')} "
+                            f"оказался {node['class_type']}, а не LoraLoaderModelOnly")
+    return problems
+
+
+def _coerce(value, kind, key):
+    if kind == "INT":
+        try:
+            if isinstance(value, bool):
+                raise ValueError
+            return int(value)
+        except (TypeError, ValueError):
+            raise BindingsError(f"поле «{key}» ждёт целое число, получено {value!r}") from None
+    if kind == "FLOAT":
+        try:
+            if isinstance(value, bool):
+                raise ValueError
+            return float(value)
+        except (TypeError, ValueError):
+            raise BindingsError(f"поле «{key}» ждёт число, получено {value!r}") from None
+    if kind == "COMBO":
+        if not isinstance(value, str) or not value.strip():
+            raise BindingsError(f"поле «{key}» ждёт одно значение из списка, получено {value!r}")
+        return value
+    return str(value)
+
+
+def apply_fields(api, meta, values):
+    """Пишет переопределения в копию графа по привязкам. Возвращает применённое."""
+    applied = {}
+    for key, value in (values or {}).items():
+        if value is None:
+            continue
+        b = binding(meta, key)
+        node = api.get(str(b["node"]))
+        if node is None:
+            raise BindingsError(f"поле «{key}»: узла {b['node']} нет в графе")
+        name = b["input"]
+        if name not in node["inputs"] or isinstance(node["inputs"][name], list):
+            raise BindingsError(f"поле «{key}»: вход {name} у узла {b['node']} недоступен")
+        node["inputs"][name] = _coerce(value, b.get("type", "STRING"), key)
+        applied[key] = node["inputs"][name]
+    return applied
+
+
+def apply_loras(api, meta, loras):
+    """Меняет имя и вес LoRA конкретного слота (style/body/character/hands)."""
+    applied = {}
+    slots = {s.get("role"): s for s in (meta or {}).get("loras") or []}
+    for role, change in (loras or {}).items():
+        slot = slots.get(role)
+        if slot is None:
+            raise BindingsError(f"в этой сборке нет слота LoRA «{role}»")
+        node = api.get(str(slot["node"]))
+        if node is None or node["class_type"] != "LoraLoaderModelOnly":
+            raise BindingsError(f"слот «{role}»: узла {slot['node']} нет в графе")
+        if isinstance(change, str):
+            change = {"name": change}
+        if change.get("name"):
+            node["inputs"]["lora_name"] = str(change["name"])
+            applied.setdefault(role, {})["name"] = node["inputs"]["lora_name"]
+        if change.get("weight") is not None:
+            node["inputs"]["strength_model"] = _coerce(change["weight"], "FLOAT",
+                                                       f"{role}.weight")
+            applied.setdefault(role, {})["weight"] = node["inputs"]["strength_model"]
+    return applied
+
+
+def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, landscape=False,
+                  style_weight=None, image_name=None, cn_strength=None,
+                  overrides=None, positive=None, negative=None):
+    """Копия API-графа под конкретный кадр плюс итоговые промпты.
+
+    Правки не касаются файла сборки: граф загружается заново, поэтому два
+    задания с разными настройками не мешают друг другу. Полный positive или
+    negative (overrides) заменяет собранный текст целиком — это явное
+    переопределение, а не добавка к описанию.
+    """
     api, meta = load_workflow(workflow)
+    problems = check_bindings(api, meta)
+    if problems:
+        raise BindingsError("; ".join(problems))
 
     prefix = meta.get("positive_template") or STYLE_PREFIX.get(workflow)
     if not prefix:
-        sys.exit(f"для {workflow} не задан стилевой блок: пересобери воркфлоу")
+        raise PipelineError(f"для {workflow} не задан стилевой блок: пересобери воркфлоу")
 
-    positive = compose_positive(meta, subject, workflow)
-    negative = compose_negative(negative_extra, meta)
+    positive_text = (str(positive) if positive is not None
+                     else compose_positive(meta, subject, workflow))
+    negative_text = (str(negative) if negative is not None
+                     else compose_negative(negative_extra, meta))
 
     patched = 0
     samplers = []
@@ -717,18 +856,15 @@ def generate(workflow, subject, negative_extra, denoise=None, seed=None, landsca
         if node["class_type"] in ("CLIPTextEncode", "TextEncodeQwenImageEditPlus"):
             t = str(node["inputs"].get("text", ""))
             if t.startswith("photo, photorealistic") or t.startswith("worst quality"):
-                node["inputs"]["text"] = negative
+                node["inputs"]["text"] = negative_text
                 patched += 1
             elif t.strip():
-                node["inputs"]["text"] = positive
+                node["inputs"]["text"] = positive_text
                 patched += 1
         if node["class_type"] == "KSampler":
             samplers.append(node)
     if patched == 0:
-        sys.exit("не нашёл текстовых узлов для подстановки")
-    if style_weight is not None and not weight_set:
-        sys.exit(f"--style-weight: не понял, какая LoRA стилевая в {workflow} "
-                 f"(meta.style_lora={style_lora!r}) — пересобери воркфлоу")
+        raise PipelineError("не нашёл текстовых узлов для подстановки")
 
     for s in samplers:
         if seed is not None:
@@ -737,43 +873,251 @@ def generate(workflow, subject, negative_extra, denoise=None, seed=None, landsca
         main = max(samplers, key=lambda s: float(s["inputs"].get("denoise", 0)))
         main["inputs"]["denoise"] = float(denoise)
 
-    print("   positive:", positive[:160] + ("…" if len(positive) > 160 else ""))
-    print("   negative:", negative[:160] + ("…" if len(negative) > 160 else ""))
+    applied = {}
+    if overrides:
+        applied.update(apply_fields(api, meta, overrides.get("fields")))
+        applied["loras"] = apply_loras(api, meta, overrides.get("loras"))
+    if style_weight is not None and not weight_set:
+        # Слот стиля могли переименовать переопределением — тогда сверяем по meta.
+        slots = {s.get("role"): s for s in meta.get("loras") or []}
+        if not (overrides or {}).get("loras", {}).get("style"):
+            raise BindingsError(f"--style-weight: не понял, какая LoRA стилевая в {workflow} "
+                                f"(meta.style_lora={style_lora!r}) — пересобери воркфлоу")
+        applied.setdefault("style_weight", float(style_weight))
 
-    pid = post(COMFY + "/prompt", {"prompt": api})["prompt_id"]
-    print(f"  в очереди: {pid}")
+    return {
+        "prompt": api,
+        "meta": meta,
+        "positive": positive_text,
+        "negative": negative_text,
+        "applied": applied,
+    }
+
+
+def wait_for_prompt(pid, progress=None, client_id=None, timeout=900):
+    """Ждёт /history и, если есть progress, читает шаги из /ws.
+
+    История — источник правды: WebSocket может не подняться, отвалиться или
+    промолчать на закэшированном графе, и кадр всё равно должен быть найден.
+    """
+    stop = threading.Event()
+    if progress and client_id and COMFY.startswith(("http://", "https://")):
+        ready = threading.Event()
+        threading.Thread(target=_ws_watch,
+                         args=(COMFY, client_id, pid, progress, stop, ready),
+                         daemon=True).start()
+        # Ждём рукопожатие: иначе первые шаги можно не успеть увидеть.
+        ready.wait(0.5)
     t0 = time.time()
-    while time.time() - t0 < 900:
-        time.sleep(3)
-        try:
-            h = get(COMFY + "/history/" + pid)
-        except Exception:
-            continue
-        if pid not in h:
-            continue
-        hist = h[pid]
-        status = hist.get("status") or {}
-        st = status.get("status_str", "?")
-        # Успех = есть файл в outputs (SaveImage, PreviewImage, видео). Любой другой узел
-        # с полем filename тоже считается: важен результат, а не имя ключа.
-        files = [v for o in (hist.get("outputs") or {}).values()
-                 for items in (o or {}).values() if isinstance(items, list)
-                 for v in items if isinstance(v, dict) and v.get("filename")]
-        name = files[0]["filename"] if files else None
-        if st != "success":
-            print(f"  {st} за {round(time.time()-t0,1)} с")
-            print_comfy_error(status)
-            return False, None
-        if not name:
-            # Пустой outputs при status_str=success: граф без SaveImage, отмена или
-            # пустой выход. Кадра нет — это провал, а не успех.
-            print(f"  success за {round(time.time()-t0,1)} с, но изображения нет — считаю провалом")
-            print_comfy_error(status)
-            return False, None
-        print(f"  success за {round(time.time()-t0,1)} с -> {name}")
-        return True, name
+    try:
+        while time.time() - t0 < timeout:
+            time.sleep(3)
+            try:
+                h = get(COMFY + "/history/" + pid)
+            except Exception:
+                continue
+            if pid not in h:
+                continue
+            hist = h[pid]
+            status = hist.get("status") or {}
+            st = status.get("status_str", "?")
+            # Успех = есть файл в outputs (SaveImage, PreviewImage, видео). Любой другой узел
+            # с полем filename тоже считается: важен результат, а не имя ключа.
+            files = [v for o in (hist.get("outputs") or {}).values()
+                     for items in (o or {}).values() if isinstance(items, list)
+                     for v in items if isinstance(v, dict) and v.get("filename")]
+            name = files[0]["filename"] if files else None
+            if st != "success":
+                print(f"  {st} за {round(time.time()-t0,1)} с")
+                print_comfy_error(status)
+                return False, None
+            if not name:
+                # Пустой outputs при status_str=success: граф без SaveImage, отмена или
+                # пустой выход. Кадра нет — это провал, а не успех.
+                print(f"  success за {round(time.time()-t0,1)} с, но изображения нет — считаю провалом")
+                print_comfy_error(status)
+                return False, None
+            print(f"  success за {round(time.time()-t0,1)} с -> {name}")
+            return True, name
+    finally:
+        stop.set()
     print("  таймаут: кадр не появился")
     return False, None
+
+
+def _ws_open(base, client_id, timeout=5):
+    """WebSocket без внешних пакетов: рукопожатие и текстовые кадры.
+
+    Свой клиент нужен, чтобы шаги работали и в окружении ComfyUI, и в .venv-web:
+    веб-зависимости не обязаны попадать в venv с torch. Если сервер не говорит
+    по-WebSocket, вызывающий просто остаётся на опросе /history.
+    """
+    url = base.rstrip("/")
+    secure = url.startswith("https://")
+    rest = re.sub(r"^https?://", "", url)
+    hostport, _, path = rest.partition("/")
+    host, _, port = hostport.partition(":")
+    sock = socket.create_connection((host, int(port or (443 if secure else 80))),
+                                    timeout=timeout)
+    if secure:
+        sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+    key = base64.b64encode(os.urandom(16)).decode()
+    request = (f"GET /{(path + '/') if path else ''}ws?clientId={client_id} HTTP/1.1\r\n"
+               f"Host: {hostport}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n")
+    sock.sendall(request.encode())
+    head = b""
+    while b"\r\n\r\n" not in head:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise OSError("сервер закрыл соединение на рукопожатии")
+        head += chunk
+        if len(head) > 65536:
+            raise OSError("слишком длинный ответ рукопожатия")
+    first, _, leftover = head.partition(b"\r\n\r\n")
+    lines = first.decode("latin-1").split("\r\n")
+    if " 101 " not in lines[0]:
+        raise OSError("WebSocket: " + lines[0])
+    expected = base64.b64encode(
+        hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+    ).decode()
+    for line in lines[1:]:
+        if line.lower().startswith("sec-websocket-accept:"):
+            if line.split(":", 1)[1].strip() != expected:
+                raise OSError("WebSocket: неверный Sec-WebSocket-Accept")
+            break
+    else:
+        raise OSError("WebSocket: сервер не подтвердил рукопожатие")
+    return _WSConn(sock, leftover)
+
+
+class _WSConn:
+    """Чтение текстовых кадров. Пинг подтверждаем, закрытие считаем концом."""
+
+    def __init__(self, sock, leftover=b""):
+        self.sock = sock
+        self.buf = leftover
+
+    def _read(self, n):
+        while len(self.buf) < n:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise EOFError("соединение закрыто")
+            self.buf += chunk
+        data, self.buf = self.buf[:n], self.buf[n:]
+        return data
+
+    def recv(self):
+        b1, b2 = self._read(2)
+        opcode = b1 & 0x0F
+        masked = bool(b2 & 0x80)
+        length = b2 & 0x7F
+        if length == 126:
+            length = int.from_bytes(self._read(2), "big")
+        elif length == 127:
+            length = int.from_bytes(self._read(8), "big")
+        mask = self._read(4) if masked else b""
+        payload = self._read(length) if length else b""
+        if masked:
+            payload = bytes(c ^ mask[i % 4] for i, c in enumerate(payload))
+        if opcode == 0x8:
+            raise EOFError("сервер закрыл WebSocket")
+        if opcode == 0x9:
+            self._send(0xA, payload)
+            return ""
+        if opcode == 0xA:
+            return ""
+        return payload.decode("utf-8", "replace")
+
+    def _send(self, opcode, payload):
+        mask = os.urandom(4)
+        data = bytes(c ^ mask[i % 4] for i, c in enumerate(payload))
+        self.sock.sendall(bytes([0x80 | opcode, 0x80 | len(data)]) + mask + data)
+
+    def close(self):
+        try:
+            self._send(0x8, b"\x03\xe8")
+        except Exception:
+            pass
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+
+
+def _ws_watch(base, client_id, pid, progress, stop, ready=None):
+    """Слушает /ws и отдаёт шаги. Падение сокета не мешает опросу истории."""
+    try:
+        conn = _ws_open(base, client_id)
+    except Exception as e:
+        progress({"stage": "ws_failed", "message": f"WebSocket не открылся: {e}"})
+        if ready is not None:
+            ready.set()
+        return
+    if ready is not None:
+        ready.set()
+    try:
+        while not stop.is_set():
+            try:
+                raw = conn.recv()
+            except Exception:
+                # Сокет закрылся — не беда: историю всё равно опрашиваем, кадр не теряется.
+                return
+            if not isinstance(raw, str) or not raw:
+                continue
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+            kind = msg.get("type")
+            data = msg.get("data") or {}
+            if data.get("prompt_id") and data["prompt_id"] != pid:
+                continue
+            if kind == "execution_start":
+                progress({"stage": "comfy_start", "prompt_id": pid})
+            elif kind == "execution_cached":
+                progress({"stage": "comfy_cached", "nodes": len(data.get("nodes") or [])})
+            elif kind == "progress":
+                progress({"stage": "sampling", "value": data.get("value"),
+                          "max": data.get("max"), "node": data.get("node")})
+            elif kind == "progress_state":
+                for node, state in (data.get("nodes") or {}).items():
+                    if state.get("state") == "running":
+                        progress({"stage": "sampling", "value": state.get("value"),
+                                  "max": state.get("max"), "node": node})
+            elif kind == "executing" and data.get("node") is None:
+                progress({"stage": "comfy_done"})
+            elif kind == "execution_error":
+                progress({"stage": "comfy_error",
+                          "message": str(data.get("exception_message") or "ошибка узла")})
+    finally:
+        conn.close()
+
+
+def generate(workflow, subject, negative_extra, denoise=None, seed=None, landscape=False,
+             style_weight=None, image_name=None, cn_strength=None, overrides=None,
+             positive=None, negative=None, progress=None, client_id=None):
+    try:
+        payload = build_payload(workflow, subject, negative_extra, denoise=denoise, seed=seed,
+                                landscape=landscape, style_weight=style_weight,
+                                image_name=image_name, cn_strength=cn_strength,
+                                overrides=overrides, positive=positive, negative=negative)
+    except PipelineError as e:
+        sys.exit(str(e))
+    api = payload["prompt"]
+    positive_text, negative_text = payload["positive"], payload["negative"]
+
+    print("   positive:", positive_text[:160] + ("…" if len(positive_text) > 160 else ""))
+    print("   negative:", negative_text[:160] + ("…" if len(negative_text) > 160 else ""))
+
+    body = {"prompt": api}
+    if client_id:
+        body["client_id"] = client_id
+    pid = post(COMFY + "/prompt", body)["prompt_id"]
+    print(f"  в очереди: {pid}")
+    if progress:
+        progress({"stage": "comfy_queue", "prompt_id": pid})
+    return wait_for_prompt(pid, progress=progress, client_id=client_id)
 
 
 def run_batch(args, workflow):
@@ -916,6 +1260,32 @@ def run_batch(args, workflow):
     return 0 if frames and not failed and not skipped else 1
 
 
+def build_request(a, workflow):
+    """Аргументы CLI -> задание. Один и тот же JobRequest получает и страница."""
+    import jobs
+    req = jobs.JobRequest(
+        image=a.image, workflow=workflow, scene=a.scene or "",
+        variants=max(1, a.variants), model=a.model,
+        subject=a.subject if a.no_llm else None,
+        negative_extra=a.negative_extra, negative_drop=a.negative_drop,
+        denoise=a.denoise, cn_strength=a.cn_strength, style_weight=a.style_weight,
+        seed=a.seed, force=a.force, recheck=a.recheck, keep_llm=a.keep_llm,
+        unload_all=a.unload_all, comfy=a.comfy,
+        generate=a.generate and not a.dry_run,
+        dry_run=a.dry_run, save_preset=a.save_preset, write_cache=True,
+    )
+    if a.preset:
+        p = preset_path(a.preset)
+        if not p.exists():
+            sys.exit(f"нет пресета {p}")
+        req.description = json.loads(p.read_text(encoding="utf-8"))
+        req.description_source = f"пресета {p.name}"
+    elif a.from_json:
+        req.description = json.loads(Path(a.from_json).read_text(encoding="utf-8"))
+        req.description_source = a.from_json
+    return req
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image")
@@ -957,204 +1327,16 @@ def main():
     if not a.image:
         sys.exit("нужен --image или --batch")
     a.workflow = workflow
-    landscape = image_is_landscape(a.image)
+    if a.no_llm and not a.subject:
+        sys.exit("--no-llm требует --subject")
 
-    global COMFY
-    if a.generate and not a.dry_run:
-        COMFY = resolve_comfy(a.comfy)
-
-    t_desc = t_unload = 0.0
-    desc = None
-    came_from_llm = False
-    scene_failed = False
-
-    if a.preset:
-        p = preset_path(a.preset)
-        if not p.exists():
-            sys.exit(f"нет пресета {p}")
-        desc = json.loads(p.read_text(encoding="utf-8"))
-        print(f"0) описание из пресета {p.name}")
-    elif a.from_json:
-        desc = json.loads(Path(a.from_json).read_text(encoding="utf-8"))
-        print(f"0) описание из {a.from_json}")
-    elif a.no_llm:
-        if not a.subject:
-            sys.exit("--no-llm требует --subject")
-        desc = {"subject": a.subject, "negative_extra": "", "notes": "без LLM"}
-    else:
-        # Ключ кэша — содержимое файла и сцена, а не stem: same.png и same.jpg
-        # больше не делят описание, а --scene не теряется при попадании в кэш.
-        cached = None if a.force else read_cache(a.image, a.scene)
-        # Фото уже описано для другой сцены: сцену можно переписать без повторного
-        # просмотра фото (экономит проход VLM).
-        base_desc = None if (a.force or not a.scene) else read_cache(a.image)
-        if cached:
-            desc = cached
-            print(f"0) описание из кэша {cache_path(a.image, a.scene).name} "
-                  f"(--force чтобы пересмотреть фото)")
-        elif a.dry_run:
-            # --dry-run обещает «ничего не запускать», а просмотр фото поднимает VLM
-            # в LM Studio и потом выгружает модели. Показывать нечего — так и скажем.
-            what = "описания для этой сцены" if a.scene else "описания"
-            hint = " (--force отключает кэш — убери его)" if a.force else ""
-            legacy_cache_hint(a.image)
-            print(f"--dry-run ничего не загружает, а в кэше нет {what}{hint}:\n"
-                  f"  {cache_path(a.image, a.scene)}\n"
-                  "Дай готовое описание: --preset имя, --from-json файл или "
-                  "--no-llm --subject \"…\";\n"
-                  "либо убери --dry-run — тогда VLM посмотрит фото (это загрузка памяти).")
-            sys.exit(1)
-        else:
-            legacy_cache_hint(a.image)
-            models = lm_models()
-            model = pick_model(models, a.model)
-            if base_desc:
-                print("1) фото уже описано — переписываю только сцену")
-                desc = base_desc
-            else:
-                print(f"1) смотрю фото моделью {model}")
-                t = time.time()
-                desc = describe(a.image, model)
-                t_desc = time.time() - t
-                came_from_llm = True
-            if a.scene:
-                print(f"   сцена: {a.scene}")
-                new = rewrite_scene(desc, a.scene, model)
-                if new:
-                    new["negative_extra"] = ", ".join(
-                        dict.fromkeys([x.strip() for x in (desc.get("negative_extra") or "").split(",") if x.strip()]
-                                      + [x.strip() for x in (new.get("negative_extra") or "").split(",") if x.strip()]))
-                    desc = new
-                    came_from_llm = True
-                else:
-                    # Сцену просили, но модель её не переписала. Писать это в кэш
-                    # под ключом сцены нельзя: следующий запуск взял бы чужой текст.
-                    scene_failed = True
-            if not a.keep_llm:
-                t = time.time()
-                freed = free_llm(model, a.unload_all)
-                t_unload = time.time() - t
-                print(f"2) выгружено: {', '.join(freed) if freed else 'нечего'} ({t_unload:.1f} с)")
-
-    if scene_failed:
-        if not a.dry_run:
-            print("   описание фото сохранено без сцены:", write_cache(a.image, desc, None).name)
-        print("сцену применить не удалось (модель не вернула описание сцены) — кадр не генерирую")
-        print("описание фото не потеряно: повторный запуск попробует сцену снова")
-        sys.exit(1)
-
-    if a.scene and a.no_llm:
-        desc["subject"] = (desc["subject"].rstrip(", ") + ", " + a.scene).strip(", ")
-
-    # Кэш пишем до подмешивания ключей командной строки: иначе --negative-extra
-    # остаётся в описании навсегда и всплывает в следующем прогоне без флага.
-    desc["subject"] = with_adult(desc.get("subject", ""))
-    if came_from_llm and not a.dry_run and desc["subject"].strip():
-        print("   сохранено:", write_cache(a.image, desc, a.scene))
-    elif not a.dry_run:
-        print("   кэш не тронут")
-
-    extra = [x.strip() for x in (desc.get("negative_extra") or "").split(",") if x.strip()]
-    drop = [x.strip().lower() for x in a.negative_drop.split(",") if x.strip()]
-    if drop:
-        extra = [x for x in extra if x.lower() not in drop]
-    extra += [x.strip() for x in a.negative_extra.split(",") if x.strip()]
-    desc["negative_extra"] = ", ".join(dict.fromkeys(extra))
-
-    print("   subject:", desc["subject"] or "(пусто)")
-    if desc.get("negative_extra"):
-        print("   negative_extra:", desc["negative_extra"])
-    if desc.get("notes"):
-        print("   заметка:", desc["notes"])
-    if a.denoise is not None:
-        print(f"   denoise: {a.denoise}")
-    if a.seed is not None:
-        print(f"   seed: {a.seed}")
-
-    if not desc["subject"].strip():
-        sys.exit("описание не получилось — генерацию не запускаю. Проверь заметку выше.")
-
-    if a.save_preset:
-        preset_path(a.save_preset).parent.mkdir(parents=True, exist_ok=True)
-        preset_path(a.save_preset).write_text(json.dumps(desc, ensure_ascii=False, indent=2), encoding="utf-8")
-        print("   пресет:", preset_path(a.save_preset).name)
-
-    if a.dry_run:
-        _, meta = load_workflow(a.workflow)
-        print("\nитоговый промпт:")
-        print(" ", compose_positive(meta, desc["subject"], a.workflow))
-        print("\nитоговый негатив:")
-        print(" ", compose_negative(desc["negative_extra"], meta))
+    import jobs
+    result = jobs.run_job(build_request(a, workflow), emit=jobs.cli_sink)
+    if result.code != 0:
+        sys.exit(result.code)
+    if a.dry_run or not a.generate:
         return
-
-    if a.generate:
-        n = max(1, a.variants)
-        landscape = image_is_landscape(a.image)
-        print(f"3) генерация в ComfyUI, вариантов: {n}")
-        t = time.time()
-        seeded = a.seed is not None
-        ok_all = True
-        for i in range(n):
-            sd = (a.seed + i) if seeded else random.randint(1, 2_000_000_000)
-            print(f"   вариант {i + 1}/{n}, seed {sd}")
-            ok, name = generate(a.workflow, desc["subject"], desc.get("negative_extra", ""),
-                                denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image), cn_strength=a.cn_strength)
-            ok_all &= ok
-            if name and save_run(a.image, a.workflow, desc, sd, a.denoise, name,
-                                 cn_strength=a.cn_strength, style_weight=a.style_weight) is None:
-                ok_all = False
-            if a.recheck and i == 0 and name:
-                print("   проверка кадра моделью")
-                comfy_free()
-                models = lm_models()
-                model = pick_model(models, a.model)
-                miss = recheck(desc, OUTPUT_DIR / name, model)
-                if not a.keep_llm:
-                    free_llm(model, a.unload_all)
-                if miss is None:
-                    print("   проверку выполнить не удалось — повторный проход пропущен")
-                elif miss:
-                    print("   не доехало:", miss)
-                    # Промах = чего не хватает на кадре, поэтому усиливаем ПРОМПТ, а не негатив.
-                    subj = desc.get("subject", "")
-                    low = subj.lower()
-                    add = [x.strip() for x in miss.split(",")
-                           if x.strip() and x.strip().lower() not in low]
-                    if add:
-                        desc["subject"] = ", ".join([subj] + add)
-                        print("   промпт дополнен:", ", ".join(add))
-                        print("   повторный проход с усиленным промптом")
-                        ok, name2 = generate(a.workflow, desc["subject"], desc.get("negative_extra", ""),
-                                             denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image), cn_strength=a.cn_strength)
-                        ok_all &= ok
-                        if name2 and save_run(a.image, a.workflow, desc, sd, a.denoise, name2,
-                                   cn_strength=a.cn_strength, style_weight=a.style_weight) is None:
-                            ok_all = False
-                    else:
-                        # Слово уже в промпте, но не отрисовалось — усиливаем вес.
-                        subj2, bumped = subj, []
-                        for tag in [x.strip() for x in miss.split(",") if x.strip()]:
-                            if tag.lower() in subj2.lower() and f"({tag}" not in subj2:
-                                subj2 = re.sub(re.escape(tag), f"(({tag}:1.2))", subj2,
-                                               count=1, flags=re.IGNORECASE)
-                                bumped.append(tag)
-                        if bumped:
-                            desc["subject"] = subj2
-                            print("   усилено весом:", ", ".join(bumped))
-                            ok, name2 = generate(a.workflow, desc["subject"], desc.get("negative_extra", ""),
-                                                 denoise=a.denoise, seed=sd, landscape=landscape, style_weight=a.style_weight, image_name=ensure_input(a.image), cn_strength=a.cn_strength)
-                            ok_all &= ok
-                            if name2 and save_run(a.image, a.workflow, desc, sd, a.denoise, name2,
-                                   cn_strength=a.cn_strength, style_weight=a.style_weight) is None:
-                                ok_all = False
-                        else:
-                            print("   повтор не изменит результата — пропускаю")
-                else:
-                    print("   всё на месте")
-        t_gen = time.time() - t
-        print(f"\nитого: описание {t_desc:.0f} с + выгрузка {t_unload:.1f} с + генерация {t_gen:.0f} с "
-              f"= {t_desc + t_unload + t_gen:.0f} с")
-        sys.exit(0 if ok_all else 1)
+    sys.exit(0)
 
 
 if __name__ == "__main__":

@@ -3,11 +3,17 @@ out/
 preview_*.png
 run.log
 run.err.log
+web.out.log
+web.err.log
+.playwright-mcp/
 
 # регенерируется генератором
 *.api.json
 __pycache__/
 *.pyc
+
+# отдельное окружение веб-интерфейса
+.venv-web/
 
 # секреты
 token

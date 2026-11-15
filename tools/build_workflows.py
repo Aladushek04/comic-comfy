@@ -587,6 +587,112 @@ def _auto_title(n, wv):
 SUBJECT_SLOT = "{{subject}}"
 NEG_SIGNS = ("photo, photorealistic", "worst quality")
 
+# Типы виджетов ComfyUI для тех полей, которые показывает интерфейс. Список
+# намеренно короткий: незнакомый вход получает STRING, а точный тип всё равно
+# сверяется с /object_info перед отправкой графа.
+WIDGET_TYPES = {
+    "seed": "INT", "steps": "INT", "denoise": "FLOAT", "cfg": "FLOAT",
+    "strength": "FLOAT", "start_percent": "FLOAT", "end_percent": "FLOAT",
+    "strength_model": "FLOAT", "strength_clip": "FLOAT", "weight": "FLOAT",
+    "ckpt_name": "COMBO", "lora_name": "COMBO", "control_net_name": "COMBO",
+    "vae_name": "COMBO", "sampler_name": "COMBO", "scheduler": "COMBO",
+    "upscale_method": "COMBO", "image": "COMBO",
+}
+
+# Роль слота LoRA — по имени файла: интерфейс подписывает слоты, не угадывая.
+LORA_ROLES = (
+    ("hands_xl", "hands"), ("sexy_detailer", "body"),
+    ("p477y", "character"), ("p4m3l4", "character"),
+)
+
+
+def _field(api, node_id, name):
+    """Привязка поля к узлу и входу. Нет входа — нет привязки, а не догадка."""
+    node = api.get(str(node_id)) or {}
+    if name not in (node.get("inputs") or {}):
+        return None
+    value = node["inputs"][name]
+    if isinstance(value, list):
+        return None          # вход занят связью, писать в него нельзя
+    return {
+        "node": str(node_id),
+        "input": name,
+        "class_type": node.get("class_type", ""),
+        "type": WIDGET_TYPES.get(name, "STRING"),
+        "default": value,
+    }
+
+
+def graph_fields(api, style_lora=""):
+    """Явные привязки редактируемых полей для формы.
+
+    NiceGUI не знает id узлов и не дублирует значения по умолчанию: он читает
+    этот блок из <сборка>.api.json. Поменяли denoise в описании графа —
+    пересобрали — форма показывает новое значение без правки веб-кода.
+    """
+    nodes = list(api.items())
+    texts = [(nid, n) for nid, n in nodes if n["class_type"] == "CLIPTextEncode"]
+    neg_id = next((nid for nid, n in texts
+                   if str(n["inputs"].get("text", "")).startswith(NEG_SIGNS)), None)
+    pos_id = next((nid for nid, n in texts if nid != neg_id), None)
+    samplers = [(nid, n) for nid, n in nodes if n["class_type"] == "KSampler"]
+    main_id = max(samplers, key=lambda x: float(x[1]["inputs"].get("denoise", 0)))[0] \
+        if samplers else None
+
+    fields = {}
+    if pos_id:
+        fields["positive"] = _field(api, pos_id, "text")
+    if neg_id:
+        fields["negative"] = _field(api, neg_id, "text")
+    image = next(((nid, n) for nid, n in nodes if n["class_type"] == "LoadImage"), None)
+    if image:
+        fields["image"] = _field(api, image[0], "image")
+    if main_id:
+        for key, name in (("seed", "seed"), ("denoise", "denoise"), ("steps", "steps"),
+                          ("cfg", "cfg"), ("sampler", "sampler_name"),
+                          ("scheduler", "scheduler")):
+            f = _field(api, main_id, name)
+            if f:
+                fields[key] = f
+    cn = next(((nid, n) for nid, n in nodes
+               if n["class_type"] == "ControlNetApplyAdvanced"), None)
+    if cn:
+        for key, name in (("cn_strength", "strength"), ("cn_start", "start_percent"),
+                          ("cn_end", "end_percent")):
+            f = _field(api, cn[0], name)
+            if f:
+                fields[key] = f
+    ckpt = next(((nid, n) for nid, n in nodes
+                 if n["class_type"] == "CheckpointLoaderSimple"), None)
+    if ckpt:
+        f = _field(api, ckpt[0], "ckpt_name")
+        if f:
+            fields["checkpoint"] = f
+    save = next(((nid, n) for nid, n in nodes if n["class_type"] == "SaveImage"), None)
+    if save:
+        f = _field(api, save[0], "filename_prefix")
+        if f:
+            fields["save_prefix"] = f
+
+    slots = []
+    for nid, n in nodes:
+        if n["class_type"] != "LoraLoaderModelOnly":
+            continue
+        name = str(n["inputs"].get("lora_name", ""))
+        low = name.lower()
+        if style_lora and name == style_lora:
+            role = "style"
+        else:
+            role = next((r for frag, r in LORA_ROLES if frag in low), "lora")
+        slots.append({
+            "role": role, "node": nid, "input": "lora_name",
+            "class_type": "LoraLoaderModelOnly",
+            "strength_input": "strength_model",
+            "value": name,
+            "weight": n["inputs"].get("strength_model"),
+        })
+    return {"fields": fields, "loras": slots}
+
 
 def style_meta(spec, api):
     """Стилевые настройки графа для CLI: шаблон промпта, негатив, стилевая LoRA.
@@ -618,12 +724,15 @@ def style_meta(spec, api):
              if n["class_type"] == "LoraLoaderModelOnly"
              and float(n["inputs"]["strength_model"]) != 0]
     unique = loras[0] if len(loras) == 1 else None
-    return {
+    meta = {
+        "label": spec.get("title") or "",
         "positive_template": template,
         "negative": texts[neg_i],
         "style_lora": unique[0] if unique else "",
         "style_weight": unique[1] if unique else None,
     }
+    meta.update(graph_fields(api, meta["style_lora"]))
+    return meta
 
 
 def build(name, spec):

@@ -527,9 +527,12 @@ def test_portable_paths():
     tools = Path(__file__).parent
     disk = re.compile(r"(?<![\w.])[A-Za-z]:\\")
     bad = []
-    for p in sorted(tools.iterdir()):
-        if p.suffix.lower() not in (".py", ".ps1") or p.name == Path(__file__).name:
-            continue
+    scanned = [p for p in sorted(tools.iterdir())
+               if p.suffix.lower() in (".py", ".ps1") and p.name != Path(__file__).name]
+    webapp = tools.parent / "webapp"
+    if webapp.is_dir():
+        scanned += [p for p in sorted(webapp.iterdir()) if p.suffix == ".py"]
+    for p in scanned:
         for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
             if disk.search(line):
                 bad.append(f"{p.name}:{i}")

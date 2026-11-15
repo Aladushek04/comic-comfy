@@ -1,0 +1,5 @@
+# Веб-интерфейс comic-comfy. Отдельное окружение: ComfyUI-venv не трогаем.
+# Проверенная версия — Python 3.14.10, Windows 11.
+# Шаги сэмплера читаются своим WebSocket-клиентом из stdlib: websocket-client не нужен.
+nicegui==4.0.0
+pillow>=10
