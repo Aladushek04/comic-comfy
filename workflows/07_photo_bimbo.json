@@ -169,7 +169,7 @@
         "Node name for S&R": "CLIPTextEncode"
       },
       "widgets_values": [
-        "comic book illustration, theofficialpit style, bimbofusion artstyle, adult woman, portrait, bold black outlines, flat colors, clean skin, high contrast, limited palette, clean silhouette, warm skin tone, natural skin color, blonde hair, dark sunglasses, dark lenses, eyes visible behind glasses"
+        "comic book illustration, theofficialpit style, bimbofusion artstyle, adult woman, portrait, bold black outlines, flat colors, clean skin, high contrast, limited palette, clean silhouette, warm skin tone, natural skin color"
       ],
       "title": "Промпт"
     },
@@ -208,7 +208,7 @@
         "Node name for S&R": "CLIPTextEncode"
       },
       "widgets_values": [
-        "photo, photorealistic, 3d render, soft shading, airbrush, gradient, blurry, low quality, halftone dots, screentone, dotted texture, moire, freckles, skin texture, bad anatomy, bad hands, extra fingers, fewer fingers, watermark, text, signature, child, loli, shota, young, white lenses, opaque lenses, blank glasses, blindfold, grey skin, pale skin, white hair, red eyes, monochrome, desaturated"
+        "photo, photorealistic, 3d render, soft shading, airbrush, gradient, blurry, low quality, halftone dots, screentone, dotted texture, moire, freckles, skin texture, bad anatomy, bad hands, extra fingers, fewer fingers, watermark, text, signature, child, loli, shota, young, grey skin, pale skin, red eyes, monochrome, desaturated"
       ],
       "title": "Негатив"
     },

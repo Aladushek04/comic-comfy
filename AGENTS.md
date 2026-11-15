@@ -241,7 +241,7 @@ ComfyUI не трогает. Без готового описания (кэш, `
    `verify`. Четвёртое: `settings.utf8_streams()` в точках входа —
    в пайп Python пишет в кодировке локали (cp1252), и `print` с кириллицей падал с
    `UnicodeEncodeError`; без этого команды из README работают только с `PYTHONIOENCODING`.
-   Проверка: `python tools\test_photo_prompt.py` (198) и `python tools\test_web_app.py` (176).
+   Проверка: `python tools\test_photo_prompt.py` (206) и `python tools\test_web_app.py` (176).
 
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
@@ -347,7 +347,7 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 
 ## Проверки перед словом «готово»
 
-- `python tools\test_photo_prompt.py` — 198 проверок CLI и пайплайна (модели не нужны).
+- `python tools\test_photo_prompt.py` — 206 проверок CLI и пайплайна (модели не нужны).
 - `python tools\test_web_app.py` — 176 проверок заданий, очереди и веб-слоя на HTTP-заглушках
   (LM Studio и ComfyUI подменяются, GPU не нужен).
 - `python tools\test_web_ui.py` — 31 браузерная проверка Chromium на тех же заглушках:

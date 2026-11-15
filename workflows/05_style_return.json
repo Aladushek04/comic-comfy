@@ -206,7 +206,7 @@
         "Node name for S&R": "CLIPTextEncode"
       },
       "widgets_values": [
-        "comic book illustration, theofficialpit style, thick lips, adult woman, short hair, leather jacket, city street at dusk, bold black outlines, flat colors, clean skin, high contrast"
+        "comic book illustration, theofficialpit style, thick lips, bold black outlines, flat colors, clean skin, high contrast, limited palette, clean silhouette"
       ],
       "title": "Промпт"
     },
@@ -560,7 +560,7 @@
           "4",
           "text",
           {
-            "description": "описание сцены в стиле комикса"
+            "description": "описание текущего кадра; по умолчанию только блок стиля, пример не подставляется"
           }
         ],
         [

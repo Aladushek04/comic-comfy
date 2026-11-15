@@ -490,10 +490,19 @@ def test_style_from_graph():
           pos[:200])
 
     texts, _ = capture_payload("07_photo_bimbo")
-    pos, neg = texts
-    for tag in ("warm skin tone", "natural skin color", "dark lenses"):
+    neg = next(t for t in texts if t.startswith("photo, photorealistic"))
+    pos = next(t for t in texts if not t.startswith("photo, photorealistic"))
+    for tag in ("warm skin tone", "natural skin color"):
         check(f"bimbo сохранил «{tag}»", tag in pos, pos[:160])
-    check("bimbo негатив сохранил «white lenses»", "white lenses" in neg, neg[:160])
+    for tag in ("blonde hair", "dark sunglasses", "white hair"):
+        check(f"bimbo не навязывает «{tag}»", tag not in pos + " " + neg,
+              (pos + " " + neg)[-200:])
+    texts, _ = capture_payload("07_photo_bimbo",
+                               subject="adult woman, brown hair, dark sunglasses")
+    bim_pos = next(t for t in texts if not t.startswith("photo, photorealistic"))
+    check("bimbo: волосы и очки берутся из описания",
+          "brown hair" in bim_pos and "dark sunglasses" in bim_pos
+          and "blonde hair" not in bim_pos, bim_pos[:200])
 
     _, loras = capture_payload("07_photo_bimbo", weight=0.45)
     check("bimbo: вес 0.6 -> 0.45", loras.get("style\\bimbofusion.safetensors") == 0.45, str(loras))
@@ -1232,6 +1241,28 @@ def test_passport_not_lost():
         pp.ROOT, pp.OUTPUT_DIR = saved_roots
 
 
+def test_style_prompts_consistent():
+    print("\n28) промпты сборок не спорят сами с собой")
+
+    def texts(name):
+        data = json.loads((pp.WF_DIR / (name + ".api.json")).read_text(encoding="utf-8"))
+        return [n["inputs"]["text"] for n in data["prompt"].values()
+                if n["class_type"] == "CLIPTextEncode"]
+
+    two = texts("02_edit_mask")
+    pos = next(t for t in two if "leather jacket" in t)
+    neg = next(t for t in two if t.startswith("photo, photorealistic"))
+    check("02: позитив не просит полутонов", "halftone" not in pos, pos)
+    check("02: негатив по-прежнему их запрещает", "halftone dots" in neg, neg[:140])
+
+    five = texts("05_style_return")
+    five_pos = next(t for t in five if t.startswith("comic book illustration"))
+    for tag in ("short hair", "leather jacket", "city street"):
+        check(f"05: пример не задаёт «{tag}»", tag not in five_pos, five_pos[:140])
+    check("05: блок стиля на месте",
+          "theofficialpit style" in five_pos and "flat colors" in five_pos, five_pos[:140])
+
+
 def main():
     patch_roots()
     try:
@@ -1261,6 +1292,7 @@ def main():
         test_atomic_json()
         test_utf8_streams()
         test_passport_not_lost()
+        test_style_prompts_consistent()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

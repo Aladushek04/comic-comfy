@@ -492,7 +492,7 @@
         "Node name for S&R": "CLIPTextEncode"
       },
       "widgets_values": [
-        "leather jacket, open collar, detailed fabric, flat colors, halftone dots"
+        "leather jacket, open collar, detailed fabric, flat colors"
       ],
       "title": "Промпт"
     },

@@ -140,7 +140,7 @@ WORKFLOWS["02_edit_mask"] = {
         {"id": 6, "type": "VAEEncode", "in": {"pixels": [3, 0], "vae": [1, 2]}},
         {"id": 7, "type": "SetLatentNoiseMask", "in": {"samples": [6, 0], "mask": [5, 0]}},
         {"id": 30, "type": "CLIPSetLastLayer", "w": {"stop_at_clip_layer": -2}, "in": {"clip": [1, 1]}},
-        {"id": 8, "type": "CLIPTextEncode", "w": {"text": "leather jacket, open collar, detailed fabric, flat colors, halftone dots"}, "in": {"clip": [30, 0]}},
+        {"id": 8, "type": "CLIPTextEncode", "w": {"text": "leather jacket, open collar, detailed fabric, flat colors"}, "in": {"clip": [30, 0]}},
         {"id": 9, "type": "CLIPTextEncode", "w": {"text": TEST_NEG}, "in": {"clip": [30, 0]}},
         {"id": 10, "type": "KSampler",
          "w": {"seed": 12345, "steps": 28, "cfg": 6.0, "sampler_name": "euler_ancestral",
@@ -394,7 +394,9 @@ WORKFLOWS["05_style_return"] = {
          "in": {"model": [1, 0]}},
         {"id": 3, "type": "LoadImage", "w": {"image": "example.png"}},
         {"id": 30, "type": "CLIPSetLastLayer", "w": {"stop_at_clip_layer": -2}, "in": {"clip": [1, 1]}},
-        {"id": 4, "type": "CLIPTextEncode", "w": {"text": TEST_PROMPT}, "in": {"clip": [30, 0]}},
+        {"id": 4, "type": "CLIPTextEncode",
+         "w": {"text": "comic book illustration, theofficialpit style, thick lips, " + STYLE_SUFFIX},
+         "in": {"clip": [30, 0]}},
         {"id": 5, "type": "CLIPTextEncode", "w": {"text": TEST_NEG}, "in": {"clip": [30, 0]}},
         {"id": 6, "type": "VAEEncode", "in": {"pixels": [3, 0], "vae": [1, 2]}},
         {"id": 7, "type": "KSampler",
@@ -405,7 +407,7 @@ WORKFLOWS["05_style_return"] = {
         {"id": 9, "type": "SaveImage", "w": {"filename_prefix": "comic/05_style"}, "in": {"images": [8, 0]}},
     ],
     "app": {"inputs": [[3, "image", {"description": "кадр после Qwen-правки"}],
-                       [4, "text", {"description": "описание сцены в стиле комикса"}],
+                       [4, "text", {"description": "описание текущего кадра; по умолчанию только блок стиля, пример не подставляется"}],
                        [7, "denoise", {"description": "0.30–0.40: перекрасить, не перерисовать"}],
                        [2, "strength_model", {"description": "стиль: TheOfficialPit V2 (триггер thick lips)"}],
                        [7, "seed", {"description": "сид: randomize = каждый раз новый"}]]},
@@ -493,18 +495,23 @@ for _style in ("comic", "jp", "bimbo"):
 
 
 def _tune_bimbo(spec):
-    """Bimbofusion уводит палитру в холод: снижаем вес, добавляем цветовые якоря."""
+    """Bimbofusion уводит палитру в холод: снижаем вес, добавляем цветовые якоря.
+
+    Человека описывает фото, а не сборка: `blonde hair` и `dark sunglasses`
+    в промпте спорили с загруженным кадром — брюнет в очках получал блондинку
+    в других очках, а негатив `white hair` запрещал именно то, что на фото.
+    Здесь остаётся только то, что от человека не зависит: тёплая палитра и
+    негатив против холодного дрейфа LoRA.
+    """
     for n in spec["nodes"]:
         if n["type"] == "LoraLoaderModelOnly" and abs(n["w"].get("strength_model", 0) - 0.9) < 1e-9:
             n["w"]["strength_model"] = 0.6
         if n["type"] == "CLIPTextEncode":
             t = str(n["w"].get("text", ""))
             if t.startswith("photo, photorealistic"):
-                n["w"]["text"] = t + (", white lenses, opaque lenses, blank glasses, blindfold, "
-                                      "grey skin, pale skin, white hair, red eyes, monochrome, desaturated")
+                n["w"]["text"] = t + ", grey skin, pale skin, red eyes, monochrome, desaturated"
             elif t.strip():
-                n["w"]["text"] = t + (", warm skin tone, natural skin color, blonde hair, "
-                                      "dark sunglasses, dark lenses, eyes visible behind glasses")
+                n["w"]["text"] = t + ", warm skin tone, natural skin color"
         if n["id"] == 13 and n["type"] == "KSampler":
             n["w"]["denoise"] = 0.7
     for inp in spec["app"]["inputs"]:
