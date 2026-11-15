@@ -345,6 +345,8 @@ def test_catalog_fields():
     check("сводка графа: чекпойнт и ControlNet",
           summary["checkpoint"].endswith(".safetensors") and summary["cn_strength"] == 0.6,
           str(summary))
+    check("граф называет оба сэмплера", meta.get("samplers") == ["13", "17"],
+          str(meta.get("samplers")))
 
     info = comfy_stub()
     try:
@@ -545,6 +547,9 @@ def test_settings_in_passport():
             check("вес стиля записан",
                   all(r["style_weight"] == 0.8 for r in book["runs"]),
                   str([r.get("style_weight") for r in book["runs"]]))
+            check("без переопределений в паспорте null, а не пустой словарь",
+                  all(r.get("overrides") is None for r in book["runs"]),
+                  str([r.get("overrides") for r in book["runs"]]))
             strengths = [n["inputs"]["strength"] for n in comfy.state.prompts[-1]["prompt"].values()
                          if n["class_type"] == "ControlNetApplyAdvanced"]
             check("в граф ушла сила 0.25", strengths == [0.25], str(strengths))
@@ -711,6 +716,12 @@ def test_service_queue():
                   again["id"] == j1.id and again["frames"], str(again["id"]))
             check("кадры привязаны к папкам задания",
                   all(f["folder"] for f in again["frames"]), str(again["frames"]))
+            check("папка результата носит имя фото, а не source",
+                  Path(again["frames"][0]["folder"]).name.startswith("queue_"),
+                  Path(again["frames"][0]["folder"]).name)
+            check("номер варианта виден и после длинного прогона",
+                  again.get("variant", {}).get("index") == 1
+                  and again["variant"].get("total") == 1, str(again.get("variant")))
     finally:
         lm.stop()
         comfy.stop()

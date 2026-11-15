@@ -104,6 +104,11 @@ def register_routes():
     _routes_done = True
     svc = service()
 
+    @app.get("/api/job")
+    def api_job(job_id: str | None = None):
+        """Диагностика задания: то же состояние, что рисует страница."""
+        return svc.snapshot(job_id) or {}
+
     @app.get("/media/upload/{uid}")
     def media_upload(uid: str):
         path = svc.upload_path(uid)
@@ -306,6 +311,7 @@ def register_page():
             ui.label(f"{default_model}: значения по умолчанию взяты из сборки "
                      f"{style_sel.value}. Пустое поле — как в графе, 0 — явный ноль.").classes(
                 "text-xs opacity-70")
+            state["samplers"] = [str(x) for x in (meta.get("samplers") or [])]
             if info is None:
                 ui.label("ComfyUI не ответил: списки моделей недоступны, "
                          "оставлены значения из графа.").classes("text-xs text-orange-600")
@@ -448,7 +454,7 @@ def register_page():
                 "style_weight": number("style_weight"),
                 "seed": int(seed.value) if seed is not None and seed.value is not None else None,
                 "recheck": bool(recheck_in.value),
-                "overrides": {"fields": over, "loras": loras},
+                "overrides": ({"fields": over, "loras": loras} if (over or loras) else {}),
                 "positive_override": (pos_custom.value or "").strip()
                 if pos_override.value else None,
                 "negative_override": (neg_custom.value or "").strip()
@@ -575,25 +581,36 @@ def register_page():
                 queue_label.set_text("Один исполнитель: вторая задача ждёт первую.")
                 progress.set_visibility(False)
             elif snap["running"]:
-                sampling = next((e for e in reversed(snap["events"])
-                                 if e["stage"] == "sampling" and e.get("data", {}).get("max")),
-                                None)
-                variant = next((e for e in reversed(snap["events"])
-                                if e["stage"] == "variant"), None)
+                samplers = [str(x) for x in (state.get("samplers") or [])]
+
+                def is_step(event):
+                    data = event.get("data") or {}
+                    if not data.get("max"):
+                        return False
+                    node = str(data.get("node") or "")
+                    if samplers:
+                        return node in samplers
+                    return float(data["max"]) > 1      # старый граф без meta.samplers
+
+                sampling = next((e for e in reversed(snap["events"]) if is_step(e)), None)
+                variant = snap.get("variant")
                 extra = ""
                 if variant:
-                    extra = f" · вариант {variant['data'].get('index')}/" \
-                            f"{variant['data'].get('total')}"
+                    extra = f" · вариант {variant.get('index')}/{variant.get('total')}"
                 stage_label.set_text(f"{label}{extra}")
                 elapsed_label.set_text(fmt_time(snap["elapsed"]))
                 queue_label.set_text("")
                 if sampling:
                     value = float(sampling["data"].get("value") or 0)
                     total = float(sampling["data"].get("max") or 1)
+                    node = str(sampling["data"].get("node") or "")
+                    which = ""
+                    if samplers and node in samplers:
+                        which = f" · сэмплер {samplers.index(node) + 1}/{len(samplers)}"
                     progress.set_value(min(1.0, value / total))
                     progress.set_visibility(True)
                     stage_label.set_text(
-                        f"шаги сэмплера{extra} · шаг {int(value)}/{int(total)}")
+                        f"шаги сэмплера{which}{extra} · шаг {int(value)}/{int(total)}")
                 else:
                     progress.set_visibility(False)
             else:

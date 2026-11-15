@@ -64,6 +64,7 @@ class Job:
     finished: float | None = None
     status: str = "queued"          # queued | running | done | partial | error | described
     stage: str = "queued"
+    variant: dict | None = None
     events: list = field(default_factory=list)
     result: jobs.JobResult | None = None
     error: str = ""
@@ -106,7 +107,8 @@ class JobService:
         jid = uuid.uuid4().hex[:10]
         folder = self.jobs_root / jid
         folder.mkdir(parents=True, exist_ok=True)
-        local = folder / ("source" + src.suffix.lower())
+        # Имя файла сохраняем: иначе кадры всех загрузок попадают в out\source_<хэш>\.
+        local = folder / (src.stem + src.suffix.lower())
         shutil.copy2(src, local)
         request.image = str(local)
         job = Job(id=jid, folder=folder, source=local, request=request)
@@ -128,6 +130,8 @@ class JobService:
             with job.lock:
                 job.events.append(event)
                 job.stage = event.get("stage") or job.stage
+                if event.get("stage") == "variant":
+                    job.variant = event.get("data") or {}
 
         try:
             result = jobs.run_job(job.request, emit=sink)
@@ -178,6 +182,7 @@ class JobService:
             events = list(job.events)
             result = job.result
             status, stage = job.status, job.stage
+            variant = job.variant
             started, finished = job.started, job.finished
             error = job.error
         running = status in ("queued", "running")
@@ -196,6 +201,7 @@ class JobService:
             "stage": stage,
             "queue": self.queue_position(job) if status == "queued" else 0,
             "running": running,
+            "variant": variant,
             "elapsed": round(max(0.0, elapsed), 1),
             "events": events[-40:],
             "error": error,

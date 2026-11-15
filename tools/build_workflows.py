@@ -691,7 +691,8 @@ def graph_fields(api, style_lora=""):
             "value": name,
             "weight": n["inputs"].get("strength_model"),
         })
-    return {"fields": fields, "loras": slots}
+    return {"fields": fields, "loras": slots,
+            "samplers": [nid for nid, n in nodes if n["class_type"] == "KSampler"]}
 
 
 def style_meta(spec, api):
