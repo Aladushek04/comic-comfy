@@ -9,7 +9,8 @@
 - Общие модели: `G:\Comfy-Desktop\ComfyUI-Shared\models` (models/input/output — тоже там).
   **В коде этих путей нет.** `tools\settings.py` берёт их из `COMIC_ROOT`, `COMFY_MODELS`,
   `COMFY_SHARED`, `COMFY_INPUT`, `COMFY_OUTPUT`, `COMFY_URL`, иначе из `base_path`
-  в `extra_model_paths.yaml`, иначе из раскладки рядом с репозиторием. Скрипты должны
+  в `extra_model_paths.yaml` (образец — `extra_model_paths.example.yaml`, сам файл в git
+  не попадает: в нём машинные пути), иначе из раскладки рядом с репозиторием. Скрипты должны
   работать на чужой машине без правок кода — только через env или yaml.
   `comic_paths.json` в корне (образец — `comic_paths.example.json`, сам файл в git не
   попадает) задаёт `input`/`output` отдельно от каталога моделей: модели могут уехать на

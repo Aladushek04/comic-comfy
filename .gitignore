@@ -1,10 +1,7 @@
 # результаты генерации и служебные файлы
 out/
 preview_*.png
-run.log
-run.err.log
-web.out.log
-web.err.log
+*.log
 .playwright-mcp/
 .superpowers/
 *.lock
@@ -21,10 +18,20 @@ __pycache__/
 comfy_launch.json
 comic_paths.json
 
+# раскладка моделей конкретной машины: образец — extra_model_paths.example.yaml
+extra_model_paths.yaml
+
 # секреты
 token
 *.token
 .civitai/
 
-# ????? ??????? ????????
+# рабочие файлы инструментов проверки
+.pytest_cache/
+.ruff_cache/
+*.tmp
+Thumbs.db
+.DS_Store
+
+# образцы графов из чужих наборов
 workflows/reference/

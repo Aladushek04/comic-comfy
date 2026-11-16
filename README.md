@@ -45,7 +45,8 @@ requirements-web.txt    зависимости веб-слоя (отдельно
 ## Быстрый старт
 
 Сначала модели: `DOWNLOADS.md` (две команды, ~58 ГБ) и проверка `python tools\check_install.py`.
-Пути берутся из `extra_model_paths.yaml` или переменных `COMFY_MODELS` / `COMFY_INPUT` /
+Пути берутся из `extra_model_paths.yaml` (образец — `extra_model_paths.example.yaml`, сам файл
+в git не попадает) или переменных `COMFY_MODELS` / `COMFY_INPUT` /
 `COMFY_OUTPUT`, править код не нужно. Если модели на другом диске, а `input`/`output` остаются
 рядом с ComfyUI, положи `comic_paths.json` по образцу `comic_paths.example.json`; там же
 `lm_model` закрепляет модель описания по ключу LM Studio.

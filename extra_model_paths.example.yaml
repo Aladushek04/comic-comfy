@@ -1,0 +1,23 @@
+# Раскладка моделей для этого репозитория. Скопируйте в extra_model_paths.yaml
+# (этот файл в git не попадает) и подставьте свой base_path.
+#
+# Нужен только headless-запуску: Desktop берёт папки моделей из своих настроек
+# (%APPDATA%\Comfy Desktop\settings.json) и генерирует instance-model-paths.
+# Явные COMFY_MODELS / COMFY_INPUT / COMFY_OUTPUT сильнее этого файла.
+comic_shared:
+  base_path: D:\ComfyUI-Shared\models
+  checkpoints: checkpoints
+  loras: loras
+  controlnet: controlnet
+  ipadapter: ipadapter
+  clip_vision: clip_vision
+  upscale_models: upscale_models
+  diffusion_models: diffusion_models
+  unet: diffusion_models
+  text_encoders: |
+    text_encoders
+    clip
+  vae: vae
+  embeddings: embeddings
+  style_models: style_models
+  photomaker: photomaker
