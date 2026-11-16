@@ -398,9 +398,16 @@ Rules:
   face details (eye makeup, lips), glasses/accessories, clothing, pose, hands, framing,
   background, light.
 - Always name the eye colour right after the hair: blue eyes, green eyes, brown eyes,
-  grey eyes, hazel eyes. The image model has no default colour and paints a saturated
-  random one when the colour is missing (red or glowing eyes most often). If the eyes
-  are closed, turned away or hidden, omit the colour instead of guessing.
+  hazel eyes, grey eyes. The image model has no default colour and paints a saturated
+  random one when the colour is missing (red or glowing eyes most often). Here grey and
+  hazel are both wrong: in flat comic colours grey renders almost white and hazel
+  renders brown. So never write grey eyes or hazel eyes — for grey, grey-green, olive
+  or hazel-looking irises write green eyes. If the eyes are closed, turned away or
+  hidden, omit the colour instead of guessing.
+- Name the eye makeup when it is visible and say how heavy it is: heavy black eyeliner,
+  smokey eyeshadow, light eye makeup, bare eyelids.
+- Bare skin is named plainly: topless, bare chest, bare breasts, bare legs. Do not soften
+  it to bare shoulders or bare arms when the chest is actually uncovered.
 - Always start with "adult woman" or "adult man". Never write age words:
   young, teen, teenage, girl, boy, child, kid, adolescent, schoolgirl, schoolboy.
 - Describe only what is visible. Do not invent objects, do not change the scene.

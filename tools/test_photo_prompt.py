@@ -1552,6 +1552,9 @@ def test_eye_colour_zoom():
     """33) цвет глаз: промпт требует его, запрос несёт зум на лицо, старый кэш не живёт."""
     print("\n33) цвет глаз в описании")
     check("SYSTEM требует цвет глаз", "eye colour" in pp.SYSTEM, pp.SYSTEM[:120])
+    check("SYSTEM запрещает серые и ореховые глаза",
+          "never write grey eyes or hazel eyes" in pp.SYSTEM)
+    check("SYSTEM требует называть наготу прямо", "topless" in pp.SYSTEM)
     check("SYSTEM запрещает угадывать при закрытых глазах",
           "closed" in pp.SYSTEM and "omit" in pp.SYSTEM)
     check("в примере ответа есть цвет глаз", "blue eyes" in pp.SYSTEM)
