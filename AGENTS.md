@@ -382,6 +382,17 @@ ComfyUI не трогает. Без готового описания (кэш, `
    Проверка: `python tools\test_web_app.py`, пункты 34–35;
    `python tools\test_web_ui.py`, 13г2 и 13и3.
 
+0.20. **Проверка виджетов и запуск наборов: два места, где легко обвинить код.**
+   Первое: `/object_info` в 0.45.2 объявляет комбинации не голым списком, а
+   `"COMBO"` плюс `{"options": [...]}`. Валидатор, который ждёт список, объявляет
+   ошибкой каждый `ImageToMask.channel` и `ImageScaleToTotalPixels.upscale_method` —
+   у нас так нашлось 185 «расхождений» там, где графы были правы. Разбор типа
+   должен идти через `COMBO`/`options`. Проверка: `python tools\check_widgets.py`.
+   Второе: `tools\test_web_app.py` и `tools\test_web_ui.py` гоняются из `.venv-web`,
+   а не из venv ComfyUI: после P5 страница импортирует `nicegui`, и в venv ComfyUI
+   набор падает с `ModuleNotFoundError: nicegui` — это не поломка кода, а не то
+   окружение. `test_photo_prompt.py`, наоборот, идёт из venv ComfyUI.
+
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
    съезжают на позицию влево, панель Issues пишет «Invalid input: sampler_name / cfg».
