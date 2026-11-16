@@ -1,4 +1,4 @@
-"""Главное действие V2: «Старт» и «Только описание».
+"""Главное действие V2: «Старт», «Только описание» и «Отмена».
 
 Разделение обязательно (спецификация, раздел 1): описание живёт без ComfyUI,
 генерация — нет. Если сервер не отвечает и сам не поднимется, «Старт» выключен
@@ -7,23 +7,25 @@
 `status` — состояние страницы (empty/queued/running/…), а не этап задания:
 этап говорит, что делает задание, состояние — что видно и что можно нажать.
 
-Отмены здесь нет намеренно, это отложено, а не забыто: чтобы «Отмена» снимала
-задание из очереди и звала `/interrupt`, нужен `POST /interrupt` в
-`webapp/service.py` — сейчас сервис умеет только ставить задание. Вместе с
-расширенной панелью это P5c; до тех пор кнопка не рисуется, чтобы не обещать
-действие, которого нет.
+«Отмена» видна ровно в `queued` и `running`: в остальных состояниях отменять
+нечего, и кнопка обещала бы действие, которого нет. Что именно делает отмена —
+решает `service.cancel` (очередь снимается, работающему уходит `/interrupt`).
 """
 from nicegui import ui
 
 from .. import theme
 from ..labels import STATUS_LABEL
 
+# Состояния, в которых задание можно снять: до конца работы и ни шагом позже.
+CANCELLABLE = ("queued", "running")
+
 
 class StartAction:
-    """Карточка с состоянием и двумя кнопками: «Старт» и «Только описание»."""
+    """Карточка с состоянием, двумя кнопками запуска и отменой."""
 
-    def __init__(self, on_start):
+    def __init__(self, on_start, on_cancel=None):
         self._on_start = on_start
+        self._on_cancel = on_cancel
         self.state = {
             "status": "empty",
             "queue": 0,
@@ -38,6 +40,7 @@ class StartAction:
         self.detail = None
         self.start_button = None
         self.describe_button = None
+        self.cancel_button = None
         self.note = None
 
     def build(self):
@@ -59,6 +62,11 @@ class StartAction:
                         "Только описание", color=None,
                         on_click=lambda: self._on_start(False, False))
                     theme.mark(self.describe_button, "btn", "btn-ghost")
+                    # Отмена стоит в той же строке, а не отдельной: рельс подобран
+                    # по окну 900 px, и лишняя строка вытолкнула бы «Старт» из него.
+                    self.cancel_button = ui.button(
+                        "Отмена", icon="stop", color=None, on_click=self._cancel)
+                    theme.mark(self.cancel_button, "btn", "btn-ghost")
                 self.note = ui.label("")
                 theme.mark(self.note, "warn")
         self._apply()
@@ -68,6 +76,11 @@ class StartAction:
         """Абсолютные значения, а не приращения: состояние всегда одно."""
         self.state.update(values)
         self._apply()
+
+    async def _cancel(self):
+        """Отмена: решение и текст замечания — у страницы, здесь только клик."""
+        if self._on_cancel is not None:
+            await self._on_cancel()
 
     def _label(self):
         status = self.state["status"]
@@ -87,8 +100,15 @@ class StartAction:
         has_photo = bool(self.state["photo"])
         has_style = bool(self.state["styles"])
         comfy = bool(self.state["comfy"] or self.state["launchable"])
+        cancellable = self.state["status"] in CANCELLABLE
         self.start_button.set_enabled(has_photo and has_style and comfy)
         self.describe_button.set_enabled(has_photo and has_style)
+        # Пока задание живо, главное действие — «Отмена» (спецификация, раздел 1):
+        # запуск второй генерации ждал бы конца первой, а описание заняло бы ту же
+        # память, что и сэмплер.
+        self.start_button.set_visibility(not cancellable)
+        self.describe_button.set_visibility(not cancellable)
+        self.cancel_button.set_visibility(cancellable)
         note = self._note(has_photo, has_style, comfy)
         self.note.set_text(note)
         self.note.set_visibility(bool(note))

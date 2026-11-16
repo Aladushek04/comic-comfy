@@ -15,6 +15,9 @@
 история приходят из `service.snapshot()` и `comic.run`. Страница только решает,
 какая запись выбрана и какая вкладка открыта; и то, и другое живёт в
 `app.storage.tab`, поэтому перезагрузка вкладки возвращает тот же кадр.
+
+Страница не решает за сервис: «Отмена» зовёт `service.cancel` (очередь — снять,
+работающему — `/interrupt`).
 """
 import asyncio
 from pathlib import Path
@@ -106,7 +109,7 @@ class V2Page:
                     self.photo = photo_slot.PhotoSlot(self.svc, self.on_photo).build()
                     self.picker = style_picker.StylePicker(self.styles, self.on_style).build()
                     self.controls = run_controls.RunControls().build()
-                    self.start = start_action.StartAction(self.submit).build()
+                    self.start = start_action.StartAction(self.submit, self.cancel).build()
                 with ui.element("main") as stage:
                     theme.mark(stage, "stage")
                     self.timeline = phase_timeline.PhaseTimeline().build()
@@ -284,6 +287,20 @@ class V2Page:
         ui.run_javascript(f"history.replaceState(null, '', '/v2?job={job.id}')")
         self.sync()
         ui.notify("задание в очереди" if job.status == "queued" else "задание запущено")
+
+    async def cancel(self):
+        """Отмена задания: сервис решает, снять из очереди или прервать ComfyUI.
+
+        `POST /interrupt` — сетевой вызов, поэтому он уходит в поток: цикл
+        страницы не должен ждать ответа ComfyUI.
+        """
+        job_id = self.state["job_id"]
+        if not job_id:
+            return
+        ok, note = await asyncio.to_thread(self.svc.cancel, job_id)
+        if not ok or note:
+            ui.notify(note or "отменять нечего", type="warning")
+        self.sync()
 
     # ------------------------------------------------------------ состояние
     def sync(self):

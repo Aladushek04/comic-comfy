@@ -847,6 +847,71 @@ def main():
             v2.locator(".cp-tab").nth(0).click()
             v2.wait_for_timeout(300)
 
+            print("\n13и3) отмена работающего задания: /interrupt и ни одного кадра")
+            v2c = ctx.new_page()
+            v2c.set_viewport_size({"width": 1440, "height": 900})
+            v2c.goto(f"http://127.0.0.1:{port}/v2")
+            v2c.wait_for_function(
+                "() => !document.body.innerText.includes('проверяю')", timeout=30000)
+            v2c.set_input_files('input[type="file"]', str(photo_a))
+            wait_v2_upload(v2c)
+            runs_before = len((tw.book_for(photo_a) or {}).get("runs") or [])
+            prompts_before = len(comfy.state.prompts)
+            interrupts_before = len(comfy.state.interrupts)
+            control(comfy, delay=3)
+            v2c.get_by_role("button", name="Старт").click()
+            v2c.wait_for_function(
+                "() => { const b = [...document.querySelectorAll('button')]"
+                ".find(x => x.innerText.includes('Отмена'));"
+                " return !!b && b.getBoundingClientRect().width > 0; }", timeout=20000)
+            started = time.time()
+            while len(comfy.state.prompts) == prompts_before and time.time() - started < 60:
+                time.sleep(0.1)
+            check("работающее задание отправило промпт",
+                  len(comfy.state.prompts) == prompts_before + 1,
+                  str(len(comfy.state.prompts)))
+            buttons = v2c.evaluate("""() => {
+                const on = t => [...document.querySelectorAll('button')].some(
+                    b => b.innerText.includes(t) && b.getBoundingClientRect().width > 0);
+                return {cancel: on('Отмена'), start: on('Старт'),
+                        describe: on('Только описание')};
+            }""")
+            check("пока задание идёт, видна «Отмена», а не «Старт»",
+                  buttons == {"cancel": True, "start": False, "describe": False},
+                  str(buttons))
+            v2c.get_by_role("button", name="Отмена").click()
+            wait_text(v2c, "Отменено", 40000)
+            check("/interrupt ушёл в ComfyUI",
+                  len(comfy.state.interrupts) == interrupts_before + 1,
+                  str(comfy.state.interrupts[interrupts_before:]))
+            # Один цикл опроса истории: убеждаемся, что кадр не появится и после
+            # ответа ComfyUI на /interrupt, а не только в момент клика.
+            v2c.wait_for_timeout(4000)
+            job_c = job_from_url(v2c)
+            snap_c = api_job(port, job_c)
+            check("отменённое задание: исход, а не ошибка",
+                  snap_c["status"] == "cancelled" and not (snap_c.get("error") or "").strip(),
+                  str((snap_c["status"], snap_c.get("error"))))
+            check("недоделанный кадр не записан",
+                  snap_c["frames"] == []
+                  and len((tw.book_for(photo_a) or {}).get("runs") or []) == runs_before,
+                  str((snap_c["frames"],
+                       len((tw.book_for(photo_a) or {}).get("runs") or []))))
+            v2c.wait_for_function(
+                "() => { const b = [...document.querySelectorAll('button')]"
+                ".find(x => x.innerText.includes('Отмена'));"
+                " return !b || b.getBoundingClientRect().width === 0; }", timeout=20000)
+            check("после отмены «Отмена» спрятана, «Старт» снова виден",
+                  v2c.evaluate("""() => {
+                      const on = t => [...document.querySelectorAll('button')].some(
+                          b => b.innerText.includes(t)
+                          && b.getBoundingClientRect().width > 0);
+                      return !on('Отмена') && on('Старт');
+                  }"""))
+            v2c.screenshot(path=str(shots / "v2-cancel.png"), full_page=True)
+            v2c.close()
+            control(comfy, delay=1)
+
             print("\n13к) ошибка в одном месте, журнал в диалоге")
             v2.set_input_files('input[type="file"]', str(photo_b))
             wait_v2_upload(v2)
