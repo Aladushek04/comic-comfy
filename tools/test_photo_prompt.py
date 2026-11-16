@@ -1896,6 +1896,88 @@ def test_settings_adapter():
           callable(st.utf8_streams) and st.read_paths(paths).get("input") == "R:\\in")
 
 
+def test_cache_schema():
+    """36) кэш с версией схемы: старые записи читаются, новые помечены."""
+    from comic import cache as cc
+
+    folder = TMP / "cache_schema"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    # Запись, как её писала прежняя версия: без schema и без scene_applied.
+    old = folder / "old.prompt.json"
+    old.write_text(json.dumps({
+        "subject": "adult woman, red dress", "negative_extra": "missing glasses",
+        "notes": "старое описание", "raw": "{\"subject\": \"...\"}", "sha1": "0123456789ab",
+        "source": "old.png", "scene": "в горах", "describe": 2,
+        "addons": "swin+eva/1", "addon_tags": ["red dress"],
+        "addon_replaced": ["dress"], "addon_size": "large",
+    }, ensure_ascii=False), encoding="utf-8")
+    rec = cc.read(old)
+    check("старый кэш без schema читается", rec is not None)
+    check("старая запись получает schema=1",
+          rec is not None and rec.schema == cc.LEGACY_SCHEMA, str(rec and rec.schema))
+    check("scene_applied не выдумывается", rec is not None and rec.scene_applied is False)
+    check("сцена сравнивается по значению, а не по slug",
+          rec is not None and rec.scene == "в горах", str(rec and rec.scene))
+    check("addons переживают миграцию",
+          rec is not None and rec.addons == "swin+eva/1" and rec.addon_tags == ["red dress"]
+          and rec.addon_replaced == ["dress"] and rec.addon_size == "large", str(rec))
+    check("raw сохранён, но не толкуется", rec is not None and rec.raw == "{\"subject\": \"...\"}",
+          str(rec and rec.raw))
+    check("старый describe стал версией схемы описания",
+          rec is not None and rec.describe_version == 2, str(rec and rec.describe_version))
+    check("заметка на месте", rec is not None and rec.note == "старое описание")
+
+    # Новая запись: schema=2 на диске и после чтения, ключи прежние.
+    new = folder / "new.prompt.json"
+    cc.write(new, cc.from_desc({"subject": "adult woman, blue", "negative_extra": ""},
+                               sha1="abcdefabcdef", source="new.png"))
+    disk = json.loads(new.read_text(encoding="utf-8"))
+    check("новая запись помечена schema=2", disk.get("schema") == cc.SCHEMA, str(disk.get("schema")))
+    check("ключи на диске прежние: notes и describe",
+          "notes" in disk and "describe" in disk and "note" not in disk, str(sorted(disk)))
+    back = cc.read(new)
+    check("новая запись читается как новая",
+          back is not None and back.schema == cc.SCHEMA
+          and back.subject == "adult woman, blue", str(back))
+
+    # Перезапись старой записи поднимает схему до текущей.
+    cc.write(old, cc.from_desc(cc.read(old)))
+    check("перезапись поднимает схему",
+          json.loads(old.read_text(encoding="utf-8")).get("schema") == cc.SCHEMA)
+    again = cc.read(old)
+    check("круг миграции без потерь",
+          again is not None and again.subject == "adult woman, red dress"
+          and again.addon_tags == ["red dress"] and again.scene == "", str(again))
+
+    # Незнакомое поле не теряется: будущая версия может писать своё.
+    extra = folder / "extra.prompt.json"
+    cc.write(extra, cc.migrate({"subject": "adult woman", "future_field": {"a": 1}}))
+    check("незнакомое поле переживает запись",
+          json.loads(extra.read_text(encoding="utf-8")).get("future_field") == {"a": 1})
+
+    check("нет файла — нет записи", cc.read(folder / "nope.json") is None)
+    bad = folder / "bad.prompt.json"
+    bad.write_text("{не json", encoding="utf-8")
+    check("битый файл — нет записи", cc.read(bad) is None)
+
+    # Запись атомарна: обрыв fsync не оставляет ни половины, ни .tmp.
+    saved_fsync = os.fsync
+    cc.os.fsync = lambda fd: (_ for _ in ()).throw(OSError("диск отвалился"))
+    try:
+        try:
+            cc.write(new, cc.from_desc({"subject": "adult woman, broken"}))
+            check("обрыв записи кэша виден", False)
+        except OSError:
+            check("обрыв записи кэша виден", True)
+    finally:
+        cc.os.fsync = saved_fsync
+    check("прежняя запись цела",
+          (cc.read(new) or cc.migrate({})).subject == "adult woman, blue")
+    check("временных файлов не осталось", not list(folder.glob("*.tmp")),
+          str(list(folder.glob("*.tmp"))))
+
+
 def main():
     patch_roots()
     try:
@@ -1936,6 +2018,7 @@ def main():
         test_eye_colour_zoom()
         test_config_priority()
         test_settings_adapter()
+        test_cache_schema()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
