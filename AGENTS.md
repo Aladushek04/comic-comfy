@@ -270,7 +270,7 @@ ComfyUI не трогает. Без готового описания (кэш, `
    `verify`. Четвёртое: `settings.utf8_streams()` в точках входа —
    в пайп Python пишет в кодировке локали (cp1252), и `print` с кириллицей падал с
    `UnicodeEncodeError`; без этого команды из README работают только с `PYTHONIOENCODING`.
-   Проверка: `python tools\test_photo_prompt.py` (246) и `python tools\test_web_app.py` (176).
+   Проверка: `python tools\test_photo_prompt.py` (255) и `python tools\test_web_app.py` (176).
 
 0.16. **Теггер: порог, полка и кэш — три места, где легко соврать себе.**
    Первое: WD14 v3 ждёт float32 **BGR в шкале 0..255**. С делением на 255 модель видит
@@ -292,6 +292,19 @@ ComfyUI не трогает. Без готового описания (кэш, `
    `addon_tags`, `--dry-run` теггер не зовёт. Пропорций (`thick thighs`, `wide hips`,
    `thighs`) WD14 не выдаёт ни на одном кадре — телосложение остаётся за VLM.
    Проверка: `python tools\test_photo_prompt.py`, пункты 30–31.
+
+0.17. **Размышления и чужой сервис — две вещи, на которых теряется время впустую.**
+   Первое: думающая модель на этом же фото тратит 1934 токена и 86 с, а без размышлений —
+   97 токенов и 5.9 с. `--no-think` (или `LM_THINKING=off`) ставит
+   `chat_template_kwargs.enable_thinking=false` и дописывает `/no_think` в текст: без
+   второго поля некоторые сборки llama.cpp поле игнорируют. Второе: `lm_models()`
+   пробует `/api/v1/models` (LM Studio), а при отказе — `/v1/models` и помечает ответ
+   `openai: true`; `free_llm()` тогда ничего не выгружает и не падает на 404, иначе
+   описание отрабатывало, а прогон умирал на выгрузке. Третье: подмены `pp.lm_models`
+   в проверках обязаны принимать `strict=True` — иначе подмена падает на новом аргументе.
+   Четвёртое: `clean_negative()` убирает из негатива то, что subject прямо называет
+   («long dark hair» против `dark hair`), — самопротиворечие вместо страховки.
+   Проверка: `python tools\test_photo_prompt.py`, пункт 30 и 32.
 
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
@@ -353,6 +366,14 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
   `Qwen3-Coder` и `Lobo-27B` текстовые, для фото не годятся.
 - **Id модели важен целиком.** Ключ вида `...-mtp@?` даёт 400 Bad Request; нужен точный квант `@iq3_m`.
 - Думающие модели тратят токены на рассуждения: держать `max_tokens` 3000 (на 400–1000 ответ обрезался).
+- **Сервис описаний не обязан быть LM Studio.** `LM_URL` принимает любой OpenAI-совместимый
+  (`/v1/models`, `/v1/chat/completions`): модель тогда берётся из `LM_MODEL` или `--model`,
+  а выгрузка пропускается — сервис сам держит модель. Признак в ответе — `openai: true`
+  у `lm_models()`. Проверено на `Huihui-Qwen3.6-35B-A3B-abliterated` (порт 8765, llama.cpp):
+  `/api/v1/models` там нет, `/health` и `/props` тоже.
+- **`--no-think` / `LM_THINKING=off`** выключают размышления Qwen3
+  (`chat_template_kwargs.enable_thinking=false` плюс `/no_think`): то же фото — 86 с и
+  1934 токена против 5.9 с и 97. Без флага сервер решает сам, как в LM Studio.
 - Ответ приходит в ```json-обёртке — `extract_json()` снимает fence и болтовню.
 - Возраст: `with_adult()` вырезает `young/teen/girl/boy/1girl/school`, ставит `adult woman|man` первым тегом.
   Негатив всегда заканчивается `NEG_GUARD` (`child, loli, shota, young, underage`).

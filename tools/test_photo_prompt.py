@@ -144,7 +144,7 @@ def run_main(argv, subject="adult woman, black dress", scene_result=None, scene_
 
     saved = (pp.describe, pp.rewrite_scene, pp.lm_models, pp.pick_model, pp.unload_all, sys.argv)
     pp.describe, pp.rewrite_scene = fake_describe, fake_scene
-    pp.lm_models, pp.pick_model = (lambda: {}), (lambda resp, wanted: "test-model")
+    pp.lm_models, pp.pick_model = (lambda strict=True: {}), (lambda resp, wanted: "test-model")
     pp.unload_all = lambda resp: []
     sys.argv = ["photo_prompt.py"] + argv
     buf = io.StringIO()
@@ -255,7 +255,7 @@ def test_batch_reports_failure():
     saved = (pp.describe, pp.lm_models, pp.pick_model, pp.unload_all,
              pp.resolve_comfy, pp.generate)
     pp.describe = lambda p, m: {"subject": "adult woman, test", "negative_extra": "", "notes": ""}
-    pp.lm_models, pp.pick_model = (lambda: {}), (lambda r, w: "m")
+    pp.lm_models, pp.pick_model = (lambda strict=True: {}), (lambda r, w: "m")
     pp.unload_all = lambda r: []
     pp.resolve_comfy = lambda c: "http://127.0.0.1:8199"
     books = lambda: list((pp.ROOT / "out").rglob("run.json"))
@@ -347,7 +347,7 @@ def test_dry_run_does_not_touch_lm():
     calls = []
     saved = (pp.lm_models, pp.pick_model, pp.describe, pp.unload_model,
              pp.unload_all, pp.post, pp.resolve_comfy, pp.comfy_probe)
-    pp.lm_models = lambda: (calls.append("lm_models") or {"models": []})
+    pp.lm_models = lambda strict=True: (calls.append("lm_models") or {"models": []})
     pp.pick_model = lambda r, w: (calls.append("pick_model") or "m")
     pp.describe = lambda p, m: (calls.append("describe") or
                                 {"subject": "adult woman", "negative_extra": "", "notes": ""})
@@ -393,7 +393,7 @@ def test_dry_run_does_not_touch_lm():
         check("пакет взял описание из кэша", "adult woman, from cache" in text, text.strip()[-160:])
 
         # полностью закэшированная пачка не должна требовать LM Studio вообще
-        pp.lm_models = lambda: (_ for _ in ()).throw(RuntimeError("LM Studio не запущен"))
+        pp.lm_models = lambda strict=True: (_ for _ in ()).throw(RuntimeError("LM Studio не запущен"))
         rc, text = capture(lambda: pp.run_batch(
             batch_args(folder, dry_run=False, generate=False), "07_photo_thepit"))
         check("закэшированная пачка живёт без LM Studio", rc == 0, str(rc))
@@ -410,7 +410,7 @@ def test_unload_only_own_model():
     ]}
     unloaded = []
     saved = (pp.lm_models, pp.post)
-    pp.lm_models = lambda: resp
+    pp.lm_models = lambda strict=True: resp
     pp.post = lambda url, payload, timeout=300: (unloaded.append(payload["instance_id"]) or {})
     try:
         buf = io.StringIO()
@@ -745,7 +745,7 @@ def test_partial_failure_visible():
         return True, name
 
     pp.describe = fake_describe
-    pp.lm_models, pp.pick_model, pp.unload_all = lambda: {}, lambda r, w: "m", lambda r: []
+    pp.lm_models, pp.pick_model, pp.unload_all = lambda strict=True: {}, lambda r, w: "m", lambda r: []
     pp.resolve_comfy = lambda c: "http://x"
     try:
         pp.generate = good_generate
@@ -896,7 +896,7 @@ def test_scene_failure_not_cached():
              pp.unload_all, pp.resolve_comfy)
     pp.describe = lambda p, m: {"subject": "adult woman, tree", "negative_extra": "", "notes": ""}
     pp.rewrite_scene = lambda d, s, m: None
-    pp.lm_models, pp.pick_model, pp.unload_all = lambda: {}, lambda r, w: "m", lambda r: []
+    pp.lm_models, pp.pick_model, pp.unload_all = lambda strict=True: {}, lambda r, w: "m", lambda r: []
     pp.resolve_comfy = lambda c: "http://x"
     try:
         rc, text = capture(lambda: pp.run_batch(
@@ -959,7 +959,7 @@ def test_batch_scene_cache_no_lm():
     pp.rewrite_scene = lambda d, s, m: (calls.append("rewrite") or
                                         {"subject": "adult woman, tree, " + s,
                                          "negative_extra": "", "notes": "", "scene": s})
-    pp.lm_models = lambda: (calls.append("lm_models") or {"models": []})
+    pp.lm_models = lambda strict=True: (calls.append("lm_models") or {"models": []})
     pp.pick_model = lambda r, w: (calls.append("pick_model") or "m")
     pp.unload_all = lambda r: (calls.append("unload_all") or [])
     pp.unload_model = lambda r, m: (calls.append("unload_model") or [])
@@ -1424,6 +1424,11 @@ def test_tagger_addon():
                                             ["huge breasts"], removed)
         check("--no-tags возвращает вытесненный размер",
               "large breasts" in back and "huge" not in back, back)
+        desc5 = {"subject": "adult woman, long dark hair",
+                 "negative_extra": "dark hair, missing glasses"}
+        pp.clean_negative(desc5)
+        check("негатив без самопротиворечий",
+              desc5["negative_extra"] == "missing glasses", desc5["negative_extra"])
     finally:
         pp.tagger.tags = real_tags
         os.environ["COMIC_TAGGER"] = "off"
@@ -1452,6 +1457,63 @@ def test_tagger_does_not_pollute_cache():
     finally:
         pp.tagger.tags = saved
         cache.unlink(missing_ok=True)
+
+
+def test_openai_provider():
+    """32) обычный OpenAI-сервис: /v1/models, без выгрузки, размышления по флагу."""
+    print("\n32) сервис описаний без LM Studio")
+    saved = (pp.get, pp.post, os.environ.get("LM_THINKING"))
+
+    def fake_get(url, timeout=30):
+        if url.endswith("/api/v1/models"):
+            raise OSError("HTTP Error 404: Not Found")
+        return {"object": "list", "data": [{"id": "huihui@q4"}, {"id": "other"}]}
+
+    try:
+        pp.get = fake_get
+        resp = pp.lm_models()
+        check("модель берётся из /v1/models", pp.pick_model(resp, None) == "huihui@q4",
+              str(resp)[:160])
+        check("явная модель сильнее списка", pp.pick_model(resp, "given") == "given")
+        check("провайдер помечен openai", resp.get("openai") is True, str(resp.get("openai")))
+
+        posted = []
+        pp.post = lambda url, payload, timeout=300: (posted.append(url) or {})
+        check("выгрузка не зовётся и не падает",
+              pp.free_llm("huihui@q4") == [] and not posted, str(posted))
+
+        pp.get = lambda url, timeout=30: (_ for _ in ()).throw(OSError("нет связи"))
+        check("лежащий сервис: выгрузка молчит", pp.free_llm("m") == [])
+
+        img = TMP / "provider" / "p.png"
+        make(img, (9, 9, 9))
+        seen = {}
+
+        def fake_post(url, payload, timeout=300):
+            seen.clear()
+            seen.update(payload)
+            return {"choices": [{"message": {"content":
+                    '{"subject":"adult woman, red dress","negative_extra":"","notes":""}'}}]}
+
+        pp.post = fake_post
+        os.environ["LM_THINKING"] = "off"
+        pp.describe(str(img), "huihui@q4")
+        check("thinking выключен в запросе",
+              seen.get("chat_template_kwargs") == {"enable_thinking": False},
+              str(seen.get("chat_template_kwargs")))
+        text = seen["messages"][1]["content"][0]["text"]
+        check("/no_think в тексте запроса", "/no_think" in text, text[:70])
+
+        os.environ.pop("LM_THINKING", None)
+        pp.describe(str(img), "huihui@q4")
+        check("по умолчанию thinking не трогаем",
+              "chat_template_kwargs" not in seen, str(list(seen)))
+    finally:
+        pp.get, pp.post = saved[0], saved[1]
+        if saved[2] is None:
+            os.environ.pop("LM_THINKING", None)
+        else:
+            os.environ["LM_THINKING"] = saved[2]
 
 
 def main():
@@ -1487,6 +1549,7 @@ def main():
         test_default_model()
         test_tagger_addon()
         test_tagger_does_not_pollute_cache()
+        test_openai_provider()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

@@ -15,6 +15,9 @@
   --keep-llm   не выгружать модель (только если хватает памяти)
   --unload-all выгрузить из LM Studio все модели, а не только свою
   --dry-run    показать промпт, ничего не загружая: нужен кэш/пресет/--no-llm
+  --no-think   выключить размышления модели описания (Qwen3: 86 с -> 6 с на фото);
+               то же делает LM_THINKING=off, чтобы это видел и веб-слой
+  --no-tags    не дописывать в subject теги WD14-теггера
 """
 import argparse
 import base64
@@ -39,6 +42,22 @@ import settings
 import tagger
 
 LM = os.environ.get("LM_URL") or "http://127.0.0.1:1234"
+
+
+def thinking_off():
+    """Размышления Qwen3 стоят дорого: одно фото 86 с и 1934 токена против 5.9 с и 97.
+
+    LM_THINKING=off или --no-think выключают их, on включает явно, пусто — не трогаем
+    и оставляем решение серверу (LM Studio сам решает по модели).
+    """
+    return (os.environ.get("LM_THINKING") or "").strip().lower() in ("off", "0", "no", "false")
+
+
+def think_payload():
+    """Поля запроса для выключенных размышлений (пусто, если не просили)."""
+    if not thinking_off():
+        return {}, ""
+    return {"chat_template_kwargs": {"enable_thinking": False}}, " /no_think"
 COMFY = settings.COMFY_URL
 ROOT = settings.ROOT
 WF_DIR = settings.WF_DIR
@@ -293,12 +312,15 @@ def resolve_workflow(workflow, style):
 
 def rewrite_scene(desc, scene, model):
     """Текстовый проход: та же персона, другая сцена. Фото не отправляем."""
+    think_fields, think_suffix = think_payload()
     ask = (f"Rewrite this photo description, placing the same person into: {scene}.\n"
            f"Keep face, hair, body type, glasses and jewellery. Change clothing and background "
-           f"as the scene requires. Return ONLY JSON with subject, negative_extra, notes.\n\n"
+           f"as the scene requires. Return ONLY JSON with subject, negative_extra, notes."
+           f"{think_suffix}\n\n"
            f"{desc['subject']}")
     payload = {"model": model, "temperature": 0.6, "max_tokens": 3000,
                "messages": [{"role": "user", "content": ask}]}
+    payload.update(think_fields)
     try:
         r = post(LM + "/v1/chat/completions", payload)
         content = r["choices"][0]["message"].get("content") or ""
@@ -438,6 +460,24 @@ def apply_tags(desc, image_path, no_tags=False, dry_run=False):
     return enrich_subject(desc, image_path)
 
 
+def clean_negative(desc):
+    """Убирает из негатива то, что subject прямо называет.
+
+    «long dark hair» в subject и `dark hair` в негативе — самопротиворечие, а не
+    страховка: модель получает приказ убрать то, что ей же велено нарисовать.
+    `missing glasses` при «clear glasses» сюда не попадает — там другое слово.
+    """
+    subject = [p.strip() for p in str(desc.get("subject") or "").split(",") if p.strip()]
+    neg = [p.strip() for p in str(desc.get("negative_extra") or "").split(",") if p.strip()]
+    kept = [n for n in neg
+            if not any(tagger.matches(n, s) or tagger.contained(n, s) for s in subject)]
+    if len(kept) != len(neg):
+        print("   негатив без самопротиворечий:",
+              ", ".join(sorted(set(neg) - set(kept))))
+        desc["negative_extra"] = ", ".join(kept)
+    return desc.get("negative_extra", "")
+
+
 def extract_json(text):
     """Достаёт JSON из ответа, снимая ```json-обёртку и болтовню вокруг."""
     t = str(text).strip()
@@ -468,11 +508,28 @@ def get(url, timeout=30):
         return json.loads(r.read())
 
 
-def lm_models():
+def lm_models(strict=True):
+    """Модели сервиса описаний. LM Studio и обычный OpenAI-сервер отвечают по-разному.
+
+    LM Studio: `/api/v1/models` -> `{"models": [...]}` с capabilities и loaded_instances.
+    Всякий OpenAI-совместимый сервис (llama.cpp, llama-swap): `/v1/models` ->
+    `{"data": [{"id": ...}]}`, выгрузки нет, vision не объявлен — считаем, что он есть:
+    описание просят у сервиса именно за это.
+    """
     try:
         return get(LM + "/api/v1/models")
-    except Exception as e:
-        sys.exit(f"LM Studio не отвечает на {LM}: {e}\nЗапусти сервер: lms server start")
+    except Exception as first:
+        try:
+            resp = get(LM + "/v1/models", timeout=10)
+        except Exception as second:
+            if not strict:
+                return None
+            sys.exit(f"Сервис описаний не отвечает на {LM}:\n"
+                     f"  /api/v1/models: {first}\n  /v1/models: {second}\n"
+                     f"Запусти LM Studio (lms server start) или укажи LM_URL другого сервиса.")
+    models = [{"key": m.get("id"), "capabilities": {"vision": True}, "loaded_instances": []}
+              for m in (resp.get("data") or []) if m.get("id")]
+    return {"models": models, "openai": True}
 
 
 def model_list(resp):
@@ -529,6 +586,7 @@ def prep_image(image_path, max_side=1280):
 def describe(image_path, model):
     image_path = prep_image(image_path)
     b64 = base64.b64encode(Path(image_path).read_bytes()).decode()
+    think_fields, think_suffix = think_payload()
     base = {
         "model": model,
         "temperature": 0.2,
@@ -538,11 +596,13 @@ def describe(image_path, model):
         "messages": [
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": [
-                {"type": "text", "text": "Describe this photo as JSON. Do not explain."},
+                {"type": "text",
+                 "text": "Describe this photo as JSON. Do not explain." + think_suffix},
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}},
             ]},
         ],
     }
+    base.update(think_fields)
 
     last = ""
     for budget in (3000, 6000):
@@ -624,10 +684,21 @@ def unload_model(resp, model):
 
 
 def free_llm(model, unload_everything=False):
-    """Освобождает память под SDXL. По умолчанию — только модель этого прогона."""
+    """Освобождает память под SDXL. По умолчанию — только модель этого прогона.
+
+    Обычный OpenAI-сервер выгрузки не умеет: там оставляем как есть и говорим об этом,
+    иначе один и тот же вызов падал бы на 404 после честно отработавшего описания.
+    """
+    resp = lm_models(strict=False)
+    if resp is None:
+        print("  выгрузка пропущена: сервис описаний не отвечает")
+        return []
+    if resp.get("openai"):
+        print("  выгрузка не нужна: сервис сам держит модель в памяти")
+        return []
     if unload_everything:
-        return unload_all(lm_models())
-    return unload_model(lm_models(), model)
+        return unload_all(resp)
+    return unload_model(resp, model)
 
 
 def join_tags(*chunks):
@@ -767,17 +838,21 @@ def comfy_free():
 def recheck(desc, image_path, model):
     """Смотрит готовый кадр и говорит, что из описания не доехало. None = проверить не вышло."""
     try:
+        think_fields, think_suffix = think_payload()
         b64 = base64.b64encode(Path(image_path).read_bytes()).decode()
         ask = ("Compare this image with the description. List ONLY what is clearly missing or wrong "
-               "as short tags. Return ONLY JSON: {\"missing\": \"tag1, tag2\"}.\n\n"
+               "as short tags. Return ONLY JSON: {\"missing\": \"tag1, tag2\"}."
+               f"{think_suffix}\n\n"
                f"Description: {desc.get('subject', '')}")
-        r = post(LM + "/v1/chat/completions", {
+        payload = {
             "model": model, "max_tokens": 3000, "temperature": 0.1,
             "messages": [{"role": "user", "content": [
                 {"type": "text", "text": ask},
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}},
             ]}],
-        }, timeout=600)
+        }
+        payload.update(think_fields)
+        r = post(LM + "/v1/chat/completions", payload, timeout=600)
         content = r["choices"][0]["message"].get("content") or ""
         data = extract_json(content) or {}
         miss = [t.strip() for t in str(data.get("missing", "")).split(",") if t.strip()]
@@ -1334,6 +1409,7 @@ def run_batch(args, workflow):
             # в кэш не пишем: там его быть не должно (пункт 0.11.2 в AGENTS).
             if cached and not args.no_tags and not args.dry_run and desc["subject"] != before:
                 fresh = True
+        clean_negative(desc)
         if not desc["subject"]:
             print("   пустое описание — пропускаю")
             skipped.append(f.name)
@@ -1449,6 +1525,8 @@ def main():
                     help="после генерации проверить кадр моделью и один раз дописать негатив")
     ap.add_argument("--no-tags", action="store_true",
                     help="не дописывать в subject теги WD14-теггера")
+    ap.add_argument("--no-think", action="store_true",
+                    help="выключить размышления модели описания (Qwen3: 86 с -> 6 с на фото)")
     ap.add_argument("--keep-llm", action="store_true")
     ap.add_argument("--unload-all", action="store_true",
                     help="выгрузить из LM Studio все модели, а не только свою (трогает чужие задачи)")
@@ -1466,6 +1544,11 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="показать промпт, ничего не запускать")
     ap.add_argument("--generate", action="store_true")
     a = ap.parse_args()
+
+    # Размышления выключаются через окружение: так их видят и CLI, и страница,
+    # и подмены в проверках — без глобальной переменной и лишних аргументов.
+    if a.no_think:
+        os.environ["LM_THINKING"] = "off"
 
     workflow = resolve_workflow(a.workflow, a.style)
     if a.batch:

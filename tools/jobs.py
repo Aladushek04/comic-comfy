@@ -243,6 +243,7 @@ def run_job(req, emit=None):
             # ввод в кэш фото не пишем: иначе они осядут в нём навсегда.
             if from_cache and req.tags and not req.dry_run and desc["subject"] != before:
                 came_from_llm = True
+        pp.clean_negative(desc)
         if came_from_llm and not req.dry_run and req.write_cache and desc["subject"].strip():
             out("cache_write", "   сохранено: " + str(pp.write_cache(
                 str(req.image), desc, req.scene or None)), cache=True)
