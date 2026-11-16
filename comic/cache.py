@@ -19,8 +19,10 @@
 нужен только человеку, который разбирает странное описание. Поэтому миграция его
 переносит, а `read` не толкует.
 """
+import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
@@ -176,6 +178,30 @@ def check(rec, *, scene="", describe_version=1, sha1=None):
     if rec.sha1 and sha1 is not None and rec.sha1 != sha1():
         return SHA1
     return ""
+
+
+def scene_slug(scene):
+    """Имя сцены для файла кэша. Кириллица не должна исчезать.
+
+    Раньше «на пляже» и «в горах» давали пустой slug и попадали в один файл с
+    запуском без сцены. Теперь к читаемой части всегда добавляется короткий хэш
+    полной строки, поэтому разные сцены не сталкиваются, в каком бы алфавите они
+    ни были записаны.
+    """
+    if not scene:
+        return ""
+    text = str(scene).strip()
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:32].strip("-")
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
+    return (slug + "-" if slug else "s-") + digest
+
+
+def path_for(folder, tag, scene=None):
+    """Файл кэша: <фото>_<хэш>[__<slug сцены>].prompt.json в папке `out`."""
+    slug = scene_slug(scene)
+    if slug:
+        tag += "__" + slug
+    return Path(folder) / (tag + ".prompt.json")
 
 
 def read(path):

@@ -31,7 +31,6 @@ import socket
 import ssl
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.request
@@ -40,6 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import settings
 import tagger
+from comic import cache  # noqa: E402  — корень репозитория добавляет settings.py
 
 LM = settings.LM_URL or "http://127.0.0.1:1234"
 
@@ -205,18 +205,8 @@ def ensure_input(image_path):
 
 
 def scene_slug(scene):
-    """Имя сцены для кэша. Кириллица не должна исчезать.
-
-    Раньше «на пляже» и «в горах» давали пустой slug и попадали в один файл с запуском
-    без сцены. Теперь к читаемой части всегда добавляется короткий хэш полной строки,
-    поэтому разные сцены не сталкиваются, в каком бы алфавите они ни были записаны.
-    """
-    if not scene:
-        return ""
-    text = str(scene).strip()
-    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:32].strip("-")
-    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
-    return (slug + "-" if slug else "s-") + digest
+    """Имя сцены для кэша: см. comic.cache.scene_slug (кириллица не исчезает)."""
+    return cache.scene_slug(scene)
 
 
 def cache_path(image_path, scene=None):
@@ -225,103 +215,45 @@ def cache_path(image_path, scene=None):
     Раньше ключом был stem: same.png и same.jpg попадали в один файл, а --scene
     при попадании в кэш молча игнорировался. Теперь другая сцена — другой файл.
     """
-    tag = image_tag(image_path)
-    slug = scene_slug(scene)
-    if slug:
-        tag += "__" + slug
-    return ROOT / "out" / (tag + ".prompt.json")
+    return cache.path_for(ROOT / "out", image_tag(image_path), scene)
 
 
-def read_json(path, retries=5):
-    """JSON с диска; на Windows короткий повтор.
-
-    os.replace делает старый файл на миг недоступным для чтения: без повтора
-    случайный читатель в этот момент получил бы PermissionError.
-    """
-    for attempt in range(retries):
-        try:
-            return json.loads(Path(path).read_text(encoding="utf-8"))
-        except PermissionError:
-            if attempt == retries - 1:
-                raise
-            time.sleep(0.02)
+# Атомарный JSON (tmp -> fsync -> os.replace) живёт в comic.cache: им пишутся и
+# кэш, и паспорт кадра, и пресеты, и тема. Имена оставлены прежними — их зовут
+# webapp и проверки, — но второго места, где запись может стать неатомарной,
+# быть не должно.
+read_json = cache.read_json
+write_json = cache.write_json
 
 
 def read_cache(image_path, scene=None):
     """Описание с диска, если оно снято с этого же содержимого и для этой же сцены."""
-    p = cache_path(image_path, scene)
-    if not p.exists():
+    rec = cache.read(cache_path(image_path, scene))
+    if rec is None:
         return None
-    try:
-        data = read_json(p)
-    except Exception:
-        return None
-    if (data.get("scene") or "") != (scene or ""):
-        # Имя файла могло совпасть, но описание — от другой сцены.
-        return None
-    if scene and not data.get("scene_applied"):
+    why = cache.check(rec, scene=scene or "", describe_version=DESCRIBE_VERSION,
+                      sha1=lambda: fingerprint(image_path))
+    if why == cache.SCENE_UNMARKED:
         # Записи до 3af4b58 писались под ключом сцены даже когда сцену применить
         # не удалось: доверять их полю scene нельзя, сцену надо переписать.
         print("   кэш сцены без метки (старая версия) — сцену переписываю заново")
         return None
-    if int(data.get("describe") or 1) < DESCRIBE_VERSION:
+    if why == cache.DESCRIBE:
         # В описании нет цвета глаз: с ним модель угадывает радужку и красит её
         # в красный. Ручные описания (--no-llm, --from-json) метку не ставят и
         # сюда не попадают — их переснимать нечем.
         print("   кэш описания снят старым промптом (без цвета глаз) — описываю заново")
         return None
-    if data.get("sha1") and data["sha1"] != fingerprint(image_path):
+    if why:
         return None
-    return data
-
-
-def write_json(path, data, indent=2):
-    """Пишет JSON целиком или не трогает файл: обрыв не оставляет половину.
-
-    Временный файл лежит рядом с целевым: os.replace атомарен только в пределах
-    одной файловой системы. fsync до замены — чтобы после сбоя питания на диске
-    остался прежний файл, а не пустой новый.
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(data, ensure_ascii=False, indent=indent)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        # На Windows replace не проходит, пока файл открыт читателем: короткая
-        # пауза и повтор дешевле, чем сорванная запись паспорта из-за вкладки.
-        for attempt in range(10):
-            try:
-                os.replace(tmp, path)
-                break
-            except PermissionError:
-                if attempt == 9:
-                    raise
-                time.sleep(0.02)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    return path
+    return cache.to_dict(rec)
 
 
 def write_cache(image_path, desc, scene=None):
     """Пишет описание вместе с отпечатком и сценой — кэш сам себя проверяет."""
-    p = cache_path(image_path, scene)
-    data = dict(desc)
-    data["sha1"] = fingerprint(image_path)
-    data["source"] = str(image_path)
-    data["scene"] = scene or ""
-    # Метка «поле scene правдиво»: без неё запись считается старой и не берётся.
-    data["scene_applied"] = True
-    # Каким промптом снято описание: см. DESCRIBE_VERSION.
-    data["describe"] = DESCRIBE_VERSION
-    return write_json(p, data)
+    return cache.write(cache_path(image_path, scene), cache.from_desc(
+        desc, sha1=fingerprint(image_path), source=str(image_path),
+        scene=scene or "", describe_version=DESCRIBE_VERSION))
 
 
 def legacy_cache_hint(image_path):

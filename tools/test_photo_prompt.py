@@ -1978,6 +1978,54 @@ def test_cache_schema():
           str(list(folder.glob("*.tmp"))))
 
 
+def test_cache_wrapper_keys():
+    """37) обёртки photo_prompt: прежние ключи, addons и сцена целы."""
+    img = TMP / "wrapper.png"
+    make(img, (9, 9, 9))
+    desc = {"subject": "adult woman, green", "negative_extra": "missing hat",
+            "notes": "заметка", "raw": "сырой ответ"}
+    path = pp.write_cache(str(img), desc)
+    got = pp.read_cache(str(img))
+    old_keys = {"subject", "negative_extra", "notes", "raw", "sha1", "source",
+                "scene", "scene_applied", "describe"}
+    check("write_cache вернул путь кэша", Path(path) == pp.cache_path(str(img)), str(path))
+    check("read_cache отдаёт прежние ключи", old_keys <= set(got or {}),
+          str(sorted(old_keys - set(got or {}))))
+    from comic import cache as cc
+    check("read_cache читает через comic.cache (схема 2)",
+          (got or {}).get("schema") == cc.SCHEMA, str((got or {}).get("schema")))
+    check("read_cache отдаёт прежние значения",
+          bool(got) and got["subject"] == desc["subject"] and got["notes"] == "заметка"
+          and got["raw"] == "сырой ответ" and got["negative_extra"] == "missing hat"
+          and got["describe"] == pp.DESCRIBE_VERSION
+          and got["sha1"] == pp.fingerprint(str(img))
+          and got["source"] == str(img) and got["scene"] == ""
+          and got["scene_applied"] is True, str(got))
+
+    # addons из кэша: --no-tags снимает ровно добавки и возвращает вытесненные.
+    tagged = {"subject": "adult woman, green, red dress", "negative_extra": "",
+              "notes": "", "addons": "swin+eva/1", "addon_tags": ["red dress"],
+              "addon_replaced": ["dress"], "addon_size": "large"}
+    pp.write_cache(str(img), tagged)
+    got = pp.read_cache(str(img))
+    check("addons переживают кэш", bool(got) and got.get("addons") == "swin+eva/1"
+          and got.get("addon_tags") == ["red dress"]
+          and got.get("addon_replaced") == ["dress"]
+          and got.get("addon_size") == "large", str(got))
+    stripped = pp.apply_tags(dict(got or {}), str(img), no_tags=True)
+    check("--no-tags снимает добавки и возвращает вытесненные",
+          "red dress" not in stripped and "dress" in stripped, stripped)
+
+    # Сцена сравнивается по значению, slug — только имя файла.
+    pp.write_cache(str(img), {"subject": "adult woman, beach"}, "beach at sunset")
+    check("сценическая запись читается со сценой",
+          (pp.read_cache(str(img), "beach at sunset") or {}).get("scene") == "beach at sunset",
+          str(pp.read_cache(str(img), "beach at sunset")))
+    check("сценический slug прежний", "__beach-at-sunset-" in pp.cache_path(
+        str(img), "beach at sunset").name)
+    check("пустая сцена — без slug", pp.scene_slug("") == "")
+
+
 def main():
     patch_roots()
     try:
@@ -2019,6 +2067,7 @@ def main():
         test_config_priority()
         test_settings_adapter()
         test_cache_schema()
+        test_cache_wrapper_keys()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
