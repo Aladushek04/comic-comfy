@@ -720,7 +720,7 @@ def test_portable_paths():
 
     rc, out = check_install_run()
     check("полный набор -> код 0", rc == 0, out[-200:])
-    check("найдены все 22 модели сборок", "моделей в сборках: 22" in out, out[-200:])
+    check("найдены все 17 моделей сборок", "моделей в сборках: 17" in out, out[-200:])
 
     (models / "depth_anything_v2_vitl.pth").unlink()
     rc, out = check_install_run()
@@ -2315,7 +2315,7 @@ def meta_hash(value):
 
 
 def test_golden_meta():
-    """43) meta всех 14 сборок заморожена перед интерфейсом.
+    """43) meta всех 12 сборок заморожена перед интерфейсом.
 
     P3 перегенерирует сборки декларативно, и тогда легко незаметно поменять
     контракт формы: привязки полей, слоты LoRA, стилевой шаблон и негатив. Здесь
@@ -2330,7 +2330,7 @@ def test_golden_meta():
     check("эталон сравнивает нужные части meta",
           keys == ["fields", "loras", "style_lora", "style_weight",
                    "positive_template", "negative", "samplers"], str(keys))
-    check("в эталоне 14 сборок", len(golden["builds"]) == 14, str(len(golden["builds"])))
+    check("в эталоне 12 сборок", len(golden["builds"]) == 12, str(len(golden["builds"])))
     check("сборки на диске и в эталоне совпадают", builds == sorted(golden["builds"]),
           str(sorted(set(builds) ^ set(golden["builds"]))))
     for name in builds:
@@ -2347,7 +2347,7 @@ def test_golden_meta():
 
 
 def test_builds_structural():
-    """44) 14 сборок собираются из данных в те же файлы, что лежат в workflows/.
+    """44) 12 сборок собираются из данных в те же файлы, что лежат в workflows/.
 
     P3 описывает сборки таблицей (`comic/builds.py`), а граф собирает
     `comic/workflow.py`. Эталон — сами файлы `workflows/`: они прошли ревью, их
@@ -2362,7 +2362,7 @@ def test_builds_structural():
     from comic.builds import BUILDS, WORKFLOWS
 
     repo = Path(__file__).resolve().parent.parent
-    check("сборок в таблице 14", len(BUILDS) == 14, str(len(BUILDS)))
+    check("сборок в таблице 12", len(BUILDS) == 12, str(len(BUILDS)))
     check("описания собраны из той же таблицы", sorted(WORKFLOWS) == sorted(BUILDS),
           str(sorted(set(WORKFLOWS) ^ set(BUILDS))))
     for name in sorted(BUILDS):
@@ -2594,6 +2594,61 @@ def test_guard_overrides():
           pp.with_adult("young girl, red dress"))
 
 
+def test_panel_sync():
+    """45) панель ComfyUI синхронизируется из репозитория в одну сторону.
+
+    Копию для панели раньше обновляли руками, и она разошлась с репозиторием.
+    Здесь проверяется сам скрипт: копирует все графы, не пишет обратно, убирает
+    снятые сборки и не трогает чужие файлы панели.
+    """
+    print("\n45) копия графов для панели: в одну сторону")
+    import sync_panel
+
+    repo = Path(__file__).resolve().parent.parent
+    graphs = sorted(p.name for p in (repo / "workflows").glob("*.json")
+                    if not p.name.endswith(".api.json"))
+    check("снятые графы 03 убраны из репозитория",
+          not [n for n in graphs if n.startswith("03_")], str(graphs))
+    check("в репозитории 12 графов", len(graphs) == 12, str(len(graphs)))
+
+    source = TMP / "panel_src"
+    panel = TMP / "panel_dst"
+    source.mkdir(parents=True, exist_ok=True)
+    panel.mkdir(parents=True, exist_ok=True)
+    for name in ("01_scene_thepit.json", "07_photo_thepit.json"):
+        (source / name).write_text('{"name": "%s"}' % name, encoding="utf-8")
+    (source / "07_photo_thepit.api.json").write_text("{}", encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in source.iterdir()}
+    # панель: устаревшая копия, снятая сборка и чужой файл
+    (panel / "01_scene_thepit.json").write_text("старое", encoding="utf-8")
+    (panel / "99_gone.json").write_text("{}", encoding="utf-8")
+    (panel / "utility_seedvr2_upscale.json").write_text("{}", encoding="utf-8")
+
+    rows = sync_panel.sync(source, panel)
+    actions = {name: action for name, action in rows}
+    check("новый граф скопирован", actions.get("07_photo_thepit.json") == "new", str(actions))
+    check("устаревший обновлён", actions.get("01_scene_thepit.json") == "update", str(actions))
+    check("снятая сборка убрана из панели", actions.get("99_gone.json") == "stale", str(actions))
+    check("чужой файл панели не тронут",
+          (panel / "utility_seedvr2_upscale.json").exists(), str(sorted(actions)))
+    check("api.json в панель не копируется",
+          not (panel / "07_photo_thepit.api.json").exists())
+    check("панель совпала с репозиторием",
+          all(a == "same" for _, a in sync_panel.diff(source, panel)), str(sync_panel.diff(source, panel)))
+    check("обратной записи нет",
+          {p.name: p.read_bytes() for p in source.iterdir()} == before,
+          str(sorted(p.name for p in source.iterdir())))
+
+    (panel / "01_scene_thepit.json").write_text("разошлось", encoding="utf-8")
+    rc, _ = capture(lambda: sync_panel.main(
+        ["--check", "--source", str(source), "--panel", str(panel)]))
+    check("--check называет расхождение и даёт код 1", rc == 1, str(rc))
+    sync_panel.sync(source, panel)
+    rc, _ = capture(lambda: sync_panel.main(
+        ["--check", "--source", str(source), "--panel", str(panel)]))
+    check("после копирования --check молчит", rc == 0, str(rc))
+
+
 def main():
     patch_roots()
     try:
@@ -2644,6 +2699,7 @@ def main():
         test_golden_meta()
         test_builds_structural()
         test_guard_overrides()
+        test_panel_sync()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

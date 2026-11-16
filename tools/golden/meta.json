@@ -1,5 +1,5 @@
 {
-  "_about": "Эталон meta сборок: контракт интерфейса и промпта (spec 7.2). Снято с workflows/*.api.json; сравнивается целиком, включая positive_template и negative, иначе P3 сможет незаметно поменять промпт кадра. null — у сборки нет блока meta (txt2img, edit, pose), и это тоже контракт: появившийся meta меняет её поведение.",
+  "_about": "Эталон meta сборок: контракт интерфейса и промпта (spec 7.2). Снято с workflows/*.api.json; сравнивается целиком, включая positive_template и negative, иначе P3 сможет незаметно поменять промпт кадра. null — у сборки нет блока meta (txt2img, pose), и это тоже контракт: появившийся meta меняет её поведение.",
   "keys": [
     "fields",
     "loras",
@@ -14,8 +14,6 @@
     "01_scene_jp": null,
     "01_scene_thepit": null,
     "02_edit_mask": null,
-    "03_edit_qwen_fast": null,
-    "03_edit_qwen_quality": null,
     "04_pose_reference": null,
     "05_style_return": null,
     "06_scene_noct": null,

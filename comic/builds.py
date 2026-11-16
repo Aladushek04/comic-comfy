@@ -1,4 +1,4 @@
-"""Все 14 сборок — данные: база, LoRA с ролями и триггерами, промпты, сэмплеры.
+"""Все 12 сборок — данные: база, LoRA с ролями и триггерами, промпты, сэмплеры.
 
 Здесь нет ни одной операции над словарями графа. Сборка описывается строкой
 таблицы: какой стиль (роль `style`, вес, триггер), какое тело, кисти и
@@ -6,7 +6,7 @@
 `comic/workflow.py` собирает из этого граф и `meta`, `tools/build_workflows.py`
 пишет файлы и гоняет их через API.
 
-Повторяющиеся формы графа описаны рецептами (`scene`, `photo`, `edit_qwen`):
+Повторяющиеся формы графа описаны рецептами (`scene`, `photo`):
 их строки отличаются только данными. Одиночные формы (маска, поза, возврат
 стиля, Noct) — узлы как данные, без рецепта на один случай.
 
@@ -18,9 +18,7 @@
   * `_add_hands` — слот `hands=Lora(..., "hands")` в рецепте: LoRA рук — такая
     же строка, как тело и персонаж, и стоит на своём месте в цепочке;
   * `_tune_bimbo` — поля `positive_extra`, `negative_extra`, `denoise` и
-    `style_note` у строки бимбо, а не правка чужой сборки после факта;
-  * патч 03b — строка `speed=Lora(...)` плюс `steps`/`cfg`: быстрый редактор
-    отличается от качественного ровно этими тремя значениями.
+    `style_note` у строки бимбо, а не правка чужой сборки после факта.
 
 Ничего не менять здесь «по пути»: тексты промптов и значения графа заморожены
 эталонами `tools/golden/` (spec 7.7), и P3 — переезд, а не правка.
@@ -28,9 +26,6 @@
 from dataclasses import dataclass, replace
 
 SDXL = "WAI-Nsfw-Illustrious-17.safetensors"
-QWEN_EDIT = "qwen-image-edit-2511-uncensored-Q4_K_M.gguf"
-QWEN_EDIT_TE = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
-QWEN_EDIT_VAE = "qwen_image_vae.safetensors"
 NOCT = "NoctQA_V1_int8_convrot.safetensors"
 NOCT_TE = "qwen3vl_8b_int8_convrot.safetensors"
 NOCT_VAE = "qwen_image_2.1_vae_bf16.safetensors"
@@ -63,7 +58,6 @@ GTA_NEG = ("photo, photorealistic, 3d render, dark, gloomy, desaturated, black a
            "night, rain, blurry, low quality, bad anatomy, bad hands, extra fingers, "
            "watermark, text, signature, child, loli, shota, young")
 
-QWEN_PROMPT = "change the jacket to a black leather jacket, keep face, hair and background unchanged"
 NOCT_PROMPT = ("An anime illustration of an adult woman in a leather jacket on a rainy city street at night, "
                "soft rim light, detailed background, cinematic composition")
 NOCT_NEG = "low quality, blurry, bad anatomy, extra fingers, watermark, text, child"
@@ -124,9 +118,6 @@ GTA = Lora("GTAV_IL_MIX.safetensors", "style", 0.85,
 BODY = Lora("Sexy_Detailer.safetensors", "body", 0.0)
 HANDS = Lora("detail\\hands_xl.safetensors", "hands", 0.0)
 PATTY = Lora("P477Y.safetensors", "character", 0.0)
-
-QWEN_NSFW = Lora("qwen-image-edit-plus-nsfw-lora.safetensors", "edit", 0.7)
-LIGHTNING = Lora("Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors", "speed", 1.0)
 
 
 @dataclass
@@ -318,42 +309,7 @@ def photo(*, name, title, style, body, hands=None, character=None,
                  style_lora=style.file, style_weight=style.weight)
 
 
-def edit_qwen(*, name, title, speed=None, steps=20, cfg=4.0, steps_desc, cfg_desc):
-    """03: правка кадра Qwen-Edit. `speed` — Lightning-LoRA и четыре шага."""
-    nodes = [
-        node(1, "UnetLoaderGGUF", {"unet_name": QWEN_EDIT}),
-        node(2, "CLIPLoader", {"clip_name": QWEN_EDIT_TE, "type": "qwen_image", "device": "default"}),
-        node(3, "VAELoader", {"vae_name": QWEN_EDIT_VAE}),
-        lora_node(4, QWEN_NSFW, (1, 0)),
-        node(5, "LoadImage", {"image": "example.png"}),
-        node(6, "ImageScaleToTotalPixels",
-             {"upscale_method": "lanczos", "megapixels": 1.0, "resolution_steps": 1},
-             image=(5, 0)),
-        node(7, "TextEncodeQwenImageEditPlus", {"prompt": QWEN_PROMPT},
-             clip=(2, 0), vae=(3, 0), image1=(6, 0)),
-        node(8, "TextEncodeQwenImageEditPlus", {"prompt": ""},
-             clip=(2, 0), vae=(3, 0), image1=(6, 0)),
-        encode(9, (6, 0), (3, 0)),
-        sampler(10, model=((13 if speed else 4), 0), positive=(7, 0), negative=(8, 0),
-                latent=(9, 0), steps=steps, cfg=cfg, denoise=1.0,
-                sampler_name="euler", scheduler="simple"),
-        decode(11, (10, 0), (3, 0)),
-        save(12, (11, 0)),
-    ]
-    if speed:
-        nodes.append(lora_node(13, speed, (4, 0)))
-    app = [
-        (5, "image", "кадр для правки"),
-        (7, "prompt", "инструкция: что изменить, что оставить"),
-        (4, "strength_model", "сила NSFW-LoRA, 0.6–0.9"),
-        (10, "seed", LABELS["seed"]),
-        (10, "steps", steps_desc),
-        (10, "cfg", cfg_desc),
-    ]
-    return Build(name, title, nodes, app)
-
-
-# ---------------------------------------------------------------- 14 сборок
+# ---------------------------------------------------------------- 12 сборок
 
 BUILDS = {b.name: b for b in [
     scene(name="01_scene_thepit", title="01 Сцена · ThePit V2",
@@ -395,12 +351,6 @@ BUILDS = {b.name: b for b in [
           text_desc="сцена: город, пляж, пальмы, время суток",
           denoise_desc="0.80–0.90: чем выше, тем сильнее стиль",
           cn_desc="жёсткость позы и композиции"),
-
-    edit_qwen(name="03_edit_qwen_quality", title="03 Правка Qwen · качество",
-              steps_desc="20 шагов ≈ 6.5 мин", cfg_desc="CFG 4"),
-    edit_qwen(name="03_edit_qwen_fast", title="03 Правка Qwen · быстро",
-              speed=LIGHTNING, steps=4, cfg=1.0,
-              steps_desc="4 шага с Lightning", cfg_desc="CFG 1.0 — обязателен для Lightning"),
 ]}
 
 # ---------------------------------------------------------------- одиночные формы
@@ -528,7 +478,7 @@ BUILDS["06_scene_noct"] = Build(
 
 # Порядок как в прежней таблице: от него зависит порядок печати драйвера.
 ORDER = [
-    "01_scene_thepit", "02_edit_mask", "03_edit_qwen_quality", "03_edit_qwen_fast",
+    "01_scene_thepit", "02_edit_mask",
     "07_photo_thepit", "08_photo_gta", "04_pose_reference", "05_style_return",
     "06_scene_noct", "01_scene_comic", "01_scene_jp",
     "07_photo_comic", "07_photo_jp", "07_photo_bimbo",

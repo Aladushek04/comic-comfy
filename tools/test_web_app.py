@@ -375,6 +375,10 @@ def test_catalog_fields():
     check("в списке только фото-сборки",
           names == ["07_photo_bimbo", "07_photo_comic", "07_photo_jp",
                     "07_photo_thepit", "08_photo_gta"], str(names))
+    check("снятые графы 03 форма не предлагает",
+          not [n for n in names if n.startswith("03_")], str(names))
+    check("снятых графов 03 нет и в папке",
+          not list(pp.WF_DIR.glob("03_*")), str(list(pp.WF_DIR.glob("03_*"))))
     thepit = next(s for s in styles if s["workflow"] == "07_photo_thepit")
     meta = thepit["meta"]
     check("есть русская подпись из сборки", "ThePit" in meta.get("label", ""), meta.get("label"))
