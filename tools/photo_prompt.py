@@ -16,7 +16,6 @@
   --keep-llm   не выгружать модель (только если хватает памяти)
   --unload-all выгрузить из LM Studio все модели, а не только свою
   --dry-run    показать промпт, ничего не загружая: нужен кэш/пресет/--no-llm
-  --no-think   размышления выключены по умолчанию; флаг оставлен для явности
   --think      включить размышления (86 с против 6 с на фото); то же делает LM_THINKING=on
   --no-tags    не дописывать в subject теги WD14-теггера
 """
@@ -488,8 +487,12 @@ def lm_models(strict=True):
 
 
 def model_list(resp):
-    """LM Studio 0.4 отдаёт {'models':[...]}, старые сборки — {'data':[...]}."""
-    return resp.get("models") or resp.get("data") or []
+    """Список моделей из ответа `lm_models`: он всегда нормализован в `models`.
+
+    Ответ `/v1/models` (`{"data": [...]}`) сюда не доходит: `lm_models` переводит
+    его в тот же вид, поэтому ветки «а вдруг тут data» больше нет.
+    """
+    return resp.get("models") or []
 
 
 def pick_model(resp, wanted):
@@ -1399,8 +1402,6 @@ def main():
                     help="после генерации проверить кадр моделью и один раз дописать негатив")
     ap.add_argument("--no-tags", action="store_true",
                     help="не дописывать в subject теги WD14-теггера")
-    ap.add_argument("--no-think", action="store_true",
-                    help="размышления выключены по умолчанию; флаг оставлен для явности")
     ap.add_argument("--think", action="store_true",
                     help="включить размышления модели описания (86 с против 6 с на фото)")
     ap.add_argument("--keep-llm", action="store_true")
@@ -1421,10 +1422,9 @@ def main():
     ap.add_argument("--generate", action="store_true")
     a = ap.parse_args()
 
-    # Размышления выключаются через окружение: так их видят и CLI, и страница,
+    # Размышления включаются через окружение: так их видят и CLI, и страница,
     # и подмены в проверках — без глобальной переменной и лишних аргументов.
-    if a.no_think:
-        os.environ["LM_THINKING"] = "off"
+    # Выключены они по умолчанию, поэтому флага «выключить» нет.
     if a.think:
         os.environ["LM_THINKING"] = "on"
 

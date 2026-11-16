@@ -204,18 +204,13 @@ class ComicPage:
             "info": None,
             "lm_models": [],
             "samplers": [],
-            "comfy_url": "",
-            "comfy_error": "",
             "upload_id": None,
             "upload_tag": None,
             "desc_auto": "",
-            "ws": "",
             "health_synced": False,
             "health_during": False,
-            "styles": {s["workflow"]: s for s in styles},
         }
         self.w = {}
-        self._combos = []
         self._advanced_refresh = None
 
     # ------------------------------------------------------------ утилиты
@@ -227,13 +222,28 @@ class ComicPage:
             ui.notify(str(e), type="negative")
             return None
 
-    def add_combo(self, key, label, class_type, input_name, value, classes=""):
+    def add_combo(self, key, label, value, classes=""):
+        """Список значений графа; варианты подставит `apply_options` из /object_info.
+
+        Привязки (класс узла и имя входа) не дублируются здесь: они берутся из
+        `meta` сборки в `combo_bindings`, иначе форма и граф могли разойтись.
+        """
         widget = ui.select([value] if value else [], value=value, label=label).props(
             "outlined dense").classes(classes)
-        self._combos.append({"key": key, "widget": widget, "class": class_type,
-                             "input": input_name, "fallback": value})
         self.w[key] = widget
         return widget
+
+    def combo_bindings(self, meta):
+        """Привязки списков: имя виджета -> (класс узла, вход, значение из графа)."""
+        out = {}
+        for key in ("checkpoint", "sampler", "scheduler"):
+            b = ((meta or {}).get("fields") or {}).get(key) or {}
+            if b.get("class_type"):
+                out[key] = (b["class_type"], b.get("input", ""), b.get("default"))
+        for slot in (meta or {}).get("loras") or []:
+            out[f"lora_name_{slot.get('node')}"] = ("LoraLoaderModelOnly", "lora_name",
+                                                    slot.get("value"))
+        return out
 
     def models_note(self):
         if self.state.get("info"):
@@ -246,13 +256,19 @@ class ComicPage:
 
     def apply_options(self):
         """Обновляет списки, не трогая то, что пользователь уже выбрал."""
-        if not self.w:
+        if not self.w or "style" not in self.w:
             return
         info = self.state.get("info")
-        for item in self._combos:
-            widget = item["widget"]
-            current = widget.value or item["fallback"]
-            opts = _select_options(info, item["class"], item["input"], current)
+        try:
+            meta = catalog.load_meta(self.w["style"].value)
+        except catalog.CatalogError:
+            meta = {}
+        for key, (class_type, name, fallback) in self.combo_bindings(meta).items():
+            widget = self.w.get(key)
+            if widget is None:
+                continue
+            current = widget.value or fallback
+            opts = _select_options(info, class_type, name, current)
             widget.set_options(opts, value=current if current in opts else opts[0])
         model = self.w.get("model")
         if model is not None:
@@ -293,7 +309,6 @@ class ComicPage:
             with ui.column().classes("w-full gap-2"):
                 self.advanced_panel()
                 self.prompt_panel()
-                self.journal_panel()
         ui.timer(0.6, self.refresh)
         ui.timer(0.2, self.refresh_health, once=True)
 
@@ -443,11 +458,6 @@ class ComicPage:
                 self.w["neg_drop"] = ui.input("Убрать из негатива").props(
                     "outlined dense").classes("grow min-w-40")
 
-    def journal_panel(self):
-        with ui.expansion("Журнал задания", icon="list").classes("w-full"):
-            self.w["log"] = ui.log(max_lines=300).classes(
-                "w-full h-40 text-xs font-mono")
-
     # ------------------------------------------------------------ правая часть
     def progress_card(self):
         with ui.card().classes("w-full"):
@@ -526,8 +536,6 @@ class ComicPage:
         self.w["lm_badge"].props(f'color={"positive" if lm_ok else "warning"}')
         self.w["lm_tip"].set_text(
             lm["url"] + ("\n" + ", ".join(lm["models"][:3]) if lm.get("models") else ""))
-        self.state["comfy_url"] = info["comfy"]["url"]
-        self.state["comfy_error"] = info["comfy"]["error"]
         launchable = cl.available()
         if comfy_ok:
             self.w["comfy_badge"].set_text("ComfyUI: готов")
@@ -551,7 +559,6 @@ class ComicPage:
     # ------------------------------------------------------------ advanced
     def render_advanced(self):
         """Содержимое панели. Вызывается только внутри её слота."""
-        self._combos = []
         meta = self.meta()
         if meta is None:
             ui.label("Сборка не готова: пересоберите графы.").classes("text-sm comic-error")
@@ -581,16 +588,14 @@ class ComicPage:
         with ui.row().classes("w-full gap-3 flex-wrap items-end"):
             if "checkpoint" in fields:
                 b = fields["checkpoint"]
-                self.add_combo("checkpoint", "Чекпойнт генерации", b["class_type"],
-                               b["input"], b["default"], "grow min-w-64")
+                self.add_combo("checkpoint", "Чекпойнт генерации", b["default"],
+                               "grow min-w-64")
             if "sampler" in fields:
                 b = fields["sampler"]
-                self.add_combo("sampler", "Сэмплер", b["class_type"], b["input"],
-                               b["default"], "min-w-40")
+                self.add_combo("sampler", "Сэмплер", b["default"], "min-w-40")
             if "scheduler" in fields:
                 b = fields["scheduler"]
-                self.add_combo("scheduler", "Планировщик", b["class_type"], b["input"],
-                               b["default"], "min-w-40")
+                self.add_combo("scheduler", "Планировщик", b["default"], "min-w-40")
         with ui.row().classes("w-full gap-3 flex-wrap items-end"):
             if "seed" in fields:
                 self.w["seed"] = ui.number(
@@ -622,8 +627,7 @@ class ComicPage:
             node = str(slot.get("node"))
             with ui.row().classes("w-full gap-3 flex-wrap items-end"):
                 self.add_combo(f"lora_name_{node}", f"LoRA · {ROLE_LABEL.get(role, role)}",
-                               "LoraLoaderModelOnly", "lora_name", slot.get("value"),
-                               "grow min-w-64")
+                               slot.get("value"), "grow min-w-64")
                 weight = ui.number("вес", value=slot.get("weight"), step=0.05).props(
                     "outlined dense").classes("w-24")
                 self.w[f"lora_weight_{node}"] = weight
@@ -791,9 +795,8 @@ class ComicPage:
             ui.notify(str(e), type="negative")
             return
         self.state.update(job_id=job.id, snap_id=None, last_seq=0, signature=None,
-                          selected=0, user_selected=False, ws="",
+                          selected=0, user_selected=False,
                           health_synced=False, health_during=False)
-        self.w["log"].clear()
         self.w["error"].set_text("")
         self.w["stage"].set_text("Задание в очереди" if self.svc.active_id()
                                  else "Задание запущено")
@@ -908,7 +911,6 @@ class ComicPage:
         if snap["id"] != self.state["snap_id"]:
             self.state.update(snap_id=snap["id"], last_seq=0, selected=0,
                               user_selected=False, signature=None)
-            self.w["log"].clear()
         label = STAGE_LABEL.get(snap["stage"], snap["stage"])
         if snap["status"] == "queued":
             self.w["stage"].set_text(f"В очереди · позиция {snap['queue'] or 1}")
@@ -979,8 +981,6 @@ class ComicPage:
         new = [e for e in snap["events"] if e["seq"] > self.state["last_seq"]]
         for event in new:
             self.state["last_seq"] = max(self.state["last_seq"], event["seq"])
-            if event.get("message"):
-                self.w["log"].push(f"[{fmt_time(event['t'])}] {event['message']}")
         # Headless ComfyUI поднялся — обновляем бейдж и списки моделей.
         if any(e["stage"] == "comfy" and (e.get("data") or {}).get("url") for e in new) \
                 and not self.state.get("health_during"):
