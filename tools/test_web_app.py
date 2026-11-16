@@ -658,6 +658,38 @@ def test_passport_sampler_settings():
         comfy.stop()
 
 
+def test_snapshot_frame_keys():
+    """5b) снимок задания: проходы и исход есть, и ни один ключ кадра не пропал.
+
+    `passes` и `outcome` попали в белый список вместе с паспортом схемы 2.
+    Проверка сторожит весь набор: интерфейс читает 13 ключей из 17, и новый
+    ключ не должен вытеснить старый.
+    """
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy) as root:
+            img = TMP / "frame_keys.png"
+            make(img, (33, 44, 55))
+            new_frame(comfy, "p1")
+            svc = JobService(jobs_root=root / "out" / "jobs")
+            job = svc.submit(jobs.JobRequest(
+                image="", workflow="07_photo_thepit", subject="adult woman, keys",
+                seed=4), source_path=str(img))
+            snap = svc.wait(job.id, timeout=60)
+            frame = (snap["frames"] or [{}])[0]
+            want = {"file", "folder", "seed", "workflow", "cn_strength", "style_weight",
+                    "denoise", "refined", "subject", "positive", "negative", "steps",
+                    "cfg", "sampler", "scheduler", "passes", "outcome"}
+            check("снимок отдаёт все ключи кадра", set(frame) == want,
+                  str(sorted(want ^ set(frame))))
+            check("проходы и исход в снимке на месте",
+                  bool(frame.get("passes")) and frame.get("outcome") == "unknown",
+                  str((frame.get("passes"), frame.get("outcome"))))
+    finally:
+        lm.stop()
+        comfy.stop()
+
+
 def test_failures():
     print("\n6) сбой API, пустой outputs, пропавший кадр")
     lm, comfy = lm_stub(), comfy_stub()
@@ -1535,6 +1567,7 @@ def main():
         test_scene_cache()
         test_settings_in_passport()
         test_passport_sampler_settings()
+        test_snapshot_frame_keys()
         test_failures()
         test_ws_fallback()
         test_ws_steps()
