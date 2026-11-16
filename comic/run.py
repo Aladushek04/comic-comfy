@@ -20,6 +20,9 @@
     получает ни `outcome`, ни восстановленных `passes`: иначе паспорт начал бы
     утверждать то, чего не знает.
 
+`estimated` — метка чтения, а не файла: она говорит, что проходы восстановлены из
+сборки кадра, и на диск не попадает.
+
 `read` не глотает ошибку, как `comic.cache.read`: нечитаемый `run.json` — это
 отказ (`RunError`), а не пустая история. Пустой паспорт молча теряет записи о
 прежних кадрах (AGENTS 0.15), поэтому `save_run` переводит `RunError` в
@@ -205,16 +208,50 @@ def build_names(wf_dir=None):
         return []
 
 
+def build_passes(name, wf_dir=None):
+    """Проходы сборки из её же графа: KSampler в порядке графа, главный первым.
+
+    Миграция берёт их отсюда, а не из константы 0.3: второй проход у каждой
+    сборки свой (у 07 — 0.3/15, у 08 — 0.3/16), а у 06 проход один. Порядок не
+    сортируем: с `--denoise 0.2` главный проход уехал бы на второе место, и
+    паспорт снова назвал бы второй проход первым.
+
+    Сборки нет или она не читается — `None`: выдумывать проходы нельзя.
+    """
+    if not name:
+        return None
+    path = Path(_wf_dir(wf_dir)) / (name + ".api.json")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    nodes = data.get("prompt") if isinstance(data, dict) else None
+    if not isinstance(nodes, dict):
+        return None
+    found = []
+    for node in nodes.values():
+        if not isinstance(node, dict) or node.get("class_type") != "KSampler":
+            continue
+        inputs = node.get("inputs") or {}
+        found.append(PassRecord(denoise=inputs.get("denoise"), steps=inputs.get("steps")))
+    return found or None
+
+
 def _wf_dir(wf_dir):
     return Path(wf_dir) if wf_dir else project_root() / "workflows"
 
 
-def migrate(data):
+def migrate(data, *, wf_dir=None):
     """Старый dict (с диска) -> RunRecord без выдуманных значений.
 
     `denoise: null` остаётся null, а незаписанные `steps`/`cfg`/`sampler` —
     `None`: миграция не подставляет числа, иначе 0.0 и 0 шагов выглядели бы
     настоящими значениями (AGENTS 0.15).
+
+    Отсутствие `passes` — это запись, созданная до появления поля, и проходы
+    восстанавливаются из её сборки с меткой `estimated`. А вот `passes: null`
+    пишет уже новый код, когда настроек не было: там писатель честно сказал «не
+    знаю», и подставлять проходы сборки было бы догадкой.
     """
     if isinstance(data, RunRecord):
         return replace(data, passes=passes_of(data.passes), extra=dict(data.extra),
@@ -244,7 +281,20 @@ def migrate(data):
         extra={k: v for k, v in payload.items() if k not in _JSON_KEYS},
         raw=payload,
     )
+    # `origin` — значения ровно те, что лежали на диске: по ним `to_dict` отличает
+    # «поле не трогали» от «поле изменили».
     rec.origin = {name: getattr(rec, name) for name in _KEYS}
+    if "passes" not in known:
+        rec.passes = build_passes(rec.workflow or workflow_from_file(rec.file, wf_dir),
+                                  wf_dir)
+        rec.estimated = True
+        # Восстановленные проходы — догадка о кадре, а не запись о нём: на диск
+        # они не пойдут, поэтому в origin лежит уже восстановленное.
+        rec.origin["passes"] = rec.passes
+    if not rec.workflow:
+        # Имя кадра — факт (префикс SaveImage и есть сборка), поэтому в отличие
+        # от проходов оно записывается при первом же сохранении паспорта (AGENTS 0.7).
+        rec.workflow = workflow_from_file(rec.file, wf_dir)
     return rec
 
 
@@ -272,7 +322,7 @@ def to_dict(rec):
     return data
 
 
-def read_book(folder, *, read_json=None):
+def read_book(folder, *, read_json=None, wf_dir=None):
     """Записи паспорта и его верхние ключи: чужие ключи не теряются при записи.
 
     Нет файла — пустая история и пустая шапка. Файл есть, но не читается —
@@ -292,14 +342,14 @@ def read_book(folder, *, read_json=None):
     for item in book["runs"]:
         if not isinstance(item, dict):
             raise RunError(f"паспорт {path} не читается (запись не словарь)")
-        records.append(migrate(item))
+        records.append(migrate(item, wf_dir=wf_dir))
     head = {k: v for k, v in book.items() if k not in ("runs", "workflows")}
     return records, head
 
 
-def read(folder, *, read_json=None):
+def read(folder, *, read_json=None, wf_dir=None):
     """Записи паспорта в папке кадра: список RunRecord (пусто — файла нет)."""
-    return read_book(folder, read_json=read_json)[0]
+    return read_book(folder, read_json=read_json, wf_dir=wf_dir)[0]
 
 
 def write(folder, records, *, head=None, write_json=None):

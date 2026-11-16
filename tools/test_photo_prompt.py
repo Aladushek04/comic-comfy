@@ -2141,6 +2141,99 @@ def test_run_record():
         check("метка вне OUTCOMES не пишется", "unknown" in str(e), str(e))
 
 
+def test_run_migration():
+    """42) старый паспорт: проходы из своей сборки, а не из константы 0.3.
+
+    Запись, созданная до P0, не знает ни шагов, ни второго прохода. Взять их из
+    сборки кадра можно, но это восстановление, а не факт: `estimated=True`, и на
+    диск восстановленное не пишется — иначе паспорт начал бы утверждать числа,
+    которых не видел.
+    """
+    from comic import run as cr
+
+    img = TMP / "migrate.png"
+    make(img, (50, 51, 52))
+    saved = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT, pp.OUTPUT_DIR = TMP / "root_migrate", TMP / "out_migrate"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        folder = pp.ROOT / "out" / pp.image_tag(img)
+        folder.mkdir(parents=True)
+        old = [
+            # как писал прежний код: сборка, seed, denoise и файл
+            {"workflow": "07_photo_thepit", "seed": 1, "denoise": None,
+             "file": "07_photo_thepit_00001_.png", "subject": "x"},
+            {"workflow": "06_scene_noct", "seed": 2, "denoise": None,
+             "file": "06_scene_noct_00002_.png", "subject": "x"},
+            {"workflow": "07_photo_bimbo", "seed": 3, "denoise": 0.9,
+             "file": "07_photo_bimbo_00003_.png", "subject": "x"},
+            # сборки нет: восстановить нечего
+            {"workflow": "99_nope", "seed": 4, "denoise": None,
+             "file": "99_nope_00004_.png", "subject": "x"},
+            # сборка не названа вовсе — ищется по имени кадра
+            {"seed": 5, "denoise": None, "file": "08_photo_gta_00005_.png"},
+            # новый код уже сказал «не знаю»: null — это не «поля нет»
+            {"workflow": "07_photo_thepit", "seed": 6, "denoise": None,
+             "file": "07_photo_thepit_00006_.png", "passes": None, "outcome": "unknown"},
+        ]
+        (folder / "run.json").write_text(json.dumps({"runs": old}, ensure_ascii=False),
+                                        encoding="utf-8")
+        got = cr.read(folder)
+
+        def passes(i):
+            return [(p.denoise, p.steps) for p in got[i].passes or []]
+
+        check("07: оба прохода из сборки",
+              passes(0) == [(0.75, 30), (0.3, 15)], str(got[0].passes))
+        check("07: проходы помечены восстановленными", got[0].estimated is True)
+        check("06: один проход, как в её графе",
+              passes(1) == [(1.0, 8)], str(got[1].passes))
+        check("bimbo: главный проход свой, а не 0.75",
+              passes(2) == [(0.7, 30), (0.3, 15)], str(got[2].passes))
+        check("сборка по имени кадра: 08",
+              got[4].workflow == "08_photo_gta", str(got[4].workflow))
+        check("08: проходы из её сборки, а не константа 0.3",
+              passes(4) == [(0.85, 32), (0.3, 16)], str(got[4].passes))
+        check("сборки нет — проходы не выдуманы",
+              got[3].passes is None and got[3].estimated is True, str(got[3]))
+        check("passes: null — писатель сам сказал «не знаю»",
+              got[5].passes is None and got[5].estimated is False, str(got[5]))
+        check("denoise null остался null, а не 0.0",
+              all(r.denoise is None for r in got[:2]), str([r.denoise for r in got[:2]]))
+        check("шаги, cfg и сэмплер не выдуманы",
+              all(r.steps is None and r.cfg is None and r.sampler == "" for r in got),
+              str([(r.steps, r.cfg, r.sampler) for r in got]))
+
+        # Новый кадр рядом: восстановленное на диск не попадает.
+        frame = "07_photo_thepit_00010_.png"
+        (pp.OUTPUT_DIR / frame).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "x", "negative_extra": ""}, 7, None, frame)
+        book = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+        after = book["runs"][:len(old)]
+        check("восстановленные проходы на диск не попали",
+              all("passes" not in r for r in after[:5]), str([sorted(r) for r in after]))
+        check("явный passes: null остался null",
+              after[5].get("passes") is None and "passes" in after[5], str(after[5]))
+        check("старые записи не получили schema",
+              all("schema" not in r for r in after), str([sorted(r) for r in after]))
+        check("denoise на диске тот же, что был",
+              all(r.get("denoise") == o.get("denoise") for r, o in zip(after, old)),
+              str([(r.get("denoise"), o.get("denoise")) for r, o in zip(after, old)]))
+        check("найденная сборка записана",
+              after[4].get("workflow") == "08_photo_gta", str(after[4]))
+        check("остальные записи не переписаны",
+              after[0] == old[0] and after[3] == old[3],
+              str([(a, b) for a, b in zip(after, old) if a != b])[:200])
+        check("новый кадр последний и схемы 2",
+              len(book["runs"]) == len(old) + 1
+              and book["runs"][-1].get("schema") == cr.SCHEMA,
+              str(book["runs"][-1].get("schema")))
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved
+
+
 def test_prompt_builder():
     """38) PromptBuilder: промпт кадра собирается побайтно, как в эталоне P0.
 
@@ -2384,6 +2477,7 @@ def main():
         test_cache_schema()
         test_cache_wrapper_keys()
         test_run_record()
+        test_run_migration()
         test_prompt_builder()
         test_prompt_golden()
         test_guard_overrides()

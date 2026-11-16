@@ -778,16 +778,13 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
 
     folder = ROOT / "out" / image_tag(image_path)
     try:
-        records, head = run.read_book(folder, read_json=read_json)
+        records, head = run.read_book(folder, read_json=read_json, wf_dir=WF_DIR)
     except run.RunError as e:
         # Паспорт уже есть — переписываем только прочитанный: пустой «паспорт»
         # вместо истории хуже, чем кадр без записи, и молча теряет прошлые кадры.
         raise PipelineError(f"{e} — кадр не записан, паспорт не тронут") from e
     folder.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, folder / name)
-    for r in records:
-        if not r.workflow:
-            r.workflow = workflow_from_file(r.file)
     records.append(run.RunRecord(
         workflow=workflow,
         seed=seed, denoise=denoise, file=name,
