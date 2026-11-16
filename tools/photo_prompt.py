@@ -191,6 +191,16 @@ def image_tag(image_path):
     return f"{src.stem}_{fingerprint(src)}"
 
 
+def input_name(image_path):
+    """Имя, под которым фото ляжет в input: без копирования (нужно предпросмотру).
+
+    `ensure_input` кладёт файл и возвращает это же имя, поэтому предпросмотр и
+    кадр называют один файл, а `--dry-run` ничего не пишет на диск.
+    """
+    src = Path(image_path)
+    return image_tag(src) + src.suffix.lower()
+
+
 def ensure_input(image_path):
     """Кладёт фото в общую папку input и возвращает имя для LoadImage.
 
@@ -199,7 +209,7 @@ def ensure_input(image_path):
     Одинаковые байты дают одно имя и одну копию.
     """
     src = Path(image_path)
-    name = image_tag(src) + src.suffix.lower()
+    name = input_name(src)
     dst = INPUT_DIR / name
     if not dst.exists() or dst.stat().st_size != src.stat().st_size:
         INPUT_DIR.mkdir(parents=True, exist_ok=True)

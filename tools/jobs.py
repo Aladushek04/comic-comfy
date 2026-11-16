@@ -141,15 +141,26 @@ def _negative_tags(desc, req):
     return ", ".join(dict.fromkeys(extra))
 
 
-def _prompts(req, desc, image_name=None):
-    """Итоговые positive/negative по графу: их видит и CLI, и страница."""
-    return pp.build_payload(
+def _prompts(req, desc, landscape=False, image_name=None):
+    """Итоговые positive/negative по графу: их видит и CLI, и страница.
+
+    `landscape` и имя input-файла приходят из того же места, что уходит в
+    `generate()`: иначе `--dry-run` показывал бы промпт другого кадра (и молча
+    расходился бы с паспортом). На текст они не влияют — на граф влияют, поэтому
+    `applied` говорит, с какими входами собран предпросмотр.
+    """
+    payload = pp.build_payload(
         req.workflow, desc.get("subject", ""), desc.get("negative_extra", ""),
-        denoise=req.denoise, seed=req.seed, landscape=False,
+        denoise=req.denoise, seed=req.seed, landscape=landscape,
         style_weight=req.style_weight, image_name=image_name,
         cn_strength=req.cn_strength, overrides=req.overrides,
         positive=req.positive_override, negative=req.negative_override,
     )
+    applied = dict(payload.get("applied") or {})
+    applied.setdefault("landscape", bool(landscape))
+    applied.setdefault("image_name", str(image_name or ""))
+    payload["applied"] = applied
+    return payload
 
 
 def run_job(req, emit=None):
@@ -287,7 +298,11 @@ def run_job(req, emit=None):
             out("preset", "   пресет: " + path.name)
 
         # ---- 3. Итоговые промпты и проверка привязок ---------------------
-        payload = _prompts(req, desc)
+        # Входы кадра считаем здесь и передаём и предпросмотру, и генерации:
+        # имя input-файла берётся без копирования, чтобы --dry-run не писал на диск.
+        landscape = pp.image_is_landscape(str(req.image))
+        image_name = pp.input_name(str(req.image))
+        payload = _prompts(req, desc, landscape=landscape, image_name=image_name)
         result.positive = payload["positive"]
         result.negative = payload["negative"]
         out("prompt", "", positive=payload["positive"], negative=payload["negative"],
@@ -313,7 +328,9 @@ def run_job(req, emit=None):
         out("comfy", "ComfyUI: " + comfy, url=comfy)
 
         n = max(1, req.variants)
-        landscape = pp.image_is_landscape(str(req.image))
+        # Файл кладём в input только перед генерацией: имя уже посчитано выше
+        # (--dry-run ничего не копировал).
+        pp.ensure_input(str(req.image))
         out("generate", f"3) генерация в ComfyUI, вариантов: {n}")
         t = time.monotonic()
         ok_all = True
@@ -324,7 +341,7 @@ def run_job(req, emit=None):
             ok, name = pp.generate(
                 req.workflow, desc["subject"], desc.get("negative_extra", ""),
                 denoise=req.denoise, seed=sd, landscape=landscape,
-                style_weight=req.style_weight, image_name=pp.ensure_input(str(req.image)),
+                style_weight=req.style_weight, image_name=image_name,
                 cn_strength=req.cn_strength, overrides=req.overrides,
                 positive=req.positive_override, negative=req.negative_override,
                 progress=out.progress, client_id=req.client_id, report=report)

@@ -1321,6 +1321,48 @@ def test_frame_prompt_passport():
         comfy.stop()
 
 
+def test_preview_matches_frame():
+    print("\n18.1) предпросмотр собирает тот же промпт, что кадр")
+    comfy = comfy_stub()
+    try:
+        with stand(lm=None, comfy=comfy):
+            for workflow in ("07_photo_thepit", "08_photo_gta"):
+                for size, kind in (((180, 240), "портрет"), ((260, 120), "горизонталь")):
+                    img = TMP / f"preview_{workflow}_{kind}.png"
+                    make(img, (21, 47, 83), size)
+                    frame_events, dry_events = [], []
+                    r = jobs.run_job(jobs.JobRequest(
+                        image=str(img), workflow=workflow, seed=5, tags=False,
+                        subject="adult woman, red dress, standing"),
+                        emit=frame_events.append)
+                    dry = jobs.run_job(jobs.JobRequest(
+                        image=str(img), workflow=workflow, seed=5, tags=False,
+                        subject="adult woman, red dress, standing", dry_run=True),
+                        emit=dry_events.append)
+                    label = f"{workflow}, {kind}"
+                    sent = comfy.state.prompts[-1]["prompt"]
+                    load = next(n["inputs"]["image"] for n in sent.values()
+                                if n["class_type"] == "LoadImage")
+                    frame = next(e for e in frame_events if e["stage"] == "prompt")["data"]
+                    preview = next(e for e in dry_events if e["stage"] == "prompt")["data"]
+                    check(f"{label}: positive предпросмотра = кадр",
+                          r.ok and dry.ok and dry.positive == frame["positive"]
+                          == r.frames[0]["positive"],
+                          f"{dry.positive[:80]} | {frame['positive'][:80]}")
+                    check(f"{label}: negative предпросмотра = кадр",
+                          dry.negative == frame["negative"] == r.frames[0]["negative"],
+                          f"{dry.negative[:80]} | {frame['negative'][:80]}")
+                    check(f"{label}: предпросмотр знает имя input-файла кадра",
+                          preview["applied"].get("image_name") == load,
+                          f"{preview['applied'].get('image_name')!r} != {load!r}")
+                    check(f"{label}: предпросмотр знает ориентацию кадра",
+                          preview["applied"].get("landscape")
+                          == pp.image_is_landscape(str(img)),
+                          str(preview["applied"]))
+    finally:
+        comfy.stop()
+
+
 def test_comfy_launch_plan():
     print("\n19) headless ComfyUI: план запуска")
     main = TMP / "fake_comfy" / "main.py"
@@ -1504,6 +1546,7 @@ def main():
         test_recheck_isolation()
         test_recheck_with_override()
         test_frame_prompt_passport()
+        test_preview_matches_frame()
         test_comfy_launch_plan()
         test_job_autostart()
         test_upload_limits()
