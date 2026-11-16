@@ -2278,6 +2278,54 @@ def test_golden_meta():
               "meta пропал" if meta is None else "изменилось: " + ", ".join(diff))
 
 
+def test_builds_structural():
+    """44) 14 сборок собираются из данных в те же файлы, что лежат в workflows/.
+
+    P3 описывает сборки таблицей (`comic/builds.py`), а граф собирает
+    `comic/workflow.py`. Эталон — сами файлы `workflows/`: они прошли ревью, их
+    читают `check_install` и страница. Разошлись данные и артефакты — значит
+    правили одно без другого, и панель ComfyUI увидит не то, что в таблице.
+
+    Отдельно проверяется то, ради чего переезд: стиль находится по роли, а не
+    по весу 0.9. Раньше второй ненулевой LoRA (тело, персонаж) ломал поиск, и
+    `meta.style_lora` становился пустым.
+    """
+    from comic import workflow as wf
+    from comic.builds import BUILDS, WORKFLOWS
+
+    repo = Path(__file__).resolve().parent.parent
+    check("сборок в таблице 14", len(BUILDS) == 14, str(len(BUILDS)))
+    check("описания собраны из той же таблицы", sorted(WORKFLOWS) == sorted(BUILDS),
+          str(sorted(set(WORKFLOWS) ^ set(BUILDS))))
+    for name in sorted(BUILDS):
+        graph, api = wf.build(name, WORKFLOWS[name])
+        want = json.loads((repo / "workflows" / (name + ".json")).read_text(encoding="utf-8"))
+        check(f"{name}: граф структурно равен workflows/",
+              json.dumps(graph, sort_keys=True) == json.dumps(want, sort_keys=True),
+              "разошлись узлы/связи/linearData")
+        payload = json.loads((repo / "workflows" / (name + ".api.json")).read_text(encoding="utf-8"))
+        check(f"{name}: prompt структурно равен workflows/",
+              json.dumps(api, sort_keys=True) == json.dumps(payload["prompt"], sort_keys=True))
+        check(f"{name}: meta пересобирается тем же",
+              json.dumps(wf.meta(WORKFLOWS[name], api), sort_keys=True, ensure_ascii=False)
+              == json.dumps(payload.get("meta"), sort_keys=True, ensure_ascii=False))
+
+    # Стиль по роли: тело с весом 0.4 не должен отбирать роль у стилевой LoRA.
+    spec = json.loads(json.dumps(WORKFLOWS["07_photo_thepit"]))
+    for node in spec["nodes"]:
+        if node["id"] == 3:
+            node["w"]["strength_model"] = 0.4
+    graph, api = wf.build("07_photo_thepit", spec)
+    meta = wf.meta(spec, api)
+    check("второй ненулевой LoRA не отбирает стиль",
+          meta["style_lora"] == "thepit2_1768210.safetensors", str(meta["style_lora"]))
+    check("вес стиля — из строки стиля, а не из поиска по 0.9",
+          meta["style_weight"] == 0.9, str(meta["style_weight"]))
+    roles = {slot["node"]: slot["role"] for slot in meta["loras"]}
+    check("роль style у стилевой LoRA, body — у тела",
+          roles.get("2") == "style" and roles.get("3") == "body", str(roles))
+
+
 def test_prompt_builder():
     """38) PromptBuilder: промпт кадра собирается побайтно, как в эталоне P0.
 
@@ -2525,6 +2573,7 @@ def main():
         test_prompt_builder()
         test_prompt_golden()
         test_golden_meta()
+        test_builds_structural()
         test_guard_overrides()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
