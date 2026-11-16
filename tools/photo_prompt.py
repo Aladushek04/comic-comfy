@@ -9,6 +9,7 @@
 
 Ключи:
   --workflow   имя сборки из workflows\\ (без .json)
+  --batch      папка с фото: все описания, потом выгрузка VLM, потом кадры
   --generate   после описания сразу запустить ComfyUI
   --no-llm     не звать LM Studio, взять --subject
   --model      id модели в LM Studio (иначе первая загруженная / первая vision)
@@ -24,7 +25,6 @@ import base64
 import hashlib
 import json
 import os
-import random
 import re
 import shutil
 import socket
@@ -1352,163 +1352,14 @@ def generate(workflow, subject, negative_extra, denoise=None, seed=None, landsca
     return wait_for_prompt(pid, progress=progress, client_id=client_id)
 
 
-def run_batch(args, workflow):
-    """Пачка фото в два прохода: сначала все описания, потом выгрузка и генерация.
+def build_request(a, workflow, image=None):
+    """Аргументы CLI -> задание. Один и тот же JobRequest получает и страница.
 
-    Так модель грузится один раз, а не на каждый файл.
+    `image` — файл пачки: у каждого фото свой JobRequest, остальные флаги общие.
     """
-    global COMFY
-    folder = Path(args.batch)
-    if not folder.is_dir():
-        sys.exit(f"{folder} не папка")
-    files = sorted(p for p in folder.iterdir()
-                   if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"))
-    if not files:
-        sys.exit("в папке нет картинок")
-
-    need_llm = not args.no_llm and not args.from_json
-    print(f"пачка: {len(files)} файлов, стиль {workflow}, "
-          f"описание: {'LLM' if need_llm else 'без модели'}")
-
-    # --dry-run модель не грузит: значит и опрашивать LM Studio незачем. В остальных
-    # случаях модель спрашиваем только когда действительно нужно описание.
-    model = None
-    described = 0
-    descs = {}
-    skipped = []
-    for i, f in enumerate(files, 1):
-        print(f"\n=== [{i}/{len(files)}] {f.name}")
-        fresh = False        # описание для этой сцены готово сейчас и его можно кэшировать
-        cached = read_cache(str(f), args.scene) if need_llm and not args.force else None
-        base_desc = (read_cache(str(f))
-                     if need_llm and not args.force and args.scene and not cached else None)
-        if args.from_json:
-            desc = json.loads(Path(args.from_json).read_text(encoding="utf-8"))
-        elif cached:
-            desc = cached
-            print(f"   из кэша {cache_path(str(f), args.scene).name}")
-        elif args.no_llm:
-            desc = {"subject": args.subject or "", "negative_extra": "", "notes": "без LLM"}
-        elif args.dry_run:
-            print("   в кэше нет описания, а --dry-run модель не грузит — пропускаю")
-            skipped.append(f.name)
-            continue
-        elif base_desc:
-            print("   фото уже описано — переписываю только сцену")
-            desc = base_desc
-        else:
-            if model is None:
-                model = pick_model(lm_models(), args.model)
-            desc = describe(str(f), model)
-            described += 1
-            fresh = True
-
-        if args.scene and need_llm and not cached:
-            if model is None:
-                model = pick_model(lm_models(), args.model)
-            print(f"   сцена: {args.scene}")
-            new = rewrite_scene(desc, args.scene, model)
-            described += 1
-            if not new:
-                # Не пишем исходный текст под ключом сцены: иначе следующий запуск
-                # возьмёт его из кэша и сцену уже не попробует.
-                print("   сцену применить не удалось — пропускаю файл")
-                if fresh:
-                    print("   описание фото сохранено без сцены:",
-                          write_cache(str(f), desc, None).name)
-                skipped.append(f.name)
-                continue
-            desc = new
-            fresh = True
-        if args.scene and args.no_llm:
-            desc["subject"] = (desc["subject"].rstrip(", ") + ", " + args.scene).strip(", ")
-
-        desc["subject"] = with_adult(desc.get("subject", ""))
-        if desc["subject"]:
-            before = desc["subject"]
-            desc["subject"] = apply_tags(desc, str(f), args.no_tags, args.dry_run)
-            # Дозаполнили кэш этого фото — перезапишем. Ручное описание и пресет
-            # в кэш не пишем: там его быть не должно (пункт 0.11.2 в AGENTS).
-            if cached and not args.no_tags and not args.dry_run and desc["subject"] != before:
-                fresh = True
-        clean_negative(desc)
-        if not desc["subject"]:
-            print("   пустое описание — пропускаю")
-            skipped.append(f.name)
-            print("   нет описания, кадр не появится")
-            continue
-        # Кэш — до подмешивания ключей командной строки, иначе флаги прогона
-        # остаются в описании навсегда.
-        if fresh:
-            print("   сохранено:", write_cache(str(f), desc, args.scene).name)
-
-        extra = [x.strip() for x in (desc.get("negative_extra") or "").split(",") if x.strip()]
-        drop = [x.strip().lower() for x in args.negative_drop.split(",") if x.strip()]
-        if drop:
-            extra = [x for x in extra if x.lower() not in drop]
-        extra += [x.strip() for x in args.negative_extra.split(",") if x.strip()]
-        desc["negative_extra"] = ", ".join(dict.fromkeys(extra))
-        descs[f] = desc
-        print("   subject:", desc["subject"][:110])
-
-    if need_llm and described and model and not args.keep_llm:
-        freed = free_llm(model, args.unload_all)
-        print(f"\nвыгружено: {', '.join(freed) if freed else 'нечего'}")
-
-    if args.dry_run or not args.generate:
-        print(f"\nготово описаний: {len(descs)} (генерация не запускалась)")
-        if args.dry_run and not descs:
-            print("нечего показать: ни одного описания")
-            return 1
-        if skipped:
-            print("без описания: " + ", ".join(skipped))
-            return 1
-        return 0
-    if not descs:
-        print(f"\nкадров: 0, провалов: {len(skipped)}"
-              + (f", без описания: {len(skipped)} ({', '.join(skipped)})" if skipped else "")
-              + " — генерировать нечего")
-        return 1
-
-    COMFY = resolve_comfy(args.comfy)
-    frames, failed, folders = 0, 0, []
-    for i, (f, desc) in enumerate(descs.items(), 1):
-        for v in range(max(1, args.variants)):
-            sd = (args.seed + v) if args.seed is not None else random.randint(1, 2_000_000_000)
-            print(f"\n=== [{i}/{len(descs)}] {f.name}, вариант {v + 1}, seed {sd}")
-            report = {}
-            ok, name = generate(workflow, desc["subject"], desc.get("negative_extra", ""),
-                                denoise=args.denoise, seed=sd,
-                                landscape=image_is_landscape(str(f)), style_weight=args.style_weight,
-                                cn_strength=args.cn_strength,
-                                image_name=ensure_input(str(f)), report=report)
-            if not ok:
-                failed += 1
-                print("   кадр не получен")
-                continue
-            folder = save_run(str(f), workflow, desc, sd, args.denoise, name,
-                              cn_strength=args.cn_strength, style_weight=args.style_weight,
-                              positive=report.get("positive"),
-                              negative=report.get("negative"),
-                              settings=report.get("settings"))
-            if folder is None:
-                failed += 1
-                continue
-            frames += 1
-            folders.append(folder)
-    print(f"\nкадров: {frames}, провалов: {failed}"
-          + (f", без описания: {len(skipped)} ({', '.join(skipped)})" if skipped else ""))
-    if folders:
-        print("  результаты:", ", ".join(sorted({p.name for p in folders})))
-    # Пропуск на любом этапе — не успех: код возврата это покажет.
-    return 0 if frames and not failed and not skipped else 1
-
-
-def build_request(a, workflow):
-    """Аргументы CLI -> задание. Один и тот же JobRequest получает и страница."""
     import jobs
     req = jobs.JobRequest(
-        image=a.image, workflow=workflow, scene=a.scene or "",
+        image=image or a.image, workflow=workflow, scene=a.scene or "",
         variants=max(1, a.variants), model=a.model,
         subject=a.subject if a.no_llm else None,
         negative_extra=a.negative_extra, negative_drop=a.negative_drop,
@@ -1578,16 +1429,36 @@ def main():
         os.environ["LM_THINKING"] = "on"
 
     workflow = resolve_workflow(a.workflow, a.style)
-    if a.batch:
-        sys.exit(run_batch(a, workflow))
-        return
-    if not a.image:
-        sys.exit("нужен --image или --batch")
-    a.workflow = workflow
     if a.no_llm and not a.subject:
         sys.exit("--no-llm требует --subject")
 
     import jobs
+    if a.batch:
+        # Пачка идёт тем же путём, что одиночный кадр: каждый файл — задание
+        # `jobs.run_job`, пачка задаёт только порядок (все описания, потом кадры).
+        if a.preset:
+            sys.exit("--batch с --preset: одно библиотечное описание на всю папку — "
+                     "это одинаковые кадры. Убери --preset или запускай по одному фото.")
+        if a.save_preset:
+            sys.exit("--batch с --save-preset: имя пресета одно, а описаний в папке "
+                     "много. Сохрани пресет одиночным прогоном.")
+        folder = Path(a.batch)
+        if not folder.is_dir():
+            sys.exit(f"{folder} не папка")
+        files = sorted(p for p in folder.iterdir()
+                       if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"))
+        if not files:
+            sys.exit("в папке нет картинок")
+        need_llm = not a.no_llm and not a.from_json
+        print(f"пачка: {len(files)} файлов, стиль {workflow}, "
+              f"описание: {'LLM' if need_llm else 'без модели'}")
+        reqs = [build_request(a, workflow, image=str(f)) for f in files]
+        sys.exit(jobs.run_batch(reqs, emit=jobs.cli_sink).code)
+
+    if not a.image:
+        sys.exit("нужен --image или --batch")
+    a.workflow = workflow
+
     result = jobs.run_job(build_request(a, workflow), emit=jobs.cli_sink)
     if result.code != 0:
         sys.exit(result.code)

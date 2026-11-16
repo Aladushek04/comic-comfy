@@ -57,6 +57,7 @@ class JobRequest:
     tags: bool = True                     # дописывать теги WD14-теггера в subject
     client_id: str | None = None
     start_comfy: bool = False             # поднять headless ComfyUI после фазы описания
+    describe_only: bool = False           # первый проход пачки: только описание
 
 
 @dataclass
@@ -72,6 +73,7 @@ class JobResult:
     error: str = ""
     stage: str = ""
     elapsed: float = 0.0
+    model: str = ""                       # какой моделью описано фото (для выгрузки пачки)
 
 
 class Emitter:
@@ -246,7 +248,9 @@ def run_job(req, emit=None, cancel=None):
                         # Сцену просили, но модель её не переписала. Писать это в кэш
                         # под ключом сцены нельзя: следующий запуск взял бы чужой текст.
                         scene_failed = True
-                if not req.keep_llm:
+                if not req.keep_llm and not req.describe_only:
+                    # describe_only: модель ещё нужна следующему файлу пачки,
+                    # выгружает её вызывающий (run_batch) один раз на всю папку.
                     t = time.monotonic()
                     freed = pp.free_llm(model, req.unload_all)
                     t_unload = time.monotonic() - t
@@ -300,6 +304,15 @@ def run_job(req, emit=None, cancel=None):
         if not desc["subject"].strip():
             raise pp.PipelineError(
                 "описание не получилось — генерацию не запускаю. Проверь заметку выше.")
+
+        result.model = model or ""
+
+        if req.describe_only:
+            # Первый проход пачки останавливается здесь: промпт, кадр и паспорт —
+            # дело второго прохода, а модель описания ещё не выгружена.
+            out("described", "   описание готово, кадр не генерирую")
+            result.ok, result.code, result.stage = True, 0, "described"
+            return result
 
         if req.save_preset:
             path = pp.preset_path(req.save_preset)
@@ -560,3 +573,101 @@ def _one_more(req, desc, out, seed=None, positive=None):
         "outcome": "refined",
         **_sampler_fields(report),
     }
+
+
+@dataclass
+class BatchResult:
+    """Итог пачки: код возврата, кадры, провалы и файлы без описания."""
+    code: int = 1
+    frames: int = 0
+    failed: int = 0
+    described: int = 0
+    skipped: list = field(default_factory=list)
+    results: list = field(default_factory=list)
+
+
+def run_batch(reqs, emit=None, cancel=None):
+    """Пачка фото в два прохода; каждый файл идёт через `run_job`.
+
+    Своего конвейера у пачки нет: описание, кэш, теггер, промпт, паспорт и
+    провал считает `run_job`. Пачка задаёт только порядок — сначала все
+    описания (поэтому модель грузится один раз, а не на каждый файл), потом
+    выгрузка модели, потом кадры с готовым описанием.
+
+    Провал одного файла не отменяет остальные: файл без описания попадает в
+    `skipped` и называется в итоговой строке, а код возврата остаётся 1.
+    """
+    out = Emitter(emit)
+    res = BatchResult()
+    if not reqs:
+        return res
+    # Флаги прогона (generate, dry_run, keep_llm, unload_all) у всей пачки одни:
+    # её собирает один вызов CLI, и они одинаковы во всех заданиях.
+    first = reqs[0]
+    total = len(reqs)
+    described, model, folders = [], "", set()
+
+    for i, req in enumerate(reqs, 1):
+        if cancel is not None and cancel.is_set():
+            break
+        req.describe_only = True
+        out("batch", f"=== [{i}/{total}] {Path(req.image).name}")
+        r = run_job(req, emit=emit, cancel=cancel)
+        res.results.append(r)
+        model = r.model or model
+        if r.code != 0 or not r.description:
+            res.skipped.append(Path(req.image).name)
+            continue
+        described.append((req, r.description))
+        res.described += 1
+
+    if model and not first.keep_llm:
+        freed = pp.free_llm(model, first.unload_all)
+        out("unload", f"\nвыгружено: {', '.join(freed) if freed else 'нечего'}",
+            freed=freed)
+
+    if first.dry_run or not first.generate:
+        out("batch_done", f"\nготово описаний: {res.described} (генерация не запускалась)",
+            described=res.described)
+        if first.dry_run and not described:
+            out("batch_done", "нечего показать: ни одного описания")
+        if res.skipped:
+            out("batch_done", "без описания: " + ", ".join(res.skipped))
+        res.code = 0 if described and not res.skipped else 1
+        return res
+
+    if not described:
+        out("batch_done", f"\nкадров: 0, провалов: {len(res.skipped)}"
+            + (f", без описания: {len(res.skipped)} ({', '.join(res.skipped)})"
+               if res.skipped else "")
+            + " — генерировать нечего")
+        return res
+
+    for i, (req, desc) in enumerate(described, 1):
+        if cancel is not None and cancel.is_set():
+            break
+        # Готовое описание первого прохода: VLM второй раз не зовём, кэш не
+        # переписываем, а флаги прогона (--recheck и прочие) работают как в
+        # одиночном запуске — они и есть причина, по которой пачка здесь.
+        req.describe_only = False
+        req.description = desc
+        req.description_source = "описания пачки"
+        req.generate = True
+        out("batch", f"=== [{i}/{len(described)}] {Path(req.image).name}")
+        r = run_job(req, emit=emit, cancel=cancel)
+        res.results.append(r)
+        res.frames += len(r.frames)
+        if not r.ok:
+            res.failed += 1
+        folders.update(r.folders)
+
+    out("batch_done", f"\nкадров: {res.frames}, провалов: {res.failed}"
+        + (f", без описания: {len(res.skipped)} ({', '.join(res.skipped)})"
+           if res.skipped else ""), frames=res.frames, failed=res.failed)
+    if folders:
+        out("batch_done", "  результаты: "
+            + ", ".join(sorted({Path(p).name for p in folders})))
+    # Пропуск на любом этапе — не успех: код возврата это покажет.
+    res.code = 0 if res.frames and not res.failed and not res.skipped else 1
+    return res
+

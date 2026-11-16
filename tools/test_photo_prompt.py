@@ -15,7 +15,6 @@
 
     python tools/test_photo_prompt.py
 """
-import argparse
 import contextlib
 import hashlib
 import io
@@ -243,17 +242,40 @@ def test_generate_requires_image():
         pp.post, pp.get, pp.time = saved
 
 
-def batch_args(folder, **over):
-    ns = argparse.Namespace(
-        batch=str(folder), workflow=None, style="thepit", scene=None, variants=1,
-        model=None, subject=None, no_llm=False, from_json=None, preset=None, save_preset=None,
-        recheck=False, keep_llm=False, comfy=None, negative_extra="", negative_drop="",
-        denoise=None, style_weight=None, seed=7, force=False, dry_run=False, generate=True,
-        unload_all=False, cn_strength=None, no_tags=False,
-    )
-    for k, v in over.items():
-        setattr(ns, k, v)
-    return ns
+def batch_main(folder, workflow="07_photo_thepit", seed=7, generate=True, **flags):
+    """Пачка через командную строку: `--batch` идёт в `jobs.run_batch`.
+
+    Раньше проверки звали `pp.run_batch` напрямую — второго конвейера больше
+    нет, поэтому здесь тот же вход, что у пользователя: argparse, отказы на
+    несовместимые флаги и `jobs.run_job` на каждый файл.
+    """
+    argv = ["--batch", str(folder), "--workflow", workflow, "--seed", str(seed)]
+    if generate:
+        argv.append("--generate")
+    for key, value in flags.items():
+        flag = "--" + key.replace("_", "-")
+        if value is True:
+            argv.append(flag)
+        elif value not in (False, None):
+            argv += [flag, str(value)]
+    saved = sys.argv
+    sys.argv = ["photo_prompt.py"] + argv
+    buf = io.StringIO()
+    code = 0
+    try:
+        with contextlib.redirect_stdout(buf):
+            pp.main()
+    except SystemExit as e:
+        # sys.exit("текст") в процессе печатает текст в stderr и выходит с кодом 1;
+        # здесь текст попадает в тот же буфер, чтобы проверка видела причину отказа.
+        if isinstance(e.code, str):
+            buf.write(e.code + "\n")
+            code = 1
+        else:
+            code = e.code or 0
+    finally:
+        sys.argv = saved
+    return code, buf.getvalue()
 
 
 def test_batch_reports_failure():
@@ -270,7 +292,7 @@ def test_batch_reports_failure():
     books = lambda: list((pp.ROOT / "out").rglob("run.json"))
     try:
         pp.generate = lambda *a, **k: (False, None)
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder), "07_photo_thepit"))
+        rc, text = batch_main(folder)
         check("всё упало -> код 1", rc == 1, str(rc))
         check("кадров 0, провалов 2", "кадров: 0, провалов: 2" in text, text.strip()[-160:])
         check("run.json не создан", books() == [], str(books()))
@@ -282,7 +304,7 @@ def test_batch_reports_failure():
             return True, name
 
         pp.generate = fake_generate
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder), "07_photo_thepit"))
+        rc, text = batch_main(folder)
         check("все кадры -> код 0", rc == 0, str(rc))
         check("кадров 2, провалов 0", "кадров: 2, провалов: 0" in text, text.strip()[-160:])
         check("run.json на каждое фото", len(books()) == 2, str(books()))
@@ -304,6 +326,57 @@ def test_batch_reports_failure():
     finally:
         (pp.describe, pp.lm_models, pp.pick_model, pp.unload_all,
          pp.resolve_comfy, pp.generate) = saved
+
+
+def test_batch_recheck_and_refusals():
+    """8б) флаги пачки: --recheck срабатывает, --preset/--save-preset отвергаются.
+
+    Раньше пачка шла своим конвейером и эти флаги молча не делали ничего.
+    Теперь каждый файл — задание `run_job`, поэтому флаг либо работает, либо
+    назван несовместимым с папкой.
+    """
+    print("\n8б) пачка: --recheck работает, несовместимые флаги отвергаются")
+    folder = TMP / "batch_recheck"
+    make(folder / "a.png", (21, 21, 21))
+    calls = []
+    made = {"n": 0}
+    saved = (pp.describe, pp.lm_models, pp.pick_model, pp.unload_all, pp.free_llm,
+             pp.comfy_free, pp.recheck, pp.resolve_comfy, pp.generate)
+
+    def fake_generate(*a, **k):
+        made["n"] += 1
+        name = f"07_photo_thepit_{made['n']:05d}_.png"
+        pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        (pp.OUTPUT_DIR / name).write_bytes(b"png")
+        return True, name
+
+    pp.describe = lambda p, m: {"subject": "adult woman, red dress",
+                                "negative_extra": "", "notes": ""}
+    pp.lm_models = lambda strict=True: {"models": []}
+    pp.pick_model = lambda r, w: "m"
+    pp.unload_all = lambda r: []
+    pp.free_llm = lambda m, unload_all=False: []
+    pp.comfy_free = lambda: None
+    pp.recheck = lambda desc, path, model: (calls.append("recheck") or "gold necklace")
+    pp.resolve_comfy = lambda c: "http://x"
+    pp.generate = fake_generate
+    try:
+        rc, text = batch_main(folder, force=True, generate=True, recheck=True)
+        check("пачка с --recheck: код 0", rc == 0, text.strip()[-200:])
+        check("--recheck в пачке срабатывает", calls == ["recheck"], str(calls))
+        check("пачка: основной и уточнённый кадр",
+              "кадров: 2, провалов: 0" in text, text.strip()[-200:])
+    finally:
+        (pp.describe, pp.lm_models, pp.pick_model, pp.unload_all, pp.free_llm,
+         pp.comfy_free, pp.recheck, pp.resolve_comfy, pp.generate) = saved
+
+    rc, text = batch_main(folder, preset="моя")
+    check("--batch --preset отвергнут", rc == 1 and "--preset" in text, text.strip()[-200:])
+    check("отказ объяснён", "одинаковые кадры" in text, text.strip()[-200:])
+    rc, text = batch_main(folder, save_preset="моя")
+    check("--batch --save-preset отвергнут",
+          rc == 1 and "--save-preset" in text, text.strip()[-200:])
+    check("и это объяснено", "имя пресета одно" in text, text.strip()[-200:])
 
 
 def test_build_workflows_exit_codes():
@@ -388,7 +461,7 @@ def test_dry_run_does_not_touch_lm():
         folder = TMP / "dry_batch"
         make(folder / "x.png", (9, 9, 9))
         calls.clear()
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, dry_run=True), "07_photo_thepit"))
+        rc, text = batch_main(folder, dry_run=True)
         check("пакет без кэша -> код 1", rc == 1, str(rc))
         check("пакет LM Studio не тронул", calls == [], str(calls))
         check("пакет сказал, что показать нечего", "ни одного описания" in text, text.strip()[-160:])
@@ -396,15 +469,14 @@ def test_dry_run_does_not_touch_lm():
         pp.write_cache(str(folder / "x.png"),
                        {"subject": "adult woman, from cache", "negative_extra": ""})
         calls.clear()
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, dry_run=True), "07_photo_thepit"))
+        rc, text = batch_main(folder, dry_run=True)
         check("пакет с кэшем -> код 0", rc == 0, str(rc))
         check("пакет с кэшем без LM", calls == [], str(calls))
         check("пакет взял описание из кэша", "adult woman, from cache" in text, text.strip()[-160:])
 
         # полностью закэшированная пачка не должна требовать LM Studio вообще
         pp.lm_models = lambda strict=True: (_ for _ in ()).throw(RuntimeError("LM Studio не запущен"))
-        rc, text = capture(lambda: pp.run_batch(
-            batch_args(folder, dry_run=False, generate=False), "07_photo_thepit"))
+        rc, text = batch_main(folder, generate=False)
         check("закэшированная пачка живёт без LM Studio", rc == 0, str(rc))
     finally:
         (pp.lm_models, pp.pick_model, pp.describe, pp.unload_model,
@@ -763,7 +835,7 @@ def test_partial_failure_visible():
     pp.resolve_comfy = lambda c: "http://x"
     try:
         pp.generate = good_generate
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, force=True), "07_photo_thepit"))
+        rc, text = batch_main(folder, force=True)
         check("пустое описание -> код 1", rc == 1, str(rc))
         check("пропуск назван в итоге", "без описания: 1 (bad.png)" in text, text.strip()[-200:])
         check("кадр по второму фото сделан", "кадров: 1" in text, text.strip()[-200:])
@@ -776,7 +848,7 @@ def test_partial_failure_visible():
 
         # ComfyUI назвал файл, которого нет в папке вывода
         pp.generate = lambda *a, **k: (True, "ghost.png")
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, force=True), "07_photo_thepit"))
+        rc, text = batch_main(folder, force=True)
         check("паспорт без кадра -> код 1", rc == 1, str(rc))
         check("сказано, что кадра нет", "кадра нет по пути" in text, text.strip()[-200:])
         runs = json.loads(own.read_text(encoding="utf-8"))["runs"]
@@ -913,8 +985,7 @@ def test_scene_failure_not_cached():
     pp.lm_models, pp.pick_model, pp.unload_all = lambda strict=True: {}, lambda r, w: "m", lambda r: []
     pp.resolve_comfy = lambda c: "http://x"
     try:
-        rc, text = capture(lambda: pp.run_batch(
-            batch_args(folder, scene="в горах", force=True), "07_photo_thepit"))
+        rc, text = batch_main(folder, scene="в горах", force=True)
         check("пачка со сбойной сценой -> код 1", rc == 1, str(rc))
         check("файл назван пропущенным", "без описания: 1 (a.png)" in text, text.strip()[-200:])
         check("пачка не пишет кэш под сценой",
@@ -981,14 +1052,12 @@ def test_batch_scene_cache_no_lm():
     try:
         pp.write_cache(str(img), {"subject": "adult woman, tree, в горах", "negative_extra": "",
                                   "notes": "", "scene": "в горах"}, "в горах")
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, scene="в горах", generate=False),
-                                                "07_photo_thepit"))
+        rc, text = batch_main(folder, scene="в горах", generate=False)
         check("кэш сцены: код 0", rc == 0, str(rc))
         check("кэш сцены: модель не тронута", calls == [], str(calls))
 
         calls.clear()
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, scene="в горах", dry_run=True, generate=False),
-                                                "07_photo_thepit"))
+        rc, text = batch_main(folder, scene="в горах", dry_run=True, generate=False)
         check("dry-run с кэшем сцены: код 0 и без модели", rc == 0 and calls == [],
               f"{rc} {calls}")
 
@@ -997,8 +1066,7 @@ def test_batch_scene_cache_no_lm():
         pp.write_cache(str(img), {"subject": "adult woman, tree", "negative_extra": "",
                                   "notes": ""})
         calls.clear()
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, scene="в горах", generate=False),
-                                                "07_photo_thepit"))
+        rc, text = batch_main(folder, scene="в горах", generate=False)
         check("базовый кэш: фото заново не описывают", "describe" not in calls, str(calls))
         check("базовый кэш: сцена переписана", "rewrite" in calls, str(calls))
         check("базовый кэш: сцена закэширована",
@@ -1012,7 +1080,7 @@ def test_batch_scene_cache_no_lm():
         check("старая запись без метки не читается", pp.read_cache(str(img), "в горах") is None)
 
         calls.clear()
-        capture(lambda: pp.run_batch(batch_args(folder, scene="в горах", generate=False), "07_photo_thepit"))
+        batch_main(folder, scene="в горах", generate=False)
         check("старую запись переписывают", "rewrite" in calls, str(calls))
         check("после перезаписи метка есть",
               bool((pp.read_cache(str(img), "в горах") or {}).get("scene_applied")))
@@ -2537,6 +2605,7 @@ def main():
         test_scene_not_ignored_on_cache_hit()
         test_generate_requires_image()
         test_batch_reports_failure()
+        test_batch_recheck_and_refusals()
         test_build_workflows_exit_codes()
         test_dry_run_does_not_touch_lm()
         test_unload_only_own_model()
