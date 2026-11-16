@@ -169,7 +169,7 @@
         "Node name for S&R": "CLIPTextEncode"
       },
       "widgets_values": [
-        "comic book illustration, theofficialpit style, ComicPitXX, adult woman, portrait, bold black outlines, flat colors, clean skin, high contrast, limited palette, clean silhouette"
+        "comic book illustration, ComicPitXX, adult woman, portrait, bold black outlines, flat colors, clean skin, high contrast, limited palette, clean silhouette"
       ],
       "title": "Промпт"
     },

@@ -459,7 +459,12 @@ def _swap_style(spec, style):
         if n["type"] == "LoraLoaderModelOnly" and abs(n["w"].get("strength_model", 0) - 0.9) < 1e-9:
             n["w"]["lora_name"] = lora
         if n["type"] == "CLIPTextEncode" and "thick lips" in str(n["w"].get("text", "")):
-            n["w"]["text"] = n["w"]["text"].replace("thick lips", trig)
+            # Свой триггер вместо чужого и никакого чужого стиля в промпте:
+            # `theofficialpit style` рядом с `ComicPitXX` спорит с загруженной
+            # LoRA (spec 7.4). У thepit эта LoRA и есть, поэтому там строка
+            # остаётся — фикс только у comic/jp/bimbo (и 01_scene_comic/jp).
+            text = str(n["w"]["text"]).replace("thick lips", trig)
+            n["w"]["text"] = text.replace("theofficialpit style, ", "")
     for inp in spec["app"]["inputs"]:
         if len(inp) > 2 and inp[2].get("description", "").startswith("стиль:"):
             inp[2]["description"] = "стиль: " + label + " (триггер " + trig + ")"

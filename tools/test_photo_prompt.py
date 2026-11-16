@@ -2120,6 +2120,79 @@ def test_prompt_builder():
     check("граф без meta: субъект подставлен", "adult woman, short hair" in legacy, legacy[:160])
 
 
+def test_prompt_golden():
+    """39) разрешённый фикс шаблонов: чужой стиль убран, остальное — побайтно.
+
+    Единственное разрешённое расхождение с эталоном P0 — строка
+    `theofficialpit style` в comic/jp/bimbo (там своя LoRA и свой триггер).
+    thepit и GTA обязаны совпасть с baseline до байта, а у трёх остальных
+    positive отличается ровно на эту подстроку, негатив — ни на байт.
+    """
+    from comic import prompt as cp
+
+    repo = Path(__file__).resolve().parent.parent
+    golden = json.loads((repo / "tools" / "golden" / "prompts.json").read_text(encoding="utf-8"))
+    base = json.loads((repo / "out" / "v2-baseline" / "run.json").read_text(encoding="utf-8"))
+    fixed = ("07_photo_comic", "07_photo_jp", "07_photo_bimbo")
+
+    def meta_of(name):
+        data = json.loads((repo / "workflows" / (name + ".api.json")).read_text(encoding="utf-8"))
+        return data["meta"]
+
+    def positive_text(name):
+        """Positive из самого графа: у 01_* блока meta нет, а промпт есть."""
+        data = json.loads((repo / "workflows" / (name + ".api.json")).read_text(encoding="utf-8"))
+        texts = [n["inputs"].get("text", "") for n in data["prompt"].values()
+                 if n["class_type"] == "CLIPTextEncode"]
+        return next(t for t in texts if not t.startswith("photo, photorealistic"))
+
+    # Шаблон в графе: чужого стиля нет только там, где LoRA своя.
+    for name in fixed:
+        check(f"{name}: в шаблоне нет theofficialpit style",
+              "theofficialpit style" not in meta_of(name)["positive_template"],
+              meta_of(name)["positive_template"][:120])
+        check(f"{name}: в промпте графа нет theofficialpit style",
+              "theofficialpit style" not in positive_text(name), positive_text(name)[:120])
+    for name in ("07_photo_thepit",):
+        check(f"{name}: свой стиль остался",
+              "theofficialpit style" in meta_of(name)["positive_template"],
+              meta_of(name)["positive_template"][:120])
+    for name in ("01_scene_comic", "01_scene_jp"):
+        check(f"{name}: тот же фикс в txt2img",
+              "theofficialpit style" not in positive_text(name), positive_text(name)[:120])
+    check("01_scene_thepit: свой стиль остался",
+          "theofficialpit style" in positive_text("01_scene_thepit"),
+          positive_text("01_scene_thepit")[:120])
+
+    # Эталон: builder выдаёт ровно записанные байты.
+    for name, want in golden["prompts"].items():
+        built = cp.PromptBuilder(meta_of(name)).build(golden["subject"], golden["negative_extra"])
+        check(f"{name}: positive по эталону", built.positive == want["positive"],
+              first_diff(built.positive, want["positive"]))
+        check(f"{name}: negative по эталону", built.negative == want["negative"],
+              first_diff(built.negative, want["negative"]))
+
+    # Diff от baseline: два кадра не изменились вовсе, три — только на подстроку.
+    was = {r["workflow"]: r for r in base["runs"]}
+    for name, want in golden["prompts"].items():
+        before = was[name]
+        check(f"{name}: негатив не изменился ни на байт", want["negative"] == before["negative"],
+              first_diff(want["negative"], before["negative"]))
+        if name in fixed:
+            expected = before["positive"].replace("theofficialpit style, ", "", 1)
+            check(f"{name}: positive отличается только на theofficialpit style",
+                  want["positive"] == expected, first_diff(want["positive"], expected))
+        else:
+            check(f"{name}: positive совпадает с baseline побайтно",
+                  want["positive"] == before["positive"],
+                  first_diff(want["positive"], before["positive"]))
+
+    # Рамка возраста: фикс шаблона её не тронул.
+    for name in golden["prompts"]:
+        tags = [t.strip() for t in golden["prompts"][name]["negative"].split(",")]
+        check(f"{name}: рамка по-прежнему замыкает негатив", tags[-1] == "underage", tags[-3:])
+
+
 def main():
     patch_roots()
     try:
@@ -2163,6 +2236,7 @@ def main():
         test_cache_schema()
         test_cache_wrapper_keys()
         test_prompt_builder()
+        test_prompt_golden()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
