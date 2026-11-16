@@ -6,7 +6,8 @@
 ## Где что лежит
 
 - ComfyUI: `G:\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI` (Desktop 1.1.9, движок 0.45.2, torch 2.12.1+cu130).
-- Общие модели: `G:\Comfy-Desktop\ComfyUI-Shared\models` (models/input/output — тоже там).
+- Общие модели: каталог из `base_path` в `extra_model_paths.yaml` (сейчас `E:\ComfyUI-Shared\models`,
+  models/input/output — тоже там).
   **В коде этих путей нет.** `tools\settings.py` берёт их из `COMIC_ROOT`, `COMFY_MODELS`,
   `COMFY_SHARED`, `COMFY_INPUT`, `COMFY_OUTPUT`, `COMFY_URL`, иначе из `base_path`
   в `extra_model_paths.yaml` (образец — `extra_model_paths.example.yaml`, сам файл в git
@@ -42,7 +43,12 @@
 - Каталог моделей и план тестов: `G:\AI\comic-comfy\docs\models.md`.
   Новые файлы раскладываются по подпапкам (`loras\detail`, `loras\comic`, `loras\style`, `loras\qwen`,
   `checkpoints\alt`), ComfyUI отдаёт их как `detail\hands_xl.safetensors`.
-- Генератор: `G:\AI\comic-comfy\tools\build_workflows.py`.
+- Генератор: `G:\AI\comic-comfy\tools\build_workflows.py` (80 строк) — тонкий драйвер над
+  `comic\builds.py` (спецификации сборок данными) и `comic\workflow.py` (сборщик графа).
+- Ядро V2: `comic\` — `config.py` (настройки), `paths.py`, `cache.py` (кэш описаний со схемой),
+  `prompt.py` (PromptBuilder — единственный путь сборки промпта), `guard.py` (возрастная рамка,
+  в том числе для переопределений), `run.py` (паспорт кадра, схема 2), `workflow.py`, `builds.py`.
+  `tools\settings.py` — тонкий адаптер над `comic\config.py`.
 - Загрузка: `tools\download-hf.ps1` (HF), `tools\download-civitai.ps1` (все нужные LoRA),
   `tools\check_install.py` (сверяет 17 моделей из сборок с диском и с `DOWNLOADS.md`).
 - Правила стиля: `G:\AI\comic-comfy\STYLE.md`.
@@ -528,7 +534,9 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
   `test_web_ui.py` сам задаёт `PYTHONIOENCODING` дочернему серверу — браузерная проверка
   работу сервера без переменной не доказывает.
 - `python tools\check_install.py` — все 17 моделей из сборок на диске и описаны в `DOWNLOADS.md`.
-- `python build_workflows.py` без ошибок, затем валидатор `widgets_values` по `/object_info`.
+- `python build_workflows.py` без ошибок, затем `python tools\check_widgets.py` — сверка
+  `widgets_values` с `/object_info` (поднимает headless ComfyUI на 8199 и гасит его).
+- `python tools\sync_panel.py --check` — копия графов для панели ComfyUI совпадает с репозиторием.
 - Интерфейс: `ComicWeb.cmd` (или `.venv-web\Scripts\python.exe webapp\run.py`), затем живой
   прогон в браузере: загрузка фото → «Старт» → этапы и таймер → кадр и «Скачать».
   Обновление вкладки во время задания показывает его текущий этап, а не запускает заново.
