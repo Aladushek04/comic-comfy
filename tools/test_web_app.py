@@ -1612,13 +1612,19 @@ def test_theme_tokens():
           str([theme.SIZES[k] for k in theme.SIZES if k.startswith("--cp-sp")]))
     check("числа раскладки из спецификации",
           theme.SIZES["--cp-topbar"] == "56px" and theme.SIZES["--cp-rail"] == "400px"
-          and theme.SIZES["--cp-inspector"] == "320px"
           and theme.SIZES["--cp-gutter"] == "16px"
           and theme.SIZES["--cp-card-pad"] == "16px"
           and theme.SIZES["--cp-frame"] == "min(62vh, 720px)"
           and theme.SIZES["--cp-strip"] == "56px"
           and theme.SIZES["--cp-tabs"] == "32px",
           str(theme.SIZES))
+    check("инспектора нет ни токеном, ни колонкой",
+          "--cp-inspector" not in theme.SIZES and "inspector" not in css
+          and "grid-template-columns: var(--cp-rail) minmax(0, 1fr)" in css,
+          str([k for k in theme.SIZES if "inspect" in k]))
+    check("рельс подобран по высоте окна 900",
+          theme.SIZES["--cp-photo"] == "160px" and theme.SIZES["--cp-drop"] == "160px"
+          and theme.SIZES["--cp-row"] == "32px", str(theme.SIZES))
     coloured = {sel for sel, body in _css_rules(css) if HEX.search(body)}
     check("литеральные цвета только в :root и body.body--dark",
           coloured == {":root", "body.body--dark"}, str(coloured))
@@ -1922,21 +1928,41 @@ def test_stage_panels():
 def test_rail_and_badges():
     print("\n33) рельс без вложенной прокрутки, бейдж с точкой")
     css = theme.css()
-    rail = _rule(css, ".cp-rail")
-    check("у рельса нет своей прокрутки и липкости",
-          "overflow" not in rail and "max-height" not in rail
-          and "position" not in rail, rail)
+    layer = css[css.index("@layer components"):]
+    rail = _rule(layer, ".cp-rail")
+    check("рельс липкий сверху и без своей прокрутки",
+          "position: sticky" in rail
+          and "top: calc(var(--cp-topbar) + var(--cp-gutter))" in rail
+          and "overflow" not in rail and "max-height" not in rail, rail)
+    check("рельс липнет только там, где влезает в окно",
+          "@media (max-height: 899px)" in css
+          and "position: static" in css[css.index("@media (max-height: 899px)"):],
+          css[css.index("@media (max-height: 899px)"):][:120])
     check("внутреннего контейнера прокрутки больше нет",
           ".cp-rail__scroll" not in css and "rail-scroll" not in theme.CLASSES
           and "rail-scroll" not in (V2 / "v2.py").read_text(encoding="utf-8"))
-    check("рельс тянется на высоту сцены",
-          "align-items: stretch" in _rule(css, ".cp-layout"),
-          _rule(css, ".cp-layout"))
-    start = _rule(css, ".cp-start")
-    check("Старт липнет к низу окна на непрозрачной поверхности",
-          "position: sticky" in start and "bottom: var(--cp-gutter)" in start
-          and "background: var(--surface)" in start, start)
-    badge = _rule(css, ".cp-badge")
+    check("рельс высотой по содержимому, а не на высоту сцены",
+          "align-items: start" in _rule(layer, ".cp-layout"),
+          _rule(layer, ".cp-layout"))
+    start = _rule(layer, ".cp-start")
+    check("блок запуска больше не липнет к низу окна",
+          "position" not in start and "bottom" not in start
+          and "margin-top" not in start, start)
+    check("две кнопки запуска стоят в одну строку",
+          "display: flex" in _rule(layer, ".cp-start__buttons")
+          and ".cp-start__buttons > .cp-btn" in css,
+          _rule(layer, ".cp-start__buttons"))
+    check("карточка фото компактная: шапка в одну строку",
+          "min-height: var(--cp-row)" in _rule(layer, ".cp-photo__head")
+          and ".cp-photo__head .cp-icon" in css,
+          _rule(layer, ".cp-photo__head"))
+    check("поля параметров запуска — две строки по 32 px",
+          ".cp-params .q-field--dense .q-field__control,\n"
+          ".cp-params .q-field--dense .q-field__marginal {\n"
+          "  height: var(--cp-row);\n  min-height: var(--cp-row);" in css
+          and "flex-direction: column" in _rule(layer, ".cp-params__rows"),
+          _rule(layer, ".cp-params__rows"))
+    badge = _rule(layer, ".cp-badge")
     check("бейдж — нейтральная пилюля",
           "border: 1px solid var(--line)" in badge
           and "background: var(--surface-2)" in badge

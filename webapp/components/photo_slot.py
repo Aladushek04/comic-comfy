@@ -34,7 +34,18 @@ class PhotoSlot:
     def build(self):
         with ui.element("section") as card:
             theme.mark(card, "card")
-            theme.mark(ui.label("Фото"), "title")
+            # Шапка: имя фото, размер и замена в одной строке — так карточка
+            # занимает на 60 px меньше, и рельс влезает в окно 900 px.
+            with ui.element("div") as head:
+                theme.mark(head, "photo-head")
+                theme.mark(ui.label("Фото"), "title")
+                self.caption = ui.label("")
+                theme.mark(self.caption, "meta", "num", "photo-caption")
+                self.replace_button = ui.button(icon="swap_horiz", on_click=self.clear,
+                                                color=None)
+                theme.mark(self.replace_button, "icon")
+                with self.replace_button:
+                    ui.tooltip("Заменить фото")
             with ui.element("div") as drop:
                 theme.mark(drop, "drop")
                 theme.mark(ui.label("Перетащи фото"), "drop-title")
@@ -56,11 +67,6 @@ class PhotoSlot:
                 theme.mark(box, "frame")
                 self.preview = ui.image()
                 theme.mark(self.preview, "photo")
-            self.caption = ui.label("")
-            theme.mark(self.caption, "meta", "num")
-            self.replace_button = ui.button("Заменить фото", icon="swap_horiz",
-                                            on_click=self.clear, color=None)
-            theme.mark(self.replace_button, "btn", "btn-ghost")
         self.drop = drop
         self.box = box
         box.set_visibility(False)

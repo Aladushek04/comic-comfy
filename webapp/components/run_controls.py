@@ -14,13 +14,15 @@ class RunControls:
 
     def build(self):
         with ui.element("section") as card:
-            theme.mark(card, "card")
+            theme.mark(card, "card", "params")
             theme.mark(ui.label("Параметры запуска"), "title")
-            self.scene = ui.input("Сцена (необязательно)",
-                                  placeholder="на пляже, закат, улица").props(
-                "outlined dense")
-            self.variants = ui.number("Вариантов", value=1, min=1, max=8,
-                                      precision=0).props("outlined dense")
+            with ui.element("div") as rows:
+                theme.mark(rows, "params-rows")
+                self.scene = ui.input("Сцена (необязательно)",
+                                      placeholder="на пляже, закат, улица").props(
+                    "outlined dense")
+                self.variants = ui.number("Вариантов", value=1, min=1, max=8,
+                                          precision=0).props("outlined dense")
         return self
 
     @property

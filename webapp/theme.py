@@ -99,13 +99,12 @@ SIZES = {
     "--cp-sp-8": "32px",
     "--cp-topbar": "56px",
     "--cp-rail": "400px",
-    "--cp-inspector": "320px",
     "--cp-gutter": "16px",
     "--cp-card-pad": "16px",
     "--cp-frame": "min(62vh, 720px)",
-    "--cp-photo": "220px",
-    "--cp-drop": "180px",
-    "--cp-row": "40px",
+    "--cp-photo": "160px",
+    "--cp-drop": "160px",
+    "--cp-row": "32px",
     "--cp-btn": "40px",
     "--cp-tabs": "32px",
     "--cp-strip": "56px",
@@ -142,6 +141,11 @@ CLASSES = {
     "link": "cp-link",
     "links": "cp-links",
     "empty": "cp-empty",
+    "photo-head": "cp-photo__head",
+    "photo-caption": "cp-photo__caption",
+    "params": "cp-params",
+    "params-rows": "cp-params__rows",
+    "start-buttons": "cp-start__buttons",
     "drop": "cp-drop",
     "drop-title": "cp-drop-title",
     "upload": "cp-upload",
@@ -337,18 +341,24 @@ COMPONENTS = """
   padding: var(--cp-gutter);
   max-width: 1800px;
   margin: 0 auto;
-  /* Рельс тянется на высоту сцены: «Старт» липнет к низу окна, пока видна
-     сцена, а не только пока виден сам рельс. */
-  align-items: stretch;
+  /* Рельс липкий и высотой по содержимому: растянутый на высоту сцены он не
+     смог бы липнуть (липкому элементу некуда двигаться внутри своей строки). */
+  align-items: start;
 }
 
 /* Своей прокрутки у рельса нет: список стилей не обрезается, прокручивается
-   страница целиком. Поэтому здесь нет ни max-height, ни overflow. */
+   страница целиком. Поэтому здесь нет ни max-height, ни overflow.
+
+   Липнет сам рельс, а не блок запуска: иначе «Старт» висел бы поверх карточек
+   и закрывал «Параметры запуска». Рельс подобран по высоте окна 900 px, так что
+   при прокрутке сцены он остаётся целиком в поле зрения. */
 .cp-rail {
   display: flex;
   flex-direction: column;
   gap: var(--cp-gutter);
   min-width: 0;
+  position: sticky;
+  top: calc(var(--cp-topbar) + var(--cp-gutter));
 }
 
 .cp-stage {
@@ -441,6 +451,31 @@ COMPONENTS = """
   background: var(--surface-2);
 }
 
+/* Шапка карточки фото: имя, размер и замена в одной строке. Раньше подпись и
+   кнопка стояли отдельными строками и съедали 60 px высоты рельса. */
+.cp-photo__head {
+  display: flex;
+  align-items: center;
+  gap: var(--cp-sp-2);
+  min-height: var(--cp-row);
+}
+
+/* Кнопка замены — в шапке и ростом со строку (32 px): сорок пикселей растянули
+   бы шапку и отняли у рельса 8 px. */
+.cp-photo__head .cp-icon {
+  min-width: var(--cp-row);
+  height: var(--cp-row);
+}
+
+.cp-photo__caption {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cp-photo {
   max-width: 100%;
   max-height: 100%;
@@ -460,7 +495,7 @@ COMPONENTS = """
   gap: var(--cp-sp-2);
   width: 100%;
   min-height: var(--cp-row);
-  padding: var(--cp-sp-2) var(--cp-sp-3);
+  padding: var(--cp-sp-1) var(--cp-sp-3);
   border: 1px solid transparent;
   border-radius: var(--cp-radius-sm);
   background: transparent;
@@ -538,16 +573,23 @@ COMPONENTS = """
   flex-direction: column;
   gap: var(--cp-sp-2);
   width: 100%;
-  /* Липнет к низу окна, пока сцена прокручивается. Поверхность непрозрачная:
-     иначе карточки стилей и фото просвечивали бы сквозь кнопки. */
-  position: sticky;
-  bottom: var(--cp-gutter);
-  z-index: 5;
-  margin-top: auto;
   padding: var(--cp-card-pad);
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--cp-radius);
+}
+
+/* Две кнопки в одну строку: «Старт» и «Только описание» остаются обе, но блок
+   запуска занимает на 48 px меньше — иначе рельс не влезает в окно 900 px. */
+.cp-start__buttons {
+  display: flex;
+  gap: var(--cp-sp-2);
+}
+
+.cp-start__buttons > .cp-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 var(--cp-sp-2);
 }
 
 .cp-status {
@@ -878,6 +920,21 @@ COMPONENTS = """
   overflow-wrap: anywhere;
 }
 
+/* Карточка «Параметры запуска»: два поля в две компактные строки. Dense-поле
+   Quasar по умолчанию 40 px, и вместе с заголовком карточка занимала 159 px —
+   рельс из-за неё и не влезал в окно. */
+.cp-params__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cp-sp-2);
+}
+
+.cp-params .q-field--dense .q-field__control,
+.cp-params .q-field--dense .q-field__marginal {
+  height: var(--cp-row);
+  min-height: var(--cp-row);
+}
+
 /* ------------------------------------------------------------- промпт */
 .cp-prompt {
   display: flex;
@@ -977,6 +1034,19 @@ NARROW = """
 """
 
 
+# Рельс липнет только там, где влезает в окно целиком: 72 сверху (верхняя панель
+# и гаттер) + 787 высоты рельса + 16 воздуха снизу. Ниже порога он не липнет, а
+# прокручивается со страницей — иначе «Старт» уехал бы под нижний край и до него
+# было бы не добраться: липкий элемент не двигается внутри своей строки.
+SHORT = """
+@media (max-height: 899px) {
+  .cp-rail {
+    position: static;
+  }
+}
+"""
+
+
 def css():
     """Стили страницы V2: токены обеих тем, размеры и cp-классы.
 
@@ -988,6 +1058,7 @@ def css():
         + _block(":root", {**LIGHT, **SIZES})
         + _block("body.body--dark", DARK)
         + WIDE
+        + SHORT
         + "@layer components {\n"
         + COMPONENTS
         + "}\n"

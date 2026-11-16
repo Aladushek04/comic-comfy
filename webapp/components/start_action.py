@@ -6,6 +6,12 @@
 
 `status` — состояние страницы (empty/queued/running/…), а не этап задания:
 этап говорит, что делает задание, состояние — что видно и что можно нажать.
+
+Отмены здесь нет намеренно, это отложено, а не забыто: чтобы «Отмена» снимала
+задание из очереди и звала `/interrupt`, нужен `POST /interrupt` в
+`webapp/service.py` — сейчас сервис умеет только ставить задание. Вместе с
+расширенной панелью это P5c; до тех пор кнопка не рисуется, чтобы не обещать
+действие, которого нет.
 """
 from nicegui import ui
 
@@ -14,7 +20,7 @@ from ..labels import STATUS_LABEL
 
 
 class StartAction:
-    """Липкая карточка с состоянием и двумя кнопками."""
+    """Карточка с состоянием и двумя кнопками: «Старт» и «Только описание»."""
 
     def __init__(self, on_start):
         self._on_start = on_start
@@ -43,14 +49,16 @@ class StartAction:
                 theme.mark(self.status, "status")
                 self.detail = ui.label("")
                 theme.mark(self.detail, "meta")
-                self.start_button = ui.button(
-                    "Старт", icon="play_arrow", color=None,
-                    on_click=lambda: self._on_start(True, False))
-                theme.mark(self.start_button, "btn", "btn-fill")
-                self.describe_button = ui.button(
-                    "Только описание", color=None,
-                    on_click=lambda: self._on_start(False, False))
-                theme.mark(self.describe_button, "btn", "btn-ghost")
+                with ui.element("div") as buttons:
+                    theme.mark(buttons, "start-buttons")
+                    self.start_button = ui.button(
+                        "Старт", icon="play_arrow", color=None,
+                        on_click=lambda: self._on_start(True, False))
+                    theme.mark(self.start_button, "btn", "btn-fill")
+                    self.describe_button = ui.button(
+                        "Только описание", color=None,
+                        on_click=lambda: self._on_start(False, False))
+                    theme.mark(self.describe_button, "btn", "btn-ghost")
                 self.note = ui.label("")
                 theme.mark(self.note, "warn")
         self._apply()

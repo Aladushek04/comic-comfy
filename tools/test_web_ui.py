@@ -533,7 +533,7 @@ def main():
                   dark["start"] == rgb(tw.theme.DARK["--accent-fill"]), dark["start"])
             check("числа моноширинные и табличные",
                   "tabular-nums" in (dark["mono"] or ""), dark["mono"])
-            v2.locator(".cp-icon").click()
+            v2.locator(".cp-topbar .cp-icon").click()
             v2.wait_for_function(
                 "() => !document.body.classList.contains('body--dark')", timeout=10000)
             # Рамка поля перекрашивается переходом Quasar, поэтому ждём конечное
@@ -561,7 +561,7 @@ def main():
             check("выбор темы пережил перезагрузку вкладки",
                   v2.evaluate(
                       "() => !document.body.classList.contains('body--dark')"))
-            v2.locator(".cp-icon").click()
+            v2.locator(".cp-topbar .cp-icon").click()
             v2.wait_for_function(
                 "() => document.body.classList.contains('body--dark')", timeout=10000)
 
@@ -596,27 +596,46 @@ def main():
             check("клик по стилю выделяет его",
                   chosen["pressed"] == "true" and "GTA" in chosen["text"], str(chosen))
 
-            print("\n13в) рельс прокручивается страницей, Старт липкий")
+            print("\n13в) рельс липкий сверху и влезает в окно 900")
             rail = v2.evaluate("""() => {
                 const rail = document.querySelector('.cp-rail');
                 const start = document.querySelector('.cp-start');
+                const params = document.querySelector('.cp-params');
                 const cs = getComputedStyle(rail);
                 const ss = getComputedStyle(start);
+                const sb = start.getBoundingClientRect();
+                const pb = params.getBoundingClientRect();
                 return {overflow: cs.overflowY, maxHeight: cs.maxHeight,
-                        position: cs.position,
+                        position: cs.position, top: cs.top,
                         inner: document.querySelector('.cp-rail__scroll') !== null,
-                        start: ss.position, bottom: ss.bottom,
-                        background: ss.backgroundColor,
+                        start: ss.position, startTop: Math.round(sb.top),
+                        startBottom: Math.round(sb.bottom),
+                        paramsBottom: Math.round(pb.bottom),
+                        height: Math.round(rail.getBoundingClientRect().height),
+                        innerH: window.innerHeight,
+                        photo: Math.round(document.querySelector('.cp-frame, .cp-drop')
+                            .getBoundingClientRect().height),
+                        row: Math.round(document.querySelector('.cp-style')
+                            .getBoundingClientRect().height),
+                        fields: [...document.querySelectorAll('.cp-params .q-field')]
+                            .map(f => Math.round(f.getBoundingClientRect().height)),
                         page: document.documentElement.scrollHeight - window.innerHeight,
                         width: Math.round(rail.getBoundingClientRect().width)};
             }""")
-            check("у рельса нет собственной прокрутки",
-                  rail["overflow"] in ("visible", "clip") and rail["inner"] is False
-                  and rail["position"] == "static" and rail["maxHeight"] == "none",
+            check("рельс липкий сверху, без своей прокрутки",
+                  rail["position"] == "sticky" and rail["top"] == "72px"
+                  and rail["overflow"] in ("visible", "clip")
+                  and rail["inner"] is False and rail["maxHeight"] == "none",
                   str(rail))
-            check("Старт липнет к низу окна на непрозрачной поверхности",
-                  rail["start"] == "sticky" and rail["bottom"] == "16px"
-                  and rail["background"] == rgb(tw.theme.DARK["--surface"]), str(rail))
+            check("блок запуска не липнет и ничего не перекрывает",
+                  rail["start"] == "static"
+                  and rail["paramsBottom"] <= rail["startTop"], str(rail))
+            check("рельс целиком в окне 900: Старт виден",
+                  rail["height"] + 72 <= rail["innerH"]
+                  and rail["startBottom"] <= rail["innerH"], str(rail))
+            check("фото 160, строка стиля 32, поля по 32",
+                  rail["photo"] == 160 and rail["row"] == 32
+                  and rail["fields"] == [32, 32], str(rail))
             check("рельс 400 px до 1600", rail["width"] == 400, str(rail["width"]))
             v2.set_viewport_size({"width": 1600, "height": 900})
             v2.wait_for_timeout(400)
@@ -659,6 +678,12 @@ def main():
             print("\n13д) задание V2: старт, адрес и перезагрузка")
             v2.set_input_files('input[type="file"]', str(photo_a))
             wait_v2_upload(v2)
+            box = v2.evaluate("""() => {
+                const b = document.querySelector('.cp-start').getBoundingClientRect();
+                return {bottom: Math.round(b.bottom), inner: window.innerHeight};
+            }""")
+            check("с фото рельс тоже влезает: Старт виден",
+                  box["bottom"] <= box["inner"], str(box))
             caption = v2.locator(".cp-frame").locator("..").inner_text()
             check("размер фото из заголовка", "588×860" in caption or "×" in caption,
                   caption[:80])
