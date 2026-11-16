@@ -1548,6 +1548,61 @@ def test_openai_provider():
             os.environ["LM_THINKING"] = saved[2]
 
 
+def test_eye_colour_zoom():
+    """33) цвет глаз: промпт требует его, запрос несёт зум на лицо, старый кэш не живёт."""
+    print("\n33) цвет глаз в описании")
+    check("SYSTEM требует цвет глаз", "eye colour" in pp.SYSTEM, pp.SYSTEM[:120])
+    check("SYSTEM запрещает угадывать при закрытых глазах",
+          "closed" in pp.SYSTEM and "omit" in pp.SYSTEM)
+    check("в примере ответа есть цвет глаз", "blue eyes" in pp.SYSTEM)
+
+    img = TMP / "eyes" / "p.png"
+    make(img, (120, 130, 140), size=(90, 140))
+    seen = {}
+    saved = pp.post
+
+    def fake_post(url, payload, timeout=300):
+        seen.clear()
+        seen.update(payload)
+        return {"choices": [{"message": {"content":
+                '{"subject":"adult woman, grey eyes","negative_extra":"","notes":""}'}}]}
+
+    try:
+        pp.post = fake_post
+        desc = pp.describe(str(img), "m")
+        parts = seen["messages"][1]["content"]
+        check("запрос несёт два изображения", len(parts) == 3, str(len(parts)))
+        check("второе изображение названо зумом",
+              "zoomed on the head" in parts[0]["text"], parts[0]["text"][:120])
+        check("описание доехало", desc["subject"] == "adult woman, grey eyes", desc["subject"])
+
+        saved_crop = pp.face_crop
+        pp.face_crop = lambda image_path, max_side=640: ""
+        pp.describe(str(img), "m")
+        check("без зума запрос остаётся с одним изображением",
+              len(seen["messages"][1]["content"]) == 2, str(seen["messages"][1]["content"]))
+        pp.face_crop = saved_crop
+
+        crop = pp.face_crop(str(img))
+        check("зум на лицо существует", bool(crop) and Path(crop).exists(), str(crop))
+
+        pp.post = lambda url, payload, timeout=300: {
+            "choices": [{"message": {"content":
+                '{"subject":"adult woman, brown eyes","negative_extra":"","notes":""}'}}]}
+        cache = pp.write_cache(str(img), pp.describe(str(img), "m"))
+        check("свежий кэш читается с меткой",
+              (pp.read_cache(str(img)) or {}).get("describe") == pp.DESCRIBE_VERSION,
+              str(pp.read_cache(str(img)))[:120])
+        data = json.loads(cache.read_text(encoding="utf-8"))
+        data.pop("describe", None)
+        pp.write_json(cache, data)
+        check("старый кэш без метки не отдаётся", pp.read_cache(str(img)) is None,
+              str(pp.read_cache(str(img)))[:120])
+        cache.unlink(missing_ok=True)
+    finally:
+        pp.post = saved
+
+
 def main():
     patch_roots()
     try:
@@ -1582,6 +1637,7 @@ def main():
         test_tagger_addon()
         test_tagger_does_not_pollute_cache()
         test_openai_provider()
+        test_eye_colour_zoom()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

@@ -264,6 +264,12 @@ def read_cache(image_path, scene=None):
         # не удалось: доверять их полю scene нельзя, сцену надо переписать.
         print("   кэш сцены без метки (старая версия) — сцену переписываю заново")
         return None
+    if int(data.get("describe") or 1) < DESCRIBE_VERSION:
+        # В описании нет цвета глаз: с ним модель угадывает радужку и красит её
+        # в красный. Ручные описания (--no-llm, --from-json) метку не ставят и
+        # сюда не попадают — их переснимать нечем.
+        print("   кэш описания снят старым промптом (без цвета глаз) — описываю заново")
+        return None
     if data.get("sha1") and data["sha1"] != fingerprint(image_path):
         return None
     return data
@@ -313,6 +319,8 @@ def write_cache(image_path, desc, scene=None):
     data["scene"] = scene or ""
     # Метка «поле scene правдиво»: без неё запись считается старой и не берётся.
     data["scene_applied"] = True
+    # Каким промптом снято описание: см. DESCRIBE_VERSION.
+    data["describe"] = DESCRIBE_VERSION
     return write_json(p, data)
 
 
@@ -377,12 +385,22 @@ NEG_GUARD = "child, loli, shota, underage"
 # Плейсхолдер субъекта в шаблоне промпта из build_workflows.py.
 SUBJECT_SLOT = "{{subject}}"
 
+# Версия промпта описания. Запись кэша помнит, каким промптом она снята: без цвета
+# глаз модель красит радужку случайным насыщенным цветом (чаще всего красным),
+# поэтому старые описания переснимаются сами, а не живут с этой ошибкой.
+DESCRIBE_VERSION = 2
+
 SYSTEM = """You describe photographs for a text-to-image model.
 Return ONLY a JSON object with three string fields: subject, negative_extra, notes.
 
 Rules:
-- subject: English, comma-separated tags, 25-45 words. Cover: who, hair, face details,
-  glasses/accessories, clothing, pose, hands, framing, background, light.
+- subject: English, comma-separated tags, 25-45 words. Cover: who, hair, eye colour,
+  face details (eye makeup, lips), glasses/accessories, clothing, pose, hands, framing,
+  background, light.
+- Always name the eye colour right after the hair: blue eyes, green eyes, brown eyes,
+  grey eyes, hazel eyes. The image model has no default colour and paints a saturated
+  random one when the colour is missing (red or glowing eyes most often). If the eyes
+  are closed, turned away or hidden, omit the colour instead of guessing.
 - Always start with "adult woman" or "adult man". Never write age words:
   young, teen, teenage, girl, boy, child, kid, adolescent, schoolgirl, schoolboy.
 - Describe only what is visible. Do not invent objects, do not change the scene.
@@ -394,7 +412,7 @@ Rules:
 - notes: one short sentence in Russian about what is fragile in this photo.
 
 Example output:
-{"subject":"adult woman, early 30s, long wavy blonde hair, black framed glasses, red sleeveless dress, thin gold necklace, arms spread wide, neutral grey studio background, soft frontal light","negative_extra":"white lenses, opaque glasses, missing necklace","notes":"главное — сохранить очки и цепочку."}"""
+{"subject":"adult woman, early 30s, long wavy blonde hair, blue eyes, black framed glasses, light eye makeup, red sleeveless dress, thin gold necklace, arms spread wide, neutral grey studio background, soft frontal light","negative_extra":"white lenses, opaque glasses, missing necklace","notes":"главное — сохранить очки и цепочку."}"""
 
 # Возрастные слова, которые модель любит добавлять в описание.
 AGE_WORDS = ("young", "teen", "teenage", "teenager", "girl", "boy", "child", "kid",
@@ -609,9 +627,37 @@ def prep_image(image_path, max_side=1280):
         return image_path
 
 
+def face_crop(image_path, max_side=640):
+    """Верх кадра крупным планом: на целом фото радужка — несколько пикселей.
+
+    Без зума модель не видит цвет глаз и называет его наугад (`brown` на серых),
+    а без названного цвета SDXL красит радужку в случайный насыщенный — чаще
+    всего красный. Зум верхней части кадра (лицо в портрете и в полный рост)
+    стоит ~600 токенов и делает цвет глаз читаемым.
+    """
+    try:
+        from PIL import Image
+        with Image.open(image_path) as im:
+            im = im.convert("RGB")
+            w, h = im.size
+            crop = im.crop((int(w * 0.10), 0, int(w * 0.90), int(h * 0.45)))
+            if max(crop.size) > max_side:
+                crop.thumbnail((max_side, max_side))
+            tmp = ROOT / "out" / "tmp"
+            tmp.mkdir(parents=True, exist_ok=True)
+            dst = tmp / f"{image_tag(image_path)}_face.png"
+            crop.save(dst)
+            return str(dst)
+    except Exception as e:
+        print("   зум на лицо не сделался:", e)
+        return ""
+
+
 def describe(image_path, model):
     image_path = prep_image(image_path)
     b64 = base64.b64encode(Path(image_path).read_bytes()).decode()
+    face = face_crop(image_path)
+    face_b64 = base64.b64encode(Path(face).read_bytes()).decode() if face else ""
     think_fields, think_suffix = think_payload()
     base = {
         "model": model,
@@ -623,9 +669,14 @@ def describe(image_path, model):
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": [
                 {"type": "text",
-                 "text": "Describe this photo as JSON. Do not explain." + think_suffix},
+                 "text": ("Describe this photo as JSON. Do not explain. "
+                          "The first image is the whole photo, the second is the "
+                          "same photo zoomed on the head." if face_b64 else
+                          "Describe this photo as JSON. Do not explain.") + think_suffix},
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}},
-            ]},
+            ] + ([{"type": "image_url",
+                   "image_url": {"url": "data:image/png;base64," + face_b64}}]
+                 if face_b64 else [])},
         ],
     }
     base.update(think_fields)
