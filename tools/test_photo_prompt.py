@@ -1790,6 +1790,70 @@ def test_eye_colour_zoom():
         pp.post = saved
 
 
+def test_config_priority():
+    """34) Config: один снимок env -> comic_paths.json -> yaml -> раскладка рядом."""
+    print("\n34) конфиг ComicPit-V2")
+    from comic.config import Config
+
+    yaml = TMP / "cfg.yaml"
+    yaml.write_text("comic_shared:\n  base_path: Q:\\models\n", encoding="utf-8")
+    paths = TMP / "cfg_paths.json"
+    paths.write_text(json.dumps({"input": "R:\\in", "output": "R:\\out",
+                                 "lm_model": "pinned@iq3_m",
+                                 "lm_url": "http://127.0.0.1:8765"}), encoding="utf-8")
+    no_paths = TMP / "cfg-нет.json"
+
+    cfg = Config.load(env={}, yaml_path=yaml, paths_path=no_paths)
+    check("Config: base_path читается из yaml", str(cfg.models) == "Q:\\models", str(cfg.models))
+    check("Config: без файла input/output рядом с models",
+          cfg.input == cfg.models.parent / "input" and cfg.output == cfg.models.parent / "output",
+          f"{cfg.input} / {cfg.output}")
+    check("Config: адрес ComfyUI по умолчанию", cfg.comfy_url == "http://127.0.0.1:8199",
+          cfg.comfy_url)
+    check("Config: сервис описаний не задан — пусто",
+          cfg.lm_url == "" and cfg.lm_model is None, f"{cfg.lm_url} / {cfg.lm_model}")
+    check("Config: размышления по умолчанию выключены", cfg.thinking is False, str(cfg.thinking))
+
+    cfg = Config.load(env={}, yaml_path=yaml, paths_path=paths)
+    check("Config: comic_paths.json задаёт input/output",
+          str(cfg.input) == "R:\\in" and str(cfg.output) == "R:\\out",
+          f"{cfg.input} / {cfg.output}")
+    check("Config: comic_paths.json задаёт модель и адрес описания",
+          cfg.lm_model == "pinned@iq3_m" and cfg.lm_url == "http://127.0.0.1:8765",
+          f"{cfg.lm_model} / {cfg.lm_url}")
+
+    cfg = Config.load(env={"COMFY_MODELS": str(TMP / "env_models"),
+                           "COMFY_SHARED": str(TMP / "env_shared"),
+                           "COMFY_INPUT": str(TMP / "env_in"),
+                           "LM_MODEL": "env@q8", "LM_URL": "http://127.0.0.1:9999",
+                           "COMFY_URL": "http://127.0.0.1:1", "LM_THINKING": "on"},
+                      yaml_path=yaml, paths_path=paths)
+    check("Config: env важнее yaml и comic_paths.json",
+          cfg.models == TMP / "env_models" and cfg.input == TMP / "env_in"
+          and cfg.lm_model == "env@q8" and cfg.lm_url == "http://127.0.0.1:9999"
+          and cfg.comfy_url == "http://127.0.0.1:1" and cfg.thinking is True, str(cfg))
+    check("Config: COMFY_SHARED важнее comic_paths.json",
+          Config.load(env={"COMFY_SHARED": str(TMP / "sh")}, yaml_path=yaml,
+                      paths_path=paths).input == TMP / "sh" / "input")
+
+    root = TMP / "cfg_root"
+    cfg = Config.load(root=root, env={}, yaml_path=TMP / "cfg-нет.yaml")
+    check("Config: без yaml — раскладка в корне", cfg.models == root / "models", str(cfg.models))
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "extra_model_paths.yaml").write_text("base_path: S:\\models\n", encoding="utf-8")
+    (root / "comic_paths.json").write_text(json.dumps({"input": "S:\\in"}), encoding="utf-8")
+    cfg = Config.load(root=root, env={})
+    check("Config: yaml и comic_paths.json ищутся в корне, а не в cwd",
+          str(cfg.models) == "S:\\models" and str(cfg.input) == "S:\\in",
+          f"{cfg.models} / {cfg.input}")
+
+    env = {"COMFY_URL": "http://127.0.0.1:7000"}
+    cfg = Config.load(env=env, yaml_path=yaml, paths_path=no_paths)
+    env["COMFY_URL"] = "http://127.0.0.1:7001"
+    check("Config: снимок, а не живое окружение", cfg.comfy_url == "http://127.0.0.1:7000",
+          cfg.comfy_url)
+
+
 def main():
     patch_roots()
     try:
@@ -1828,6 +1892,7 @@ def main():
         test_tagger_does_not_pollute_cache()
         test_openai_provider()
         test_eye_colour_zoom()
+        test_config_priority()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

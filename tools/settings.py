@@ -22,7 +22,13 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(os.environ.get("COMIC_ROOT") or Path(__file__).resolve().parent.parent)
+# Единственный `sys.path.insert` корня репозитория: без него пакет `comic` не виден
+# скрипту, запущенному из `tools\`. COMIC_ROOT меняет настройки, но не место пакета.
+_REPO = Path(__file__).resolve().parent.parent
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+
+ROOT = Path(os.environ.get("COMIC_ROOT") or _REPO)
 YAML = ROOT / "extra_model_paths.yaml"
 
 
