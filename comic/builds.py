@@ -275,19 +275,23 @@ def photo(*, name, title, style, body, hands=None, character=None,
              {"upscale_method": "lanczos", "megapixels": 1.0, "resolution_steps": 1},
              image=(7, 0)),
         # Глубина — Depth Anything 3 нативными узлами: модель, инференс, рендер.
-        # 21/22/23 свободны: 20 занят LoRA рук, 13 — сэмплером. `mode` и `output`
-        # — DynamicCombo, в API это объект, а не строка (проверяет check_widgets).
+        # 21/22/23 свободны: 20 занят LoRA рук, 13 — сэмплером.
+        # `mode` и `output` — DynamicCombo: в /prompt это **строка** с ключом
+        # варианта, а поля варианта идут рядом отдельными входами с точкой
+        # (`output.normalization`). Так же их сериализует и фронтенд ComfyUI
+        # (`<combo>.<поле>`); объект вместо строки узел молча теряет — проверено
+        # падением `execute() missing 1 required positional argument: 'mode'`.
         # `v2_style` — та же нормализация, что у DA2 в controlnet_aux: полярность
         # глубины остаётся совместимой с union-ControlNet. `min_max`/`raw` без
         # замера не берём.
         node(21, "LoadDA3Model", {"model_name": DA3, "weight_dtype": "default"}),
         node(22, "DA3Inference",
              {"resolution": 504, "resize_method": "upper_bound_resize",
-              "mode": {"mode": "mono"}},
+              "mode": "mono"},
              da3_model=(21, 0), image=(8, 0)),
         node(23, "DA3Render",
-             {"output": {"output": "depth", "normalization": "v2_style",
-                         "apply_sky_clip": False}},
+             {"output": "depth", "output.normalization": "v2_style",
+              "output.apply_sky_clip": False},
              da3_geometry=(22, 0)),
         node(10, "ControlNetLoader", {"control_net_name": CONTROLNET}),
         node(11, "ControlNetApplyAdvanced",

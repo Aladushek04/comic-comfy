@@ -399,6 +399,24 @@ ComfyUI не трогает. Без готового описания (кэш, `
    набор падает с `ModuleNotFoundError: nicegui` — это не поломка кода, а не то
    окружение. `test_photo_prompt.py`, наоборот, идёт из venv ComfyUI.
 
+0.21. **DynamicCombo: ключ варианта строкой, поля варианта — с точкой.**
+   Первое: в `/prompt` значение DynamicCombo — **строка** с ключом варианта
+   (`"mode": "mono"`), а поля варианта идут рядом отдельными входами с точкой
+   (`output.normalization`, `output.apply_sky_clip`). Так же их сериализует
+   фронтенд (`<combo>.<поле>`, см. `dynamicComboWidget` в `comfyui_frontend_package`)
+   и так их ждут тесты самого ComfyUI (`tests-unit\execution_test\dynamic_inputs_test.py`:
+   `{"rows": "on", "rows.x": 0.5}`). Объект `{"mode": "mono"}` ComfyUI молча теряет:
+   вход не попадает в `input_data_all`, и узел падает уже на исполнении —
+   `DA3Inference.execute() missing 1 required positional argument: 'mode'`.
+   Второе: `check_widgets.py` сверял только UI-граф, поэтому сказал «0 расхождений»
+   на нерабочем графе. Теперь он проверяет и `prompt` из `.api.json`: каждый вход
+   должен быть в `/object_info`, DynamicCombo — ключом строкой, поля варианта
+   раскрываются по выбранному ключу. И общая проверка в `test_photo_prompt.py`:
+   ни в одной сборке нет входа-объекта — это ловит класс ошибки, а не один узел.
+   Третье: полярность DA3 проверена замером, а не на глаз: карты DA2 (`vitl`, 768)
+   и DA3 (`v2_style`, 504) на одном фото коррелируют **+0.927** (при перевёрнутой
+   полярности знак был бы минус). Кадр на DA3 — 48.0 с против 45.2 с на DA2.
+
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
    съезжают на позицию влево, панель Issues пишет «Invalid input: sampler_name / cfg».

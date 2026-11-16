@@ -410,9 +410,7 @@
       "widgets_values": [
         504,
         "upper_bound_resize",
-        {
-          "mode": "mono"
-        }
+        "mono"
       ],
       "title": "Глубина DA3"
     },
@@ -425,7 +423,7 @@
       ],
       "size": [
         380,
-        150
+        210
       ],
       "flags": {},
       "order": 10,
@@ -451,11 +449,9 @@
         "Node name for S&R": "DA3Render"
       },
       "widgets_values": [
-        {
-          "output": "depth",
-          "normalization": "v2_style",
-          "apply_sky_clip": false
-        }
+        "depth",
+        "v2_style",
+        false
       ],
       "title": "Карта глубины"
     },

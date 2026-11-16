@@ -90,10 +90,15 @@ ComfyUI показывает подпапки через обратный слэ
 Три вещи, которые нельзя менять без замера:
 
 - `normalization="v2_style"` — та же нормализация, что даёт DA2 в `controlnet_aux`. `min_max` и
-  `raw` меняют полярность/диапазон, и union-ControlNet получает изнанку глубины;
+  `raw` меняют полярность/диапазон, и union-ControlNet получает изнанку глубины. Замерено на
+  одном фото (17.11.2026): корреляция карт DA2 и DA3 **+0.927**, то есть порядок «ближе/дальше»
+  совпадает; DA3 при этом чище разделяет тело и фон;
 - `apply_sky_clip=false` — включать только если по кадру видно, что небо портит карту;
-- `mode={"mode": "mono"}` и `output={"output": "depth", ...}` — DynamicCombo, в API это объект,
-  а не строка; `tools\check_widgets.py` проверяет и ключ, и вложенные поля.
+- `mode="mono"` и `output="depth"` — DynamicCombo: в `/prompt` это **ключ варианта строкой**,
+  а поля варианта — отдельные входы с точкой (`output.normalization`, `output.apply_sky_clip`).
+  Объект вместо строки ComfyUI молча теряет, и узел падает уже на исполнении
+  («missing 1 required positional argument: 'mode'»); `tools\check_widgets.py` теперь сверяет
+  и UI-граф, и `.api.json`.
 
 `geometry_estimation` обязан быть в `extra_model_paths.yaml`, иначе `LoadDA3Model` не видит файл
 и граф падает на «value not in list».

@@ -29,9 +29,11 @@ import comfy_launch  # noqa: E402
 from comic.workflow import DEFS  # noqa: E402
 
 WIDGET_SCALARS = ("INT", "FLOAT", "STRING", "BOOLEAN")
-# DynamicCombo: /object_info отдаёт тип строкой, а значение — объектом
-# (`{"mode": "mono"}`), внутри которого живут вложенные поля выбранного
-# варианта. Список вариантов — в `options[].key`, их поля — в `options[].inputs`.
+# DynamicCombo: /object_info отдаёт тип строкой, значение входа — **ключ
+# варианта строкой**, а поля выбранного варианта фронтенд добавляет отдельными
+# виджетами `<combo>.<поле>` (см. dynamicComboWidget в comfyui_frontend_package)
+# и `/prompt` ждёт их отдельными входами. Объект вместо строки ComfyUI молча
+# теряет: узел падает с «missing 1 required positional argument».
 DYNAMIC_COMBOS = ("COMFY_DYNAMICCOMBO_V3",)
 SEED_NAMES = ("seed", "noise_seed")
 REPORT = settings.ROOT / "out" / "bench" / "widgets_check.md"
@@ -50,22 +52,18 @@ def is_widget(spec):
     return typ in WIDGET_SCALARS
 
 
-def widget_names(info):
-    """Имена виджетов узла в порядке /object_info: required, потом optional."""
-    out = []
-    for group in ("required", "optional"):
-        for name, spec in (info.get("input", {}).get(group) or {}).items():
-            if is_widget(spec):
-                out.append(name)
-    return out
+def is_dynamic(spec):
+    return isinstance(spec, (list, tuple)) and bool(spec) and spec[0] in DYNAMIC_COMBOS
 
 
-def spec_of(info, name):
+def input_groups(info):
     for group in ("required", "optional"):
-        found = (info.get("input", {}).get(group) or {}).get(name)
-        if found:
-            return found
-    return None
+        yield (info.get("input", {}).get(group) or {}).items()
+
+
+def input_names(info):
+    """Все входы узла по /object_info: сокеты и виджеты, без раскрытия вариантов."""
+    return [name for group in input_groups(info) for name, _ in group]
 
 
 def combo_options(spec):
@@ -75,27 +73,96 @@ def combo_options(spec):
     return (spec[1] if isinstance(spec[1], dict) else {}).get("options") or []
 
 
-def dynamic_combo_problem(wname, spec, value):
-    """Что не так с объектом DynamicCombo. Пустая строка — всё в порядке.
+def option_of(spec, chosen):
+    return next((o for o in combo_options(spec) if isinstance(o, dict) and o.get("key") == chosen),
+                None)
 
-    Значение такого входа — объект: ключ с именем самого входа (`output`) и
-    поля выбранного варианта рядом. Строка или объект с чужим ключом проходит
-    проверку ComfyUI молча, а узел получает не то, что ждал.
+
+def widget_tree(info, chosen_of):
+    """`[(имя, spec)]` виджетов узла, с раскрытием выбранного варианта DynamicCombo.
+
+    `chosen_of(имя, позиция)` — чем выбран вариант: в UI-графе значение лежит по
+    позиции в `widgets_values`, в `/prompt` — под тем же именем. Поля варианта
+    получают имена с точкой (`output.normalization`) — ровно так их добавляет
+    фронтенд ComfyUI и ждёт `/prompt`.
     """
-    options = combo_options(spec)
-    keys = [o.get("key") for o in options if isinstance(o, dict)]
-    if not isinstance(value, dict):
-        return f"{wname}={value!r} не объект"
-    chosen = value.get(wname)
-    if keys and chosen not in keys:
-        return f"{wname}: выбран {chosen!r}, а варианты {keys}"
-    option = next((o for o in options if o.get("key") == chosen), {})
-    need = list(((option.get("inputs") or {}).get("required") or {}).keys())
-    missing = [k for k in need if k not in value]
-    extra = [k for k in value if k != wname and k not in need]
-    if missing or extra:
-        return f"{wname}: нет {missing}, лишние {extra}"
+    out = []
+
+    def walk(items, prefix):
+        for name, spec in items:
+            if not is_widget(spec):
+                continue
+            full = prefix + name
+            idx = len(out)
+            out.append((full, spec))
+            if not is_dynamic(spec):
+                continue
+            option = option_of(spec, chosen_of(full, idx))
+            if option is None:
+                continue
+            for group in ("required", "optional"):
+                nested = ((option.get("inputs") or {}).get(group) or {}).items()
+                walk(list(nested), full + ".")
+
+    for group in ("required", "optional"):
+        walk(list(((info.get("input", {}).get(group)) or {}).items()), "")
+    return out
+
+
+def ui_chosen(values):
+    def chosen_of(name, idx):
+        return values[idx] if values is not None and idx < len(values) else None
+    return chosen_of
+
+
+def api_chosen(live):
+    def chosen_of(name, idx):
+        return live.get(name)
+    return chosen_of
+
+
+def widget_names(info, values=None):
+    """Имена виджетов узла в порядке /object_info: required, потом optional."""
+    return [name for name, _ in widget_tree(info, ui_chosen(values))]
+
+
+def widget_specs(info, values=None):
+    """`{имя: spec}` для всех виджетов узла, включая поля выбранного варианта."""
+    return dict(widget_tree(info, ui_chosen(values)))
+
+
+def api_specs(info, live):
+    """То же, но выбор варианта берётся из `/prompt` по имени входа."""
+    return dict(widget_tree(info, api_chosen(live)))
+
+
+def value_problem(wname, spec, value):
+    """Что не так со значением входа. Пустая строка — всё в порядке."""
+    typ = spec[0]
+    if typ in DYNAMIC_COMBOS:
+        keys = [o.get("key") for o in combo_options(spec) if isinstance(o, dict)]
+        if not isinstance(value, str):
+            return (f"{wname}={value!r} не строка: ComfyUI ждёт ключ варианта "
+                    f"из {keys}, иначе вход теряется целиком")
+        if keys and value not in keys:
+            return f"{wname}: выбран {value!r}, а варианты {keys}"
+        return ""
+    if isinstance(typ, list) or typ == "COMBO":
+        return ""            # мягко: часть моделей узел скачивает сам
+    if typ == "INT" and not isinstance(value, int):
+        return f"{wname}={value!r} не INT"
+    if typ == "FLOAT" and not isinstance(value, (int, float)):
+        return f"{wname}={value!r} не FLOAT"
+    if typ == "STRING" and not isinstance(value, str):
+        return f"{wname}={value!r} не STRING"
+    if typ == "BOOLEAN" and not isinstance(value, bool):
+        return f"{wname}={value!r} не BOOLEAN"
     return ""
+
+
+def is_link(value):
+    return (isinstance(value, list) and len(value) == 2
+            and isinstance(value[0], str) and isinstance(value[1], int))
 
 
 def probe(url):
@@ -132,12 +199,11 @@ def check_build(name, data, info):
             rows.append((name, nid, typ, "провал", "типа нет в DEFS генератора"))
             fails += 1
             continue
-        want = widget_names(meta)
-        declared = DEFS[typ][1]
         got = list(node["widgets_values"])
         note = ""
         # скрытое поле control_after_generate у seed-виджета (AGENTS, грабли 1)
-        if len(got) == len(want) + 1 and want and want[0] in SEED_NAMES:
+        base = widget_names(meta)
+        if len(got) == len(base) + 1 and base and base[0] in SEED_NAMES:
             if got[1] != "randomize":
                 rows.append((name, nid, typ, "провал",
                              f"второй элемент {got[1]!r}, ждали 'randomize'"))
@@ -145,6 +211,8 @@ def check_build(name, data, info):
                 continue
             got = got[:1] + got[2:]
             note = "control_after_generate на месте"
+        want = widget_names(meta, got)
+        declared = DEFS[typ][1]
         if declared != want:
             rows.append((name, nid, typ, "провал",
                          f"DEFS {declared} ≠ /object_info {want}"))
@@ -155,34 +223,64 @@ def check_build(name, data, info):
                          f"значений {len(got)}, виджетов {len(want)}: {want}"))
             fails += 1
             continue
+        specs = widget_specs(meta, got)
         for wname, value in zip(want, got):
-            spec = spec_of(meta, wname)
+            spec = specs.get(wname)
             if not spec:
                 continue
             typ_decl = spec[0]
-            if typ_decl in DYNAMIC_COMBOS:
-                problem = dynamic_combo_problem(wname, spec, value)
-                if problem:
-                    rows.append((name, nid, typ, "провал", problem))
-                    fails += 1
-            elif isinstance(typ_decl, list) or typ_decl == "COMBO":
+            if isinstance(typ_decl, list) or typ_decl == "COMBO":
                 options = typ_decl if isinstance(typ_decl, list) else \
                     (spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}).get("options") or []
                 if options and value not in options:
                     # Мягко: часть моделей узел скачивает сам при первом прогоне.
                     warns += 1
                     note = (note + "; " if note else "") + f"{wname}: {value!r} нет в списке"
-            elif typ_decl == "INT" and not isinstance(value, int):
-                rows.append((name, nid, typ, "провал", f"{wname}={value!r} не INT"))
-                fails += 1
-            elif typ_decl == "FLOAT" and not isinstance(value, (int, float)):
-                rows.append((name, nid, typ, "провал", f"{wname}={value!r} не FLOAT"))
-                fails += 1
-            elif typ_decl == "STRING" and not isinstance(value, str):
-                rows.append((name, nid, typ, "провал", f"{wname}={value!r} не STRING"))
+                continue
+            problem = value_problem(wname, spec, value)
+            if problem:
+                rows.append((name, nid, typ, "провал", problem))
                 fails += 1
         rows.append((name, nid, typ, "ok", note or "ok"))
     return rows, fails, warns
+
+
+def check_api(name, payload, info):
+    """(строки, провалов) по `prompt` из `<сборка>.api.json`.
+
+    `widgets_values` — то, что читает панель; `/prompt` получает другой файл, и
+    расхождение между ними ловится только здесь. Так и вышло с DA3: в UI-графе
+    объект DynamicCombo выглядел правдоподобно, а `/prompt` терял вход целиком
+    («missing 1 required positional argument: 'mode'»).
+    """
+    rows, fails = [], 0
+    for nid, node in (payload.get("prompt") or {}).items():
+        typ = node.get("class_type", "")
+        live = node.get("inputs") or {}
+        meta = info.get(typ)
+        if meta is None:
+            rows.append((name, nid, typ, "провал", "узла нет в /object_info (API)"))
+            fails += 1
+            continue
+        specs = api_specs(meta, live)
+        sockets = set(input_names(meta))
+        problems = []
+        for key, value in live.items():
+            if is_link(value):
+                if key not in sockets and key not in specs:
+                    problems.append(f"{key}: связи некуда идти")
+                continue
+            if key in specs:
+                problem = value_problem(key, specs[key], value)
+                if problem:
+                    problems.append(problem)
+            elif key not in sockets:
+                problems.append(f"{key!r} нет в /object_info")
+        for problem in problems:
+            rows.append((name, nid, typ, "провал", "API: " + problem))
+            fails += 1
+        rows.append((name, nid, typ, "ok", "API: ok"))
+    return rows, fails
 
 
 def report(rows, fails, warns, url, nodes_in_server):
@@ -200,8 +298,14 @@ def report(rows, fails, warns, url, nodes_in_server):
              "порядку панель читает `widgets_values`;",
              "- скрытый второй элемент `control_after_generate` у seed-виджета: "
              "на своём месте и равен `randomize`;",
-             "- тип значения (INT/FLOAT/STRING); вариант COMBO проверяется мягко: "
-             "часть моделей узел скачивает сам при первом прогоне.", "",
+             "- тип значения (INT/FLOAT/STRING/BOOLEAN); вариант COMBO проверяется мягко: "
+             "часть моделей узел скачивает сам при первом прогоне;",
+             "- DynamicCombo: значение — **ключ варианта строкой**, а поля варианта — "
+             "отдельные виджеты с точкой (`output.normalization`), как их добавляет "
+             "фронтенд; объект вместо строки ComfyUI теряет молча;",
+             "- `prompt` из `<сборка>.api.json` — тот файл, который уходит в `/prompt`: "
+             "каждый его вход должен быть в `/object_info`, а DynamicCombo — тем же "
+             "ключом строкой. UI-граф и API-граф проверяются отдельно.", "",
              "## Узлы, где что-то не сошлось", ""]
     if problems:
         lines += ["| сборка | узел | тип | что не так |", "|---|---|---|---|"]
@@ -243,6 +347,12 @@ def main():
             rows += r
             fails += f
             warns += w
+            api_path = path.with_name(path.stem + ".api.json")
+            if api_path.exists():
+                payload = json.loads(api_path.read_text(encoding="utf-8"))
+                r, f = check_api(path.stem, payload, info)
+                rows += r
+                fails += f
         report(rows, fails, warns, url, len(info))
         if "--dump" in sys.argv:
             used = sorted({r[2] for r in rows})

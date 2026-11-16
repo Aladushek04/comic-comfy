@@ -2427,8 +2427,8 @@ def test_depth_from_da3():
               and load.get("weight_dtype") == "default", str(load))
 
         infer = api[inf]["inputs"]
-        check(f"{name}: режим — объект DynamicCombo, а не строка",
-              infer.get("mode") == {"mode": "mono"}, repr(infer.get("mode")))
+        check(f"{name}: режим — ключ варианта строкой, а не объект",
+              infer.get("mode") == "mono", repr(infer.get("mode")))
         check(f"{name}: инференс 504 и upper_bound_resize",
               infer.get("resolution") == 504
               and infer.get("resize_method") == "upper_bound_resize", str(infer))
@@ -2438,8 +2438,9 @@ def test_depth_from_da3():
 
         render = api[ren]["inputs"]
         check(f"{name}: рендер — depth с нормализацией v2_style и без sky clip",
-              render.get("output") == {"output": "depth", "normalization": "v2_style",
-                                       "apply_sky_clip": False}, repr(render.get("output")))
+              render.get("output") == "depth"
+              and render.get("output.normalization") == "v2_style"
+              and render.get("output.apply_sky_clip") is False, str(render))
         check(f"{name}: рендер берёт геометрию из инференса",
               render.get("da3_geometry") == [inf, 0], str(render))
 
@@ -2448,9 +2449,9 @@ def test_depth_from_da3():
 
         graph = json.loads((wf_dir / (name + ".json")).read_text(encoding="utf-8"))
         values = {str(n["id"]): n.get("widgets_values") for n in graph["nodes"]}
-        check(f"{name}: в UI-графе объект DynamicCombo, а не строка",
-              isinstance(values.get(inf, [None] * 3)[2], dict)
-              and isinstance(values.get(ren, [None])[0], dict),
+        check(f"{name}: в UI-графе вариант и его поля — отдельные значения",
+              values.get(inf) == [504, "upper_bound_resize", "mono"]
+              and values.get(ren) == ["depth", "v2_style", False],
               f"{values.get(inf)} / {values.get(ren)}")
 
     others = sorted(p.stem[:-len(".api")] for p in wf_dir.glob("*.api.json")
@@ -2471,6 +2472,18 @@ def test_depth_from_da3():
     if local.exists():
         check("geometry_estimation есть в локальных путях",
               "geometry_estimation: geometry_estimation" in local.read_text(encoding="utf-8"))
+
+    # Общее правило, а не про DA3: вход `prompt` — скаляр или связь `[id, слот]`.
+    # Объект ComfyUI молча теряет (DynamicCombo ждёт ключ варианта строкой), и
+    # узел падает уже на исполнении: «missing 1 required positional argument».
+    objects = []
+    for path in sorted(wf_dir.glob("*.api.json")):
+        prompt = json.loads(path.read_text(encoding="utf-8"))["prompt"]
+        for nid, node in prompt.items():
+            for key, value in (node.get("inputs") or {}).items():
+                if isinstance(value, dict):
+                    objects.append(f"{path.stem}:{nid}.{key}")
+    check("ни в одной сборке нет входа-объекта", not objects, ", ".join(objects))
 
 
 def test_prompt_builder():
