@@ -2152,6 +2152,22 @@ def test_cancel():
         comfy.stop()
 
 
+def test_start_action():
+    print("\n36) кнопка «Отмена»: только queued/running и только через сервис")
+    action = (V2 / "components" / "start_action.py").read_text(encoding="utf-8")
+    check("«Отмена» видна ровно в queued/running",
+          'CANCELLABLE = ("queued", "running")' in action
+          and 'self.state["status"] in CANCELLABLE' in action
+          and "self.cancel_button.set_visibility(cancellable)" in action,
+          "кнопка видна не там, где обещано")
+    check("пока задание живо, запуск скрыт (главное действие — отмена)",
+          "self.start_button.set_visibility(not cancellable)" in action
+          and "self.describe_button.set_visibility(not cancellable)" in action)
+    check("клик отдаёт решение сервису, а не гадает сам",
+          "on_click=self._cancel" in action and "self._on_cancel()" in action
+          and "self.svc.cancel" in (V2 / "v2.py").read_text(encoding="utf-8"))
+
+
 def test_advanced_dialog():
     print("\n35) расширенные параметры: дефолты из meta, пусто — граф, ноль — ноль")
     meta = catalog.load_meta("07_photo_thepit")
@@ -2295,6 +2311,7 @@ def main():
         test_stage_panels()
         test_rail_and_badges()
         test_cancel()
+        test_start_action()
         test_advanced_dialog()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

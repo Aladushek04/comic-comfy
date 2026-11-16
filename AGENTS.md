@@ -501,7 +501,7 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 ## Проверки перед словом «готово»
 
 - `python tools\test_photo_prompt.py` — 464 проверки CLI и пайплайна (модели не нужны).
-- `python tools\test_web_app.py` — 324 проверки заданий, очереди и веб-слоя на HTTP-заглушках
+- `python tools\test_web_app.py` — 327 проверок заданий, очереди и веб-слоя на HTTP-заглушках
   (LM Studio и ComfyUI подменяются, GPU не нужен).
 - `python tools\test_web_ui.py` — 99 браузерных проверок Chromium на тех же заглушках:
   раскладка, тёмная тема и её переключение, расширенная панель, сохранение ввода после health-check, замена фото, второй кадр
