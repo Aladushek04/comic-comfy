@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import sys
@@ -31,9 +32,12 @@ import photo_prompt as pp
 import build_workflows as bw
 import settings as st
 from PIL import Image
-from webapp import catalog
+from webapp import catalog, labels, push, theme
+from webapp import ui as web_ui
+from webapp.collect import collect_form
 from webapp.service import JobService, PNG_SIGNATURE, UploadError
 from webapp.state import fmt_setting, missing_job_text, pass_steps
+
 
 # Теггер в проверках не нужен: его логика проверяется в test_photo_prompt.py,
 # а 1.7 ГБ моделей и лишние секунды на кадр здесь ни к чему.
@@ -1559,6 +1563,212 @@ def test_openai_service_health():
           dead["ok"] is False and dead["models"] == [] and not dead["provider"], str(dead))
 
 
+# --------------------------------------------------------------- V2
+V2 = Path(__file__).resolve().parent.parent / "webapp"
+TOKENS = ("--bg", "--surface", "--surface-2", "--ink", "--ink-2", "--line",
+          "--accent", "--accent-fill", "--accent-on", "--ok", "--warn", "--err")
+HEX = re.compile(r"#[0-9a-fA-F]{3,8}\b")
+
+
+def _css_rules(css):
+    """Селектор → тело правила. Вложенность `@layer` и `@media` разбору не мешает."""
+    rules = []
+    for chunk in css.split("}"):
+        if "{" not in chunk:
+            continue
+        selector, body = chunk.rsplit("{", 1)
+        selector = selector.split("}")[-1].strip().splitlines()[-1].strip()
+        rules.append((selector, body))
+    return rules
+
+
+def _v2_sources():
+    """Только модули с разметкой: __init__.py — докстринг пакета, не компонент."""
+    files = [p for p in sorted((V2 / "components").glob("*.py")) if p.name != "__init__.py"]
+    files.append(V2 / "v2.py")
+    return {p.name: p.read_text(encoding="utf-8") for p in files if p.exists()}
+
+
+def test_theme_tokens():
+    print("\n27) токены и классы V2 в одном месте")
+    css = theme.css()
+    check("обе темы объявляют все 12 токенов",
+          set(theme.LIGHT) == set(TOKENS) == set(theme.DARK),
+          str(sorted(set(theme.LIGHT) ^ set(TOKENS))))
+    check("акцент: #7c3aed заливкой, #a78bfa текстом в тёмной",
+          theme.LIGHT["--accent-fill"] == "#7c3aed"
+          and theme.DARK["--accent-fill"] == "#7c3aed"
+          and theme.LIGHT["--accent"] == "#7c3aed"
+          and theme.DARK["--accent"] == "#a78bfa",
+          f'{theme.LIGHT["--accent"]} / {theme.DARK["--accent"]}')
+    check("пять ступеней типа и шесть отступов",
+          [theme.SIZES[k] for k in ("--cp-fs-1", "--cp-fs-5")]
+          == ["0.75rem", "1.5rem"]
+          and sorted(theme.SIZES[f"--cp-sp-{n}"] for n in (1, 2, 3, 4, 6, 8))
+          == ["12px", "16px", "24px", "32px", "4px", "8px"],
+          str([theme.SIZES[k] for k in theme.SIZES if k.startswith("--cp-sp")]))
+    check("числа раскладки из спецификации",
+          theme.SIZES["--cp-topbar"] == "56px" and theme.SIZES["--cp-rail"] == "400px"
+          and theme.SIZES["--cp-inspector"] == "320px"
+          and theme.SIZES["--cp-gutter"] == "16px"
+          and theme.SIZES["--cp-card-pad"] == "16px"
+          and theme.SIZES["--cp-frame"] == "min(62vh, 720px)"
+          and theme.SIZES["--cp-strip"] == "56px"
+          and theme.SIZES["--cp-tabs"] == "32px",
+          str(theme.SIZES))
+    coloured = {sel for sel, body in _css_rules(css) if HEX.search(body)}
+    check("литеральные цвета только в :root и body.body--dark",
+          coloured == {":root", "body.body--dark"}, str(coloured))
+    check("классы объявлены в @layer components",
+          "@layer components {" in css
+          and sum(1 for name in theme.CLASSES.values() if f".{name}" in css)
+          >= len(theme.CLASSES) - 4,
+          str([n for n in theme.CLASSES.values() if f".{n}" not in css]))
+    check("акцент Quasar — внутри .cp-app, а не на :root",
+          ".cp-app {" in css and "--q-primary: var(--accent-fill)" in css
+          and ":root {\n  --q-primary" not in css)
+    check("на широком экране рельс 420 px, и правило вне слоёв",
+          "@media (min-width: 1600px)" in css
+          and css.index("min-width: 1600px") < css.index("@layer components"),
+          "правило внутри слоя проиграло бы базовым 400 px")
+    check("тёмная тема — токены на body.body--dark", "body.body--dark {" in css)
+
+    sources = _v2_sources()
+    bad = [f"{name}: .{what}" for name, src in sources.items()
+           for what in ("classes(", "style(") if f".{what}" in src]
+    check("в компонентах нет литеральных .classes()/.style()", not bad, str(bad))
+    bad = [f"{name}: {m}" for name, src in sources.items() for m in HEX.findall(src)]
+    check("в компонентах нет литеральных цветов", not bad, str(bad))
+    check("в компонентах нет ui.colors (он перекрасил бы и старую страницу)",
+          not [name for name, src in sources.items() if "ui.colors(" in src])
+
+    saved = os.environ.get("COMIC_THEME_FILE")
+    file = TMP / "theme_v2.json"
+    os.environ["COMIC_THEME_FILE"] = str(file)
+    try:
+        check("тема по умолчанию тёмная", theme.read() is True, str(theme.path()))
+        theme.save(False)
+        check("выбор темы пишется в файл из COMIC_THEME_FILE",
+              theme.read() is False and file.exists(), str(file))
+        theme.save(True)
+        check("и читается обратно", theme.read() is True)
+    finally:
+        if saved is None:
+            os.environ.pop("COMIC_THEME_FILE", None)
+        else:
+            os.environ["COMIC_THEME_FILE"] = saved
+
+
+def test_collect_form():
+    print("\n28) collect_form собирает JobRequest без NiceGUI")
+    meta = catalog.load_meta("07_photo_thepit")
+    request, why = collect_form({}, meta)
+    check("пустое фото — отказ с причиной",
+          request is None and "фото" in why, why)
+    request, why = collect_form({"image": "abc", "workflow": "07_photo_thepit"}, meta)
+    check("нормальная форма — JobRequest", isinstance(request, jobs.JobRequest) and why == "",
+          why)
+    check("стиль, сцена и варианты доехали",
+          request.workflow == "07_photo_thepit" and request.variants == 1,
+          str(request))
+    check("описание и память: как в старой странице",
+          request.subject is None and request.generate is True
+          and request.write_cache is True and request.start_comfy is True
+          and bool(request.client_id), str(request))
+
+    values = {"image": "abc", "workflow": "07_photo_thepit", "scene": " на пляже ",
+              "variants": 3, "denoise": 0.75, "cn_strength": 0.9, "seed": 7,
+              "negative_extra": " rain ", "negative_drop": " text ",
+              "fields": {"denoise": 0.75, "cn_strength": 0.9, "steps": 20},
+              "loras": {"20": {"weight": 0.4}}, "recheck": True}
+    request, why = collect_form(values, meta)
+    check("denoise как в сборке не становится переопределением",
+          request is not None and "denoise" not in request.overrides.get("fields", {}),
+          str(request and request.overrides))
+    check("переопределения и LoRA уходят в overrides",
+          request.overrides.get("fields") == {"steps": 20}
+          and request.overrides.get("loras", {}).get("hands", {}).get("weight") == 0.4,
+          str(request.overrides))
+    check("denoise и сила ControlNet — поля задания, а не overrides",
+          request.denoise == 0.75 and request.cn_strength == 0.9
+          and "denoise" not in request.overrides.get("fields", {}),
+          str((request.denoise, request.cn_strength, request.overrides)))
+    check("сцена, seed и негатив на месте",
+          request.scene == "на пляже" and request.seed == 7
+          and request.negative_extra == "rain" and request.negative_drop == "text"
+          and request.variants == 3 and request.recheck is True, str(request))
+
+    request, why = collect_form({"image": "abc", "workflow": "07_photo_thepit",
+                                 "manual": True}, meta)
+    check("ручной режим без описания — отказ",
+          request is None and "описание" in why, why)
+    request, _ = collect_form({"image": "abc", "workflow": "07_photo_thepit",
+                               "manual": True, "subject": "adult woman"}, meta)
+    check("ручной режим не пишет кэш и не генерит описание",
+          request.subject == "adult woman" and request.write_cache is False,
+          str(request))
+    request, why = collect_form({"image": "abc", "workflow": "07_photo_thepit",
+                                 "positive_override": "  "}, meta)
+    check("пустое переопределение positive — отказ", request is None, why)
+    request, why = collect_form({"image": "abc", "workflow": "нет_такой"}, meta)
+    check("неизвестная сборка — отказ", request is None and why, why)
+
+    src = (V2 / "collect.py").read_text(encoding="utf-8")
+    check("collect.py без NiceGUI", "nicegui" not in src)
+
+
+def test_labels_same_as_old_page():
+    print("\n29) подписи V2 совпадают со старой страницей")
+    check("этапы совпадают", labels.STAGE_LABEL == web_ui.STAGE_LABEL,
+          str(set(labels.STAGE_LABEL.items()) ^ set(web_ui.STAGE_LABEL.items())))
+    check("роли LoRA совпадают", labels.ROLE_LABEL == web_ui.ROLE_LABEL)
+    check("очередь ComfyUI не подписана «в очереди»",
+          labels.STAGE_LABEL["comfy_queue"] != labels.STAGE_LABEL["queued"],
+          labels.STAGE_LABEL["comfy_queue"])
+    check("состояния страницы покрывают спецификацию",
+          set(labels.STATUS_LABEL) >= {"empty", "queued", "running", "described",
+                                       "done", "partial", "failed", "expired",
+                                       "blocked"},
+          str(sorted(labels.STATUS_LABEL)))
+
+
+def test_push_from_job():
+    print("\n30) задание будит страницу, а не страница опрашивает задание")
+    seen = []
+    saved = jobs.run_job
+
+    def listener(rev, job_id):
+        seen.append((rev, job_id))
+
+    def fake(req, emit=None):
+        emit({"seq": 1, "t": 0.1, "stage": "start", "message": "", "data": {}})
+        emit({"seq": 2, "t": 0.2, "stage": "done", "message": "", "data": {}})
+        return jobs.JobResult(ok=True, code=0, stage="done")
+
+    svc = JobService(jobs_root=TMP / "push_jobs")
+    try:
+        check("повторный watch не оборачивает пул дважды",
+              push.watch(svc) is svc and push.watch(svc) is svc
+              and isinstance(svc._pool, push._Pool), str(type(svc._pool)))
+        jobs.run_job = fake
+        push.hub.subscribe(listener)
+        uid, _ = svc.save_upload("photo.png", _png_bytes())
+        job = svc.submit(jobs.JobRequest(image="", workflow="07_photo_thepit",
+                                         subject="adult woman"), upload_id=uid)
+        svc.wait(job.id, timeout=20)
+        check("оба шага дошли подписчику",
+              [rev for rev, _ in seen] == [1, 2], str(seen))
+        check("id задания в патче тот же", {jid for _, jid in seen} == {job.id},
+              str(seen))
+        check("снапшот сервиса не пострадал от обёртки",
+              len(svc.snapshot(job.id)["events"]) == 2, str(svc.snapshot(job.id)["events"]))
+    finally:
+        jobs.run_job = saved
+        push.hub.unsubscribe(listener)
+        svc.shutdown()
+
+
+
 def main():
     try:
         test_catalog_fields()
@@ -1591,6 +1801,10 @@ def main():
         test_past_jobs_swept()
         test_upload_headers()
         test_openai_service_health()
+        test_theme_tokens()
+        test_collect_form()
+        test_labels_same_as_old_page()
+        test_push_from_job()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
