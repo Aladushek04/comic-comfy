@@ -36,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import settings
+import tagger
 
 LM = os.environ.get("LM_URL") or "http://127.0.0.1:1234"
 COMFY = settings.COMFY_URL
@@ -393,6 +394,44 @@ def with_adult(subject):
         if "man" not in first and "woman" not in first:
             tags[0] = tags[0] + (" man" if man else " woman")
     return ", ".join(tags)
+
+
+def enrich_subject(desc, image_path, warn=True):
+    """Дописывает к subject детали, которые видит теггер, а VLM пропустил.
+
+    Метка addons делает операцию идемпотентной: запись с текущей версией теггера
+    второй раз не считается, а старая запись без метки дозаполняется на месте —
+    без обращения к VLM и без потери описания.
+    """
+    if (desc.get("addons") or "") == tagger.VERSION:
+        return desc.get("subject", "")
+    found = tagger.tags(str(image_path), warn=warn)
+    if found.get("skipped"):
+        print(f"   теги не добавлены: {found['skipped']}")
+        return desc.get("subject", "")
+    before = [p.strip() for p in str(desc.get("subject", "")).split(",") if p.strip()]
+    after = tagger.add_to_subject(desc.get("subject", ""), found["tags"])
+    added = [p.strip() for p in after.split(",") if p.strip() and p.strip() not in before]
+    desc["addon_tags"] = added
+    desc["addons"] = tagger.VERSION
+    if found.get("size"):
+        desc["addon_size"] = found["size"]
+    desc["subject"] = after
+    if added:
+        print("   теггер добавил:", ", ".join(added))
+    return desc["subject"]
+
+
+def apply_tags(desc, image_path, no_tags=False, dry_run=False):
+    """Теггер в конвейере: выключатель, ленивый dry-run и снятие своих добавок."""
+    if no_tags:
+        # Теги могли прийти из кэша: --no-tags снимает ровно их, а не весь subject.
+        return tagger.strip_from_subject(desc.get("subject", ""), desc.get("addon_tags") or [])
+    if dry_run and (desc.get("addons") or "") != tagger.VERSION:
+        # --dry-run обещает не грузить модели; теггер — тоже модель, пусть и на CPU.
+        print("   теги не считаю: --dry-run не грузит модели")
+        return desc.get("subject", "")
+    return enrich_subject(desc, image_path)
 
 
 def extract_json(text):
@@ -1284,6 +1323,13 @@ def run_batch(args, workflow):
             desc["subject"] = (desc["subject"].rstrip(", ") + ", " + args.scene).strip(", ")
 
         desc["subject"] = with_adult(desc.get("subject", ""))
+        if desc["subject"]:
+            before = desc["subject"]
+            desc["subject"] = apply_tags(desc, str(f), args.no_tags, args.dry_run)
+            # Дозаполнили кэш этого фото — перезапишем. Ручное описание и пресет
+            # в кэш не пишем: там его быть не должно (пункт 0.11.2 в AGENTS).
+            if cached and not args.no_tags and not args.dry_run and desc["subject"] != before:
+                fresh = True
         if not desc["subject"]:
             print("   пустое описание — пропускаю")
             skipped.append(f.name)
@@ -1365,7 +1411,7 @@ def build_request(a, workflow):
         negative_extra=a.negative_extra, negative_drop=a.negative_drop,
         denoise=a.denoise, cn_strength=a.cn_strength, style_weight=a.style_weight,
         seed=a.seed, force=a.force, recheck=a.recheck, keep_llm=a.keep_llm,
-        unload_all=a.unload_all, comfy=a.comfy,
+        unload_all=a.unload_all, comfy=a.comfy, tags=not a.no_tags,
         generate=a.generate and not a.dry_run,
         dry_run=a.dry_run, save_preset=a.save_preset, write_cache=True,
     )
@@ -1397,6 +1443,8 @@ def main():
     ap.add_argument("--save-preset", help="сохранить текущее описание в библиотеку под этим именем")
     ap.add_argument("--recheck", action="store_true",
                     help="после генерации проверить кадр моделью и один раз дописать негатив")
+    ap.add_argument("--no-tags", action="store_true",
+                    help="не дописывать в subject теги WD14-теггера")
     ap.add_argument("--keep-llm", action="store_true")
     ap.add_argument("--unload-all", action="store_true",
                     help="выгрузить из LM Studio все модели, а не только свою (трогает чужие задачи)")

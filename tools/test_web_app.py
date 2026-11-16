@@ -35,6 +35,10 @@ from webapp import catalog
 from webapp.service import JobService, PNG_SIGNATURE, UploadError
 from webapp.state import fmt_setting, missing_job_text, pass_steps
 
+# Теггер в проверках не нужен: его логика проверяется в test_photo_prompt.py,
+# а 1.7 ГБ моделей и лишние секунды на кадр здесь ни к чему.
+os.environ.setdefault("COMIC_TAGGER", "off")
+
 TMP = Path(tempfile.mkdtemp(prefix="comic_web_test_"))
 passed, failed = [], []
 

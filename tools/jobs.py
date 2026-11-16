@@ -54,6 +54,7 @@ class JobRequest:
     generate: bool = True
     dry_run: bool = False
     write_cache: bool = True              # ручные правки в кэш не пишутся
+    tags: bool = True                     # дописывать теги WD14-теггера в subject
     client_id: str | None = None
     start_comfy: bool = False             # поднять headless ComfyUI после фазы описания
 
@@ -145,6 +146,7 @@ def run_job(req, emit=None):
     result = JobResult()
     desc = None
     came_from_llm = False
+    from_cache = False
     scene_failed = False
     model = req.model
     t_desc = t_unload = 0.0
@@ -170,6 +172,7 @@ def run_job(req, emit=None):
                          else pp.read_cache(str(req.image)))
             if cached:
                 desc = cached
+                from_cache = True
                 out("cache", f"0) описание из кэша "
                              f"{pp.cache_path(str(req.image), req.scene or None).name} "
                              f"(--force чтобы пересмотреть фото)", cache=True)
@@ -232,6 +235,14 @@ def run_job(req, emit=None):
 
         # ---- 2. Кэш пишем до флагов командной строки --------------------
         desc["subject"] = pp.with_adult(desc.get("subject", ""))
+        if desc["subject"]:
+            before = desc["subject"]
+            desc["subject"] = pp.apply_tags(desc, str(req.image),
+                                            no_tags=not req.tags, dry_run=req.dry_run)
+            # Теги дозаполнили готовый кэш — его надо перезаписать. Пресет и ручной
+            # ввод в кэш фото не пишем: иначе они осядут в нём навсегда.
+            if from_cache and req.tags and not req.dry_run and desc["subject"] != before:
+                came_from_llm = True
         if came_from_llm and not req.dry_run and req.write_cache and desc["subject"].strip():
             out("cache_write", "   сохранено: " + str(pp.write_cache(
                 str(req.image), desc, req.scene or None)), cache=True)

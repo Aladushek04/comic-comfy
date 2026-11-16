@@ -42,6 +42,10 @@ passed, failed = [], []
 
 st.utf8_streams()      # кириллица и в консоли, и в пайпе
 
+# Теггер в проверках не нужен: 1.7 ГБ моделей и 2 с на фото. Отдельный тест
+# подменяет pp.tagger.tags напрямую и проверяет саму логику добавки.
+os.environ.setdefault("COMIC_TAGGER", "off")
+
 
 def capture(fn):
     """Выполняет fn, возвращает (результат, весь stdout)."""
@@ -236,7 +240,7 @@ def batch_args(folder, **over):
         model=None, subject=None, no_llm=False, from_json=None, preset=None, save_preset=None,
         recheck=False, keep_llm=False, comfy=None, negative_extra="", negative_drop="",
         denoise=None, style_weight=None, seed=7, force=False, dry_run=False, generate=True,
-        unload_all=False, cn_strength=None,
+        unload_all=False, cn_strength=None, no_tags=False,
     )
     for k, v in over.items():
         setattr(ns, k, v)
@@ -1322,6 +1326,116 @@ def test_default_model():
         st.LM_MODEL = saved
 
 
+def test_tagger_addon():
+    """30) теггер дописывает детали, не дублирует и умеет отключаться."""
+    print("\n30) теггер дописывает детали в subject")
+    img = TMP / "tagger" / "photo.png"
+    make(img, (12, 34, 56))
+    real_tags = pp.tagger.tags
+    calls = []
+
+    def fake_tags(image_path, warn=True):
+        calls.append(str(image_path))
+        return {"tags": ["large breasts", "thighhighs", "jewelry", "cosplay"],
+                "size": "large breasts", "version": pp.tagger.VERSION}
+
+    try:
+        pp.tagger.tags = fake_tags
+        desc = {"subject": "adult woman, red dress, sitting on a bed"}
+        subject = pp.enrich_subject(desc, str(img))
+        check("теги встали после персоны",
+              subject.startswith("adult woman, large breasts, thighhighs, jewelry"), subject)
+        check("мусор cosplay отброшен", "cosplay" not in subject, subject)
+        check("в addon_tags только добавленное",
+              desc.get("addon_tags") == ["large breasts", "thighhighs", "jewelry"],
+              str(desc.get("addon_tags")))
+        check("метка версии записана", desc.get("addons") == pp.tagger.VERSION,
+              str(desc.get("addons")))
+
+        before = len(calls)
+        again = pp.enrich_subject(desc, str(img))
+        check("повтор не зовёт теггер", len(calls) == before, f"вызовов {len(calls) - before}")
+        check("повтор не меняет subject", again == subject, again)
+
+        desc2 = {"subject": "adult woman, large breasts with dark areolas, black lace top"}
+        subject2 = pp.enrich_subject(desc2, str(img))
+        check("размер не продублирован, когда VLM его уже назвал",
+              subject2.count("breasts") == 1, subject2)
+
+        stripped = pp.apply_tags(desc, str(img), no_tags=True)
+        check("--no-tags снимает ровно свои теги",
+              "thighhighs" not in stripped and "jewelry" not in stripped
+              and stripped.startswith("adult woman, red dress"), stripped)
+
+        before = len(calls)
+        pp.apply_tags({"subject": "adult woman, plain dress"}, str(img), dry_run=True)
+        check("--dry-run не зовёт теггер", len(calls) == before, f"вызовов {len(calls) - before}")
+
+        pp.tagger.tags = lambda image_path, warn=True: {
+            "tags": [], "size": "", "version": pp.tagger.VERSION, "skipped": "нет моделей"}
+        desc4 = {"subject": "adult woman, plain dress"}
+        subject4 = pp.enrich_subject(desc4, str(img))
+        check("без модели subject не тронут", subject4 == "adult woman, plain dress", subject4)
+        check("без модели метка не ставится", not desc4.get("addons"), str(desc4.get("addons")))
+
+        pp.tagger.tags = real_tags
+        os.environ["COMIC_TAGGER"] = "off"
+        empty = real_tags(str(img))
+        check("COMIC_TAGGER=off не грузит модель",
+              empty["tags"] == [] and bool(empty.get("skipped")), str(empty))
+        check("половой тег на низкой уверенности не проходит",
+              not pp.tagger.confident("female pubic hair", 0.3)
+              and pp.tagger.confident("female pubic hair", 0.9))
+        check("обычный тег проходит на пороге 0.25",
+              pp.tagger.confident("thighhighs", 0.25))
+        check("glasses — аксессуар, а не анатомия из-за 'ass'",
+              pp.tagger.bucket_of("glasses") == "аксессуар", pp.tagger.bucket_of("glasses"))
+        check("bathrobe — одежда, а не прочее",
+              pp.tagger.bucket_of("bathrobe") == "одежда/материал", pp.tagger.bucket_of("bathrobe"))
+        check("общий тег уступает подробному",
+              pp.tagger.drop_redundant(["breasts", "large breasts"]) == ["large breasts"],
+              str(pp.tagger.drop_redundant(["breasts", "large breasts"])))
+        check("халат не превращается в платье",
+              "white dress" not in pp.tagger.add_to_subject(
+                  "adult woman, satin robe, bare legs", ["white dress"]),
+              pp.tagger.add_to_subject("adult woman, satin robe, bare legs", ["white dress"]))
+        check("каблук не дублируется синонимом",
+              "high heels" not in pp.tagger.add_to_subject(
+                  "adult woman, red dress, strappy heels", ["high heels"]),
+              pp.tagger.add_to_subject("adult woman, red dress, strappy heels", ["high heels"]))
+        check("чулки к платью добавляются — другой слот",
+              "thighhighs" in pp.tagger.add_to_subject(
+                  "adult woman, red dress", ["thighhighs"]))
+    finally:
+        pp.tagger.tags = real_tags
+        os.environ["COMIC_TAGGER"] = "off"
+
+
+def test_tagger_does_not_pollute_cache():
+    """31) ручное описание не оседает в кэше фото из-за добавленных тегов."""
+    print("\n31) теги не затаскивают ручное описание в кэш")
+    img = TMP / "manual" / "photo.png"
+    make(img, (40, 50, 60))
+    saved = pp.tagger.tags
+    pp.tagger.tags = lambda image_path, warn=True: {
+        "tags": ["thighhighs"], "size": "", "version": pp.tagger.VERSION}
+    cache = pp.cache_path(str(img))
+    try:
+        cache.unlink(missing_ok=True)
+        req = jobs.JobRequest(image=str(img), workflow="07_photo_thepit",
+                              subject="adult woman, red dress", generate=False,
+                              write_cache=True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            res = jobs.run_job(req)
+        check("ручное описание: кэш не создан", not cache.exists(), str(cache))
+        check("ручное описание: теги в кадре есть",
+              "thighhighs" in (res.description or {}).get("subject", ""),
+              str((res.description or {}).get("subject"))[:120])
+    finally:
+        pp.tagger.tags = saved
+        cache.unlink(missing_ok=True)
+
+
 def main():
     patch_roots()
     try:
@@ -1353,6 +1467,8 @@ def main():
         test_passport_not_lost()
         test_style_prompts_consistent()
         test_default_model()
+        test_tagger_addon()
+        test_tagger_does_not_pollute_cache()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

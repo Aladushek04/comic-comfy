@@ -92,6 +92,7 @@ def start_app(lm, comfy, port, log):
         "COMFY_OUTPUT": str(TMP / "output"),
         "COMFY_INPUT": str(TMP / "input"),
         "COMIC_THEME_FILE": str(TMP / "theme.json"),
+        "COMIC_TAGGER": "off",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1",
     })

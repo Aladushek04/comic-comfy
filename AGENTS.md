@@ -46,6 +46,12 @@
 - Дизайн и тайминги: `G:\AI\comic-comfy\docs\2026-11-12-comic-stack-design.md`.
 - Оркестрация задания: `tools\jobs.py` — общий код CLI и страницы: описание, сцена, выгрузка VLM,
   `/prompt`, `/history`, `run.json`, `recheck`. Отдаёт события (этап, время, данные) подписчику.
+- Теггер WD14: `tools\tagger.py` — дописывает в `subject` детали, которых нет в описании VLM
+  (размер груди, ареолы, каблук, украшения). Основной голос `swinv2`, размер груди —
+  `eva02-large`; модели в `out\models\tagger`, ONNX на CPU, ~2.6 с на фото, видеопамять не
+  трогает. `--no-tags` выключает, `COMIC_TAGGER=off` — для проверок. Стенд замера:
+  `tools\tagger_bench.py` + `tools\tagger_compare.py`, отчёты в `out\bench\`.
+  Решение и пороги — `docs\2026-11-16-tagger-addon-design.md`.
 - Веб-интерфейс: `webapp\` (`ui.py` — форма на NiceGUI, `service.py` — очередь и состояние,
   `catalog.py` — сборки, `meta.fields`, `/object_info`, `state.py` — чистые правила шагов и
   подписей), запуск `ComicWeb.cmd` / `ComicWeb.ps1` / `webapp\run.py`, зависимости
@@ -264,7 +270,25 @@ ComfyUI не трогает. Без готового описания (кэш, `
    `verify`. Четвёртое: `settings.utf8_streams()` в точках входа —
    в пайп Python пишет в кодировке локали (cp1252), и `print` с кириллицей падал с
    `UnicodeEncodeError`; без этого команды из README работают только с `PYTHONIOENCODING`.
-   Проверка: `python tools\test_photo_prompt.py` (208) и `python tools\test_web_app.py` (176).
+   Проверка: `python tools\test_photo_prompt.py` (241) и `python tools\test_web_app.py` (176).
+
+0.16. **Теггер: порог, полка и кэш — три места, где легко соврать себе.**
+   Первое: WD14 v3 ждёт float32 **BGR в шкале 0..255**. С делением на 255 модель видит
+   почти чёрный кадр и выдаёт `monochrome`/`greyscale`/`no_humans` на любое фото, причём
+   почти одинаково на всех — так и выглядит симптом «теги не зависят от кадра».
+   Второе: полка определяется по слову, а не по подстроке — иначе `glasses` попадает в
+   анатомию из-за `ass`, `bathrobe` не попадает никуда, а `thighhighs` мимо одежды.
+   Третье: общий тег уступает подробному (`breasts` при `large breasts`, `dress` при
+   `white dress`, `piercing` при `navel piercing`), иначе подробный тратит слот из 12.
+   Плюс слоты одежды: к «satin robe» не дописывается `white dress`, к «strappy heels» —
+   `high heels`; чулки при этом добавляются, у них свой слот.
+   Четвёртое: половые теги и тон кожи проходят только при 0.6, остальное при 0.25:
+   ложный `dark skin` перекрашивает персонажа, ложный `pubic hair` добавляет наготы,
+   и оба видны сразу. Пятое: метка `addons` в кэше делает добавку идемпотентной, запись
+   без метки дозаполняется на месте без обращения к VLM; `--no-tags` снимает ровно
+   `addon_tags`, `--dry-run` теггер не зовёт. Пропорций (`thick thighs`, `wide hips`,
+   `thighs`) WD14 не выдаёт ни на одном кадре — телосложение остаётся за VLM.
+   Проверка: `python tools\test_photo_prompt.py`, пункты 30–31.
 
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
