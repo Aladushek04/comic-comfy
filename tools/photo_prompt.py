@@ -846,9 +846,12 @@ def workflow_from_file(name):
     return best
 
 
+OUTCOMES = ("unknown", "accepted", "rejected", "refined", "cancelled")
+
+
 def save_run(image_path, workflow, desc, seed, denoise, name,
              cn_strength=None, style_weight=None, overrides=None, refined=False,
-             positive=None, negative=None, settings=None):
+             positive=None, negative=None, settings=None, outcome="unknown"):
     """Складывает кадр и его паспорт в папку out/<фото>_<хэш>/.
 
     Сборка пишется в каждый кадр, а не одна на папку: в одной папке лежат кадры
@@ -863,11 +866,17 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
     `settings` — применённые настройки сэмплера из `build_payload`: шаги, cfg,
     сэмплер и планировщик. По аргументам их не восстановить: `--denoise` и поля
     формы правят граф на лету.
+    `outcome` — метка исхода: по умолчанию `unknown`, повторный кадр recheck
+    помечается `refined`. `accepted`/`rejected` ставит действие пользователя в
+    галерее, `cancelled` — отмена. Метка не из `OUTCOMES` — отказ, а не запись
+    в паспорт чего попало.
     `None` означает «как в сборке».
 
     Возвращает папку или None, если кадра нет в OUTPUT_DIR: паспорт на
     несуществующий файл хуже, чем отсутствие паспорта.
     """
+    if outcome not in OUTCOMES:
+        raise PipelineError(f"метка исхода {outcome!r} не из списка {', '.join(OUTCOMES)}")
     if not name:
         print("   паспорт не пишу: ComfyUI не назвал файл")
         return None
@@ -912,6 +921,9 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
         # Оба прохода: у 07 главный 0.75/30 и второй 0.3/15. По одному `denoise`
         # не видно, что кадр сделан двумя сэмплерами.
         "passes": (settings or {}).get("passes"),
+        # Исход кадра: по умолчанию unknown, а не accepted — принял кадр человек,
+        # и до его решения паспорт не имеет права это утверждать.
+        "outcome": outcome,
     })
     book.pop("workflow", None)
     book["workflows"] = sorted({r["workflow"] for r in book["runs"] if r.get("workflow")})

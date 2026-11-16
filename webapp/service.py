@@ -370,7 +370,7 @@ class JobService:
                            ("file", "folder", "seed", "workflow", "cn_strength",
                             "style_weight", "denoise", "refined", "subject", "positive",
                             "negative", "steps", "cfg", "sampler", "scheduler",
-                            "passes")})
+                            "passes", "outcome")})
         desc = (result.description if result else None) or None
         return {
             "id": job.id,

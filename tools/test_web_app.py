@@ -640,6 +640,8 @@ def test_passport_sampler_settings():
                   run.get("passes") == [{"denoise": 0.75, "steps": 30},
                                         {"denoise": 0.3, "steps": 15}],
                   str(run.get("passes")))
+            check("обычный кадр не объявлен принятым", run.get("outcome") == "unknown",
+                  str(run.get("outcome")))
             frame = (snap["frames"] or [{}])[0]
             check("снимок задания отдаёт настройки кадра",
                   frame.get("steps") == 30 and frame.get("cfg") == 6.0
@@ -649,6 +651,8 @@ def test_passport_sampler_settings():
                   frame.get("passes") == [{"denoise": 0.75, "steps": 30},
                                           {"denoise": 0.3, "steps": 15}],
                   str(frame.get("passes")))
+            check("снимок задания отдаёт метку исхода", frame.get("outcome") == "unknown",
+                  str(frame.get("outcome")))
     finally:
         lm.stop()
         comfy.stop()
@@ -1126,6 +1130,9 @@ def test_recheck_frames():
             check("в run.json оба кадра с меткой",
                   [x.get("refined") for x in book["runs"]] == [False, True],
                   str([x.get("refined") for x in book["runs"]]))
+            check("исход кадров размечен",
+                  [x.get("outcome") for x in book["runs"]] == ["unknown", "refined"],
+                  str([x.get("outcome") for x in book["runs"]]))
             check("промпт уточнённого кадра содержит добавку",
                   "silver bracelet" in book["runs"][-1]["subject"],
                   book["runs"][-1]["subject"][:100])
@@ -1138,6 +1145,9 @@ def test_recheck_frames():
             check("снимок задания отдаёт оба кадра",
                   len(snap["frames"]) == 2
                   and snap["frames"][-1].get("refined") is True, str(snap["frames"])[:200])
+            check("снимок задания отдаёт метки исходов",
+                  [f.get("outcome") for f in snap["frames"]] == ["unknown", "refined"],
+                  str([f.get("outcome") for f in snap["frames"]]))
             check("download-имена привязаны к заданию",
                   all(Path(f["file"]).name for f in snap["frames"]), str(snap["frames"]))
     finally:

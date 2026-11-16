@@ -348,6 +348,7 @@ def run_job(req, emit=None):
                         "refined": False, "subject": desc.get("subject", ""),
                         "positive": report.get("positive", ""),
                         "negative": report.get("negative", ""),
+                        "outcome": "unknown",
                         **_sampler_fields(report),
                     })
                     result.folders.append(str(folder))
@@ -496,7 +497,7 @@ def _one_more(req, desc, out, seed=None, positive=None):
                          overrides=req.overrides or None, refined=True,
                          positive=report.get("positive"),
                          negative=report.get("negative"),
-                         settings=report.get("settings"))
+                         settings=report.get("settings"), outcome="refined")
     if folder is None:
         return False, None
     out("save", f"   кадр сохранён: {name2}", file=name2, folder=str(folder),
@@ -509,5 +510,6 @@ def _one_more(req, desc, out, seed=None, positive=None):
         # Фактический запрос: для полного переопределения это он, а не subject.
         "positive": report.get("positive") or refined_positive or "",
         "negative": report.get("negative", ""),
+        "outcome": "refined",
         **_sampler_fields(report),
     }

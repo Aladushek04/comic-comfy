@@ -1220,6 +1220,88 @@ def test_passport_records_passes():
         pp.ROOT, pp.OUTPUT_DIR = saved
 
 
+def test_passport_records_outcome():
+    print("\n24b) run.json: метка исхода кадра")
+    img = TMP / "outcome.png"
+    make(img, (21, 22, 23))
+    saved = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT = TMP / "root_outcome"
+    pp.OUTPUT_DIR = TMP / "out_outcome"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        folder = pp.ROOT / "out" / pp.image_tag(img)
+        folder.mkdir(parents=True)
+        # старый паспорт: метки исхода в нём нет
+        (folder / "run.json").write_text(json.dumps({"runs": [
+            {"workflow": "07_photo_thepit", "seed": 1, "denoise": None,
+             "file": "07_photo_thepit_00030_.png", "subject": "x", "negative_extra": ""},
+        ]}), encoding="utf-8")
+
+        for name, kw in (("07_photo_thepit_00031_.png", {}),
+                         ("07_photo_thepit_00032_.png", {"outcome": "refined"})):
+            (pp.OUTPUT_DIR / name).write_bytes(b"png")
+            with contextlib.redirect_stdout(io.StringIO()):
+                pp.save_run(str(img), "07_photo_thepit",
+                            {"subject": "x", "negative_extra": ""}, 1, 0.75, name, **kw)
+        runs = json.loads((folder / "run.json").read_text(encoding="utf-8"))["runs"]
+        check("по умолчанию метка unknown", runs[1].get("outcome") == "unknown",
+              str(runs[1].get("outcome")))
+        check("явная метка сохраняется", runs[2].get("outcome") == "refined",
+              str(runs[2].get("outcome")))
+        check("старая запись читается и не переписана",
+              "outcome" not in runs[0] and runs[0]["denoise"] is None, str(runs[0]))
+
+        (pp.OUTPUT_DIR / "07_photo_thepit_00033_.png").write_bytes(b"png")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                pp.save_run(str(img), "07_photo_thepit",
+                            {"subject": "x", "negative_extra": ""}, 1, 0.75,
+                            "07_photo_thepit_00033_.png", outcome="почти принят")
+            check("метка не из списка — отказ", False, "запись прошла")
+        except pp.PipelineError as e:
+            check("метка не из списка — отказ", "unknown" in str(e), str(e))
+
+        # recheck: повторный кадр получает refined, основной остаётся unknown
+        saved2 = (pp.lm_models, pp.pick_model, pp.recheck, pp.free_llm, pp.comfy_free,
+                  pp.resolve_comfy, pp.generate)
+        seen = {"n": 0}
+
+        def fake_generate(*a, **k):
+            seen["n"] += 1
+            name = f"07_photo_thepit_0004{seen['n']}_.png"
+            (pp.OUTPUT_DIR / name).write_bytes(b"png")
+            report = k.get("report")
+            if isinstance(report, dict):
+                report.update({"positive": "adult woman, plain", "negative": "bad"})
+            return True, name
+
+        pp.lm_models = lambda strict=True: {}
+        pp.pick_model = lambda resp, wanted: "test-model"
+        pp.recheck = lambda desc, path, model: "silver bracelet"
+        pp.free_llm = lambda model, unload_all: []
+        pp.comfy_free = lambda: None
+        pp.resolve_comfy = lambda c=None: "http://stub"
+        pp.generate = fake_generate
+        try:
+            r = jobs.run_job(jobs.JobRequest(
+                image=str(img), workflow="07_photo_thepit", subject="adult woman, plain",
+                recheck=True, seed=7))
+        finally:
+            (pp.lm_models, pp.pick_model, pp.recheck, pp.free_llm, pp.comfy_free,
+             pp.resolve_comfy, pp.generate) = saved2
+        check("recheck сделал два кадра", r.ok and len(r.frames) == 2,
+              f"{r.ok} {len(r.frames)} {r.error}")
+        check("кадры задания размечены исходом",
+              [f.get("outcome") for f in r.frames] == ["unknown", "refined"],
+              str([f.get("outcome") for f in r.frames]))
+        book = json.loads((folder / "run.json").read_text(encoding="utf-8"))["runs"]
+        check("метки дошли до паспорта",
+              [x.get("outcome") for x in book[-2:]] == ["unknown", "refined"],
+              str([x.get("outcome") for x in book[-2:]]))
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved
+
+
 def test_atomic_json():
     print("\n25) JSON пишется целиком или не пишется вовсе")
     img = TMP / "root" / "atomic.png"
@@ -1736,6 +1818,7 @@ def main():
         test_passport_records_generation_settings()
         test_passport_records_sampler_settings()
         test_passport_records_passes()
+        test_passport_records_outcome()
         test_atomic_json()
         test_utf8_streams()
         test_passport_not_lost()
