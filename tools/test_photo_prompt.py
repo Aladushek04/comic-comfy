@@ -1854,6 +1854,48 @@ def test_config_priority():
           cfg.comfy_url)
 
 
+def test_settings_adapter():
+    """35) settings — тонкий адаптер над Config: прежние имена на месте."""
+    print("\n35) settings поверх Config")
+    from comic.config import Config
+
+    cfg = getattr(st, "CONFIG", None)
+    check("settings.CONFIG — снимок Config", isinstance(cfg, Config), type(cfg).__name__)
+    if cfg is None:
+        return
+    check("пути берутся из снимка",
+          st.MODELS_DIR == cfg.models and st.INPUT_DIR == cfg.input
+          and st.OUTPUT_ROOT == cfg.output and st.SHARED_DIR == cfg.shared,
+          f"{st.MODELS_DIR} {st.INPUT_DIR} {st.OUTPUT_ROOT} {st.SHARED_DIR}")
+    check("OUTPUT_DIR и WF_DIR выведены из снимка",
+          st.OUTPUT_DIR == cfg.output / "comic" and st.WF_DIR == cfg.root / "workflows",
+          f"{st.OUTPUT_DIR} {st.WF_DIR}")
+    check("ROOT, COMFY_URL, LM_URL, LM_MODEL из снимка",
+          st.ROOT == cfg.root and st.COMFY_URL == cfg.comfy_url
+          and st.LM_URL == cfg.lm_url and st.LM_MODEL == (cfg.lm_model or ""),
+          f"{st.ROOT} {st.COMFY_URL} {st.LM_URL} {st.LM_MODEL}")
+    check("_PATH — прежний словарь resolve()",
+          sorted(st._PATH) == ["input", "lm", "lm_model", "models", "output", "root",
+                               "shared", "url"],
+          str(sorted(st._PATH)))
+
+    yaml = TMP / "adapter.yaml"
+    yaml.write_text("comic_shared:\n  base_path: Q:\\models\n", encoding="utf-8")
+    paths = TMP / "adapter_paths.json"
+    paths.write_text(json.dumps({"input": "R:\\in", "output": "R:\\out",
+                                 "lm_model": "pinned@iq3_m",
+                                 "lm_url": "http://127.0.0.1:8765"}), encoding="utf-8")
+    got = st.resolve(env={}, yaml_path=yaml, paths_path=paths)
+    want = Config.load(env={}, yaml_path=yaml, paths_path=paths)
+    check("resolve() считает то же, что Config.load()",
+          got["models"] == want.models and got["input"] == want.input
+          and got["output"] == want.output and got["url"] == want.comfy_url
+          and got["lm"] == want.lm_url and got["lm_model"] == (want.lm_model or ""),
+          str(got))
+    check("utf8_streams и read_paths на месте",
+          callable(st.utf8_streams) and st.read_paths(paths).get("input") == "R:\\in")
+
+
 def main():
     patch_roots()
     try:
@@ -1893,6 +1935,7 @@ def main():
         test_openai_provider()
         test_eye_colour_zoom()
         test_config_priority()
+        test_settings_adapter()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

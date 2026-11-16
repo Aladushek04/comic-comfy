@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Корень репозитория добавит settings при импорте ниже: это единственный такой insert.
 
 import comfy_launch as cl
 import jobs

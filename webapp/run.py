@@ -12,9 +12,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-for _p in (str(ROOT), str(ROOT / "tools")):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# Корень репозитория в sys.path добавляет tools\settings.py — единственное место,
+# где это делается. Здесь нужен только tools: из него импортируется settings.
+_TOOLS = ROOT / "tools"
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
 
 
 def port_busy(host, port):

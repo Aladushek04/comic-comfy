@@ -30,7 +30,7 @@ os.environ["COMFY_OUTPUT"] = str(TMP / "output")
 os.environ["COMFY_INPUT"] = str(TMP / "input")
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
-for path in (str(ROOT / "tools"), str(ROOT)):
+for path in (str(ROOT / "tools"),):
     if path not in sys.path:
         sys.path.insert(0, path)
 
