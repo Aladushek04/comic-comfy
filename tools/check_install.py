@@ -40,6 +40,9 @@ LOADERS = {
     "UnetLoaderGGUF": ("diffusion_models", "unet"),
     "UpscaleModelLoader": ("upscale_models",),
     "IPAdapterModelLoader": ("ipadapter",),
+    # Depth Anything 3: нативный узел, файл лежит в `geometry_estimation`
+    # (раздел должен быть в extra_model_paths.yaml, иначе узел его не видит).
+    "LoadDA3Model": ("geometry_estimation",),
 }
 
 # Узлы controlnet_aux: файлы качает сам узел в custom_nodes, не в папку моделей.

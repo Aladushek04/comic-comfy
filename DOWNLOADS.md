@@ -31,6 +31,7 @@ pornmaster и 15 LoRA. Скачивать их заново не нужно — 
 │   ├── detail        hands_xl
 │   └── style         thepit_comic, johnpersons_original, bimbofusion
 ├── controlnet        Union SDXL promax
+├── geometry_estimation  Depth Anything 3 (глубина 07/08)
 ├── ipadapter         ip-adapter-plus
 ├── clip_vision       CLIP-ViT-H
 ├── upscale_models    4x-UltraSharp
@@ -38,6 +39,10 @@ pornmaster и 15 LoRA. Скачивать их заново не нужно — 
 ├── text_encoders     qwen_2.5_vl fp8, qwen3vl_8b int8
 └── vae               qwen_image_vae, qwen_image_2.1_vae
 ```
+
+`geometry_estimation` должен быть прописан в `extra_model_paths.yaml`
+(`geometry_estimation: geometry_estimation`): узел `LoadDA3Model` ищет файл только там,
+а без строки в путях панель ругается «value not in list».
 
 ---
 
@@ -64,6 +69,7 @@ powershell -ExecutionPolicy Bypass -File tools\download-hf.ps1 -Verify
 | `ip-adapter-plus_sdxl_vit-h.safetensors` | ipadapter | 0.79 |
 | `CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors` | clip_vision | 2.35 |
 | `4x-UltraSharp.pth` | upscale_models | 0.06 |
+| `depth_anything_3_mono_large.safetensors` | geometry_estimation | 1.34 |
 | `qwen-image-edit-2511-uncensored-Q4_K_M.gguf` | diffusion_models | 10.86 |
 | `qwen_2.5_vl_7b_fp8_scaled.safetensors` | text_encoders | 8.74 |
 | `qwen_image_vae.safetensors` | vae | 0.24 |
@@ -75,10 +81,12 @@ powershell -ExecutionPolicy Bypass -File tools\download-hf.ps1 -Verify
 
 Размеры в ГБ, как их отдаёт сервер (`-Verify` печатает то же самое).
 
-**Не в списке, потому что качается само:** файлы узлов `comfyui_controlnet_aux` (~1.4 ГБ) —
-`depth_anything_v2_vitl.pth` (~1.25 ГБ) и `dw-ll_ucoco_384_bs5.torchscript.pt` (~0.13 ГБ).
-Узел тянет их при первом прогоне сборок 04 (поза) и 07/08 (глубина) в
-`custom_nodes\comfyui_controlnet_aux\ckpts\`. Нужен офлайн — положи туда заранее.
+**Не в списке, потому что качается само:** файл узла `comfyui_controlnet_aux` для позы —
+`dw-ll_ucoco_384_bs5.torchscript.pt` (~0.13 ГБ). Узел тянет его при первом прогоне сборки 04
+в `custom_nodes\comfyui_controlnet_aux\ckpts\`. Нужен офлайн — положи туда заранее.
+Глубину 07/08 с V2.1a считает Depth Anything 3 (нативные узлы ComfyUI), поэтому
+`depth_anything_v2_vitl.pth` больше не нужен: он остаётся запасным путём для старого
+графа из истории git.
 
 Готовые воркфлоу авторов скрипт кладёт в `workflows\reference\` (эта папка не в git).
 

@@ -21,3 +21,6 @@ comic_shared:
   embeddings: embeddings
   style_models: style_models
   photomaker: photomaker
+  # Depth Anything 3 (нативные узлы ComfyUI) — без этой строки LoadDA3Model
+  # не увидит файл и граф упадёт на «value not in list».
+  geometry_estimation: geometry_estimation

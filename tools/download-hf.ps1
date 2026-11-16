@@ -47,6 +47,10 @@ $pairs = @(
     @{ url = "https://huggingface.co/h94/IP-Adapter/resolve/main/sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors"; dir = "ipadapter"; name = "ip-adapter-plus_sdxl_vit-h.safetensors" },
     @{ url = "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors"; dir = "clip_vision"; name = "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors" },
     @{ url = "https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth"; dir = "upscale_models"; name = "4x-UltraSharp.pth" },
+    # Depth Anything 3: native ComfyUI nodes (comfy_extras/nodes_depth_anything_3.py).
+    # Needs geometry_estimation in extra_model_paths.yaml, otherwise the loader
+    # does not see the file and the graph fails on "value not in list".
+    @{ url = "https://huggingface.co/Comfy-Org/Depth-Anything-3/resolve/main/geometry_estimation/depth_anything_3_mono_large.safetensors"; dir = "geometry_estimation"; name = "depth_anything_3_mono_large.safetensors" },
 
     # ---- Layer 2: Qwen-Image-Edit 2511 uncensored ----
     @{ url = "https://huggingface.co/ChrisColeTech/qwen-image-edit-uncensored-GGUF/resolve/main/split/diffusion_models/qwen-image-edit-2511-uncensored-Q4_K_M.gguf"; dir = "diffusion_models"; name = "qwen-image-edit-2511-uncensored-Q4_K_M.gguf" },
