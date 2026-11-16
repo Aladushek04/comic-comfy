@@ -40,6 +40,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import settings
 import tagger
 from comic import cache  # noqa: E402  — корень репозитория добавляет settings.py
+from comic.prompt import (  # noqa: E402
+    NEG_CORE, NEG_GUARD, SUBJECT_SLOT, PromptBuilder, join_tags,
+)
 
 LM = settings.LM_URL or "http://127.0.0.1:1234"
 
@@ -306,16 +309,9 @@ def rewrite_scene(desc, scene, model):
         print("   сцена не переписалась:", e)
         return None
 
-# ComfyUI режет текст на чанки по 77 токенов и кодирует их подряд (SDTokenizer: batched_tokens),
-# поэтому длинный промпт не обрезается. Проверено токенизатором: GTA-блок — 1 чанк,
-# со субъектом — 2, 120 тегов — 7. Важное всё равно ставим в начало: дальние теги влияют слабее.
-NEG_CORE = ("photorealistic, 3d render, bad anatomy, bad hands, extra fingers, "
-            "watermark, text, signature, blurry, low quality")
-
-NEG_GUARD = "child, loli, shota, underage"
-
-# Плейсхолдер субъекта в шаблоне промпта из build_workflows.py.
-SUBJECT_SLOT = "{{subject}}"
+# Рамка возраста, запасное ядро негатива и плейсхолдер субъекта живут в
+# comic\prompt.py: там же сборка промпта. Здесь только прежние имена — на них
+# ссылаются старые вызовы и проверки.
 
 # Версия промпта описания. Запись кэша помнит, каким промптом она снята: без цвета
 # глаз модель красит радужку случайным насыщенным цветом (чаще всего красным),
@@ -717,26 +713,14 @@ def free_llm(model, unload_everything=False):
     return unload_model(resp, model)
 
 
-def join_tags(*chunks):
-    """Склеивает теги без дублей, сохраняя порядок."""
-    parts, seen = [], set()
-    for chunk in chunks:
-        for tag in str(chunk or "").split(","):
-            t = tag.strip()
-            if t and t.lower() not in seen:
-                seen.add(t.lower())
-                parts.append(t)
-    return ", ".join(parts)
-
-
 def compose_negative(negative_extra, meta=None):
     """Сначала то, что важно подавить на этом фото, потом негатив сборки, потом рамка.
 
     Негатив берётся из графа: у GTA там «night, rain, dark», у bimbo — «white lenses,
     opaque lenses, grey skin». Раньше CLI подменял его своим коротким ядром целиком.
+    Сборка — в comic\prompt.py: обёртка осталась ради прежних имён.
     """
-    base = (meta or {}).get("negative") or NEG_CORE
-    return join_tags(negative_extra, base, NEG_GUARD)
+    return PromptBuilder(meta).negative(negative_extra)
 
 
 def compose_positive(meta, subject, workflow=""):
@@ -746,9 +730,9 @@ def compose_positive(meta, subject, workflow=""):
     промпт, что и панель, вместе со стилевыми настройками сборки. Если meta нет
     (старый .api.json) — собираем из таблицы STYLE_PREFIX, как раньше.
     """
-    tpl = (meta or {}).get("positive_template") or ""
-    if tpl:
-        return join_tags(tpl.replace(SUBJECT_SLOT, str(subject).strip().rstrip(",")))
+    builder = PromptBuilder(meta)
+    if builder.refuse_reason() is None:
+        return builder.positive(subject)
     return join_tags(STYLE_PREFIX.get(workflow, ""), subject, "bold outlines, flat colors")
 
 

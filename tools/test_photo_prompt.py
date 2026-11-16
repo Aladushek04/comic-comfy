@@ -60,6 +60,14 @@ def check(name, cond, detail=""):
     print(("  ok   " if cond else "  FAIL ") + name + (f" — {detail}" if detail and not cond else ""))
 
 
+def first_diff(got, want):
+    """Где две строки разошлись: позиция и кусок вокруг, а не «не равно»."""
+    for i, (a, b) in enumerate(zip(got, want)):
+        if a != b:
+            return f"символ {i}: {got[max(0, i - 30):i + 30]!r} vs {want[max(0, i - 30):i + 30]!r}"
+    return f"длина {len(got)} vs {len(want)}"
+
+
 def make(path, color, size=(240, 180)):
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", size, color).save(path)
@@ -2026,6 +2034,92 @@ def test_cache_wrapper_keys():
     check("пустая сцена — без slug", pp.scene_slug("") == "")
 
 
+def test_prompt_builder():
+    """38) PromptBuilder: промпт кадра собирается побайтно, как в эталоне P0.
+
+    Эталон — out\\v2-baseline\\run.json (кадры, снятые старым кодом до фикса
+    шаблонов). Гейт Task 1: 07_photo_thepit и 08_photo_gta совпадают до байта,
+    иначе сборка промпта «улучшила» то, о чём не просили.
+    """
+    from comic import prompt as cp
+
+    repo = Path(__file__).resolve().parent.parent
+    base = json.loads((repo / "out" / "v2-baseline" / "run.json").read_text(encoding="utf-8"))
+    runs = [r for r in base["runs"] if r["workflow"] in ("07_photo_thepit", "08_photo_gta")]
+    check("эталон: по два кадра в двух сборках", len(runs) == 4, str(len(runs)))
+
+    metas, built = {}, {}
+    for r in runs:
+        wf = r["workflow"]
+        if wf not in metas:
+            data = json.loads((repo / "workflows" / (wf + ".api.json")).read_text(encoding="utf-8"))
+            metas[wf] = data["meta"]
+        got = cp.PromptBuilder(metas[wf], metas[wf].get("fields")).build(
+            r["subject"], r["negative_extra"])
+        built[wf] = got
+        check(f"{wf} сид {r['seed']}: positive побайтно", got.positive == r["positive"],
+              first_diff(got.positive, r["positive"]))
+        check(f"{wf} сид {r['seed']}: negative побайтно", got.negative == r["negative"],
+              first_diff(got.negative, r["negative"]))
+
+    # Рамка возраста: её слова — последнее, что попадает в негатив. `join_tags`
+    # выкидывает уже сказанное, поэтому в хвосте остаётся «underage», а не весь блок.
+    guard = [t.strip() for t in cp.NEG_GUARD.split(",")]
+    for wf, got in built.items():
+        tags = [t.strip() for t in got.negative.split(",")]
+        check(f"{wf}: слова рамки в негативе", all(t in tags for t in guard), got.negative[-120:])
+        check(f"{wf}: рамка замыкает негатив", tags[-1] == guard[-1], tags[-3:])
+
+    # applied — то, что реально применено, и входы, от которых зависит кадр:
+    # предпросмотр обязан передать те же landscape и имя файла, что и генерация.
+    got = cp.PromptBuilder(metas["07_photo_thepit"]).build(
+        "adult woman", "", landscape=True, image_name="photo_ab12.png")
+    check("applied: шаблон из графа",
+          got.applied.get("template") == "meta.positive_template", str(got.applied))
+    check("applied: горизонталь записана", got.applied.get("landscape") is True, str(got.applied))
+    check("applied: имя файла записано",
+          got.applied.get("image_name") == "photo_ab12.png", str(got.applied))
+    check("landscape не меняет текст промпта",
+          got.positive == cp.PromptBuilder(metas["07_photo_thepit"]).positive("adult woman"),
+          first_diff(got.positive, built["07_photo_thepit"].positive))
+
+    # Рамку возраста ставит with_adult до сборки: builder только склеивает.
+    young = cp.PromptBuilder(metas["07_photo_thepit"]).build("girl, short hair")
+    check("builder не подменяет subject: возраст — дело with_adult",
+          "girl" in young.positive and "adult woman" not in young.positive, young.positive[:160])
+
+    # Нет шаблона — отказ, а не догадка: style берётся из графа (аудит, риск 3).
+    empty = cp.PromptBuilder({})
+    check("без meta — причина отказа", bool(empty.refuse_reason()), str(empty.refuse_reason()))
+    try:
+        empty.build("adult woman")
+        check("без meta build отказывает", False)
+    except cp.PromptError as e:
+        check("без meta build отказывает", "positive_template" in str(e), str(e))
+    no_slot = cp.PromptBuilder({"positive_template": "comic book illustration, flat colors"})
+    check("шаблон без {{subject}} — причина отказа",
+          "{{subject}}" in str(no_slot.refuse_reason()), str(no_slot.refuse_reason()))
+    check("годный шаблон — без причины отказа",
+          cp.PromptBuilder(metas["07_photo_gta"] if "07_photo_gta" in metas
+                           else metas["08_photo_gta"]).refuse_reason() is None)
+
+    # Обёртки photo_prompt — тот же builder, чтобы старый код не разошёлся с новым.
+    meta = metas["07_photo_thepit"]
+    subject = runs[0]["subject"]
+    extra = runs[0]["negative_extra"]
+    check("compose_positive идёт через builder",
+          pp.compose_positive(meta, subject) == built["07_photo_thepit"].positive)
+    check("compose_negative идёт через builder",
+          pp.compose_negative(extra, meta) == built["07_photo_thepit"].negative)
+    check("join_tags без дублей", pp.join_tags("a, B", "b, c") == "a, B, c", pp.join_tags("a, B", "b, c"))
+
+    # Старый .api.json без meta: запасной путь по STYLE_PREFIX остаётся.
+    legacy = pp.compose_positive({}, "adult woman, short hair", "07_photo_thepit")
+    check("граф без meta: STYLE_PREFIX на месте", legacy.startswith("comic book illustration"),
+          legacy[:100])
+    check("граф без meta: субъект подставлен", "adult woman, short hair" in legacy, legacy[:160])
+
+
 def main():
     patch_roots()
     try:
@@ -2068,6 +2162,7 @@ def main():
         test_settings_adapter()
         test_cache_schema()
         test_cache_wrapper_keys()
+        test_prompt_builder()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
