@@ -1505,11 +1505,38 @@ def test_openai_provider():
         check("/no_think в тексте запроса", "/no_think" in text, text[:70])
 
         os.environ.pop("LM_THINKING", None)
+        seen.clear()
         pp.describe(str(img), "huihui@q4")
-        check("по умолчанию thinking не трогаем",
+        check("по умолчанию размышления выключены",
+              seen.get("chat_template_kwargs") == {"enable_thinking": False},
+              str(seen.get("chat_template_kwargs")))
+
+        os.environ["LM_THINKING"] = "on"
+        seen.clear()
+        pp.describe(str(img), "huihui@q4")
+        check("LM_THINKING=on возвращает размышления",
               "chat_template_kwargs" not in seen, str(list(seen)))
+        check("с размышлениями /no_think не добавляется",
+              "/no_think" not in seen["messages"][1]["content"][0]["text"])
+
+        attempts = []
+
+        def picky_post(url, payload, timeout=300):
+            attempts.append("chat_template_kwargs" in payload)
+            if "chat_template_kwargs" in payload:
+                raise RuntimeError("HTTP 400: unknown field chat_template_kwargs")
+            return {"choices": [{"message": {"content":
+                    '{"subject":"adult woman, red dress","negative_extra":"","notes":""}'}}]}
+
+        pp.post = picky_post
+        pp._THINK_FIELD = None
+        os.environ.pop("LM_THINKING", None)
+        pp.describe(str(img), "m")
+        check("400 на незнакомое поле: повтор без него", attempts == [True, False], str(attempts))
+        check("поле запомнено как ненужное", pp._THINK_FIELD is False, str(pp._THINK_FIELD))
     finally:
         pp.get, pp.post = saved[0], saved[1]
+        pp._THINK_FIELD = None
         if saved[2] is None:
             os.environ.pop("LM_THINKING", None)
         else:

@@ -15,8 +15,8 @@
   --keep-llm   не выгружать модель (только если хватает памяти)
   --unload-all выгрузить из LM Studio все модели, а не только свою
   --dry-run    показать промпт, ничего не загружая: нужен кэш/пресет/--no-llm
-  --no-think   выключить размышления модели описания (Qwen3: 86 с -> 6 с на фото);
-               то же делает LM_THINKING=off, чтобы это видел и веб-слой
+  --no-think   размышления выключены по умолчанию; флаг оставлен для явности
+  --think      включить размышления (86 с против 6 с на фото); то же делает LM_THINKING=on
   --no-tags    не дописывать в subject теги WD14-теггера
 """
 import argparse
@@ -45,19 +45,45 @@ LM = os.environ.get("LM_URL") or "http://127.0.0.1:1234"
 
 
 def thinking_off():
-    """Размышления Qwen3 стоят дорого: одно фото 86 с и 1934 токена против 5.9 с и 97.
+    """Размышления выключены по умолчанию: одно фото 86 с и 1934 токена против 5.9 с и 97.
 
-    LM_THINKING=off или --no-think выключают их, on включает явно, пусто — не трогаем
-    и оставляем решение серверу (LM Studio сам решает по модели).
+    LM_THINKING=on или --think включают их обратно, off — оставляет выключенными.
+    Поле безобидное: сервер, который его не знает, получает запрос без него
+    (см. post_chat) — так LM Studio на 1234 не ломается.
     """
-    return (os.environ.get("LM_THINKING") or "").strip().lower() in ("off", "0", "no", "false")
+    value = (os.environ.get("LM_THINKING") or "off").strip().lower()
+    return value not in ("on", "1", "yes", "true")
 
 
 def think_payload():
-    """Поля запроса для выключенных размышлений (пусто, если не просили)."""
+    """Поля запроса для выключенных размышлений (пусто, если их разрешили)."""
     if not thinking_off():
         return {}, ""
     return {"chat_template_kwargs": {"enable_thinking": False}}, " /no_think"
+
+
+_THINK_FIELD = None    # None — ещё не знаем, понимает ли сервер chat_template_kwargs
+
+
+def post_chat(payload, timeout=300):
+    """Запрос к сервису описаний с запасным путём без поля размышлений.
+
+    LM Studio и часть сборок llama.cpp отвергают незнакомое поле с 400. Второй
+    запрос без него дешевле, чем упавшее описание, и запоминается до конца прогона.
+    """
+    global _THINK_FIELD
+    if "chat_template_kwargs" in payload and _THINK_FIELD is not False:
+        try:
+            r = post(LM + "/v1/chat/completions", payload, timeout=timeout)
+            _THINK_FIELD = True
+            return r
+        except RuntimeError as e:
+            if "400" not in str(e):
+                raise
+            _THINK_FIELD = False
+            print("   сервер не принял chat_template_kwargs — повторяю без поля")
+            payload = {k: v for k, v in payload.items() if k != "chat_template_kwargs"}
+    return post(LM + "/v1/chat/completions", payload, timeout=timeout)
 COMFY = settings.COMFY_URL
 ROOT = settings.ROOT
 WF_DIR = settings.WF_DIR
@@ -322,7 +348,7 @@ def rewrite_scene(desc, scene, model):
                "messages": [{"role": "user", "content": ask}]}
     payload.update(think_fields)
     try:
-        r = post(LM + "/v1/chat/completions", payload)
+        r = post_chat(payload)
         content = r["choices"][0]["message"].get("content") or ""
         data = extract_json(content)
         if not data:
@@ -609,7 +635,7 @@ def describe(image_path, model):
         payload = dict(base)
         payload["max_tokens"] = budget
         try:
-            r = post(LM + "/v1/chat/completions", payload)
+            r = post_chat(payload)
         except Exception as e:
             last = f"запрос не прошёл: {e}"
             continue
@@ -852,7 +878,7 @@ def recheck(desc, image_path, model):
             ]}],
         }
         payload.update(think_fields)
-        r = post(LM + "/v1/chat/completions", payload, timeout=600)
+        r = post_chat(payload, timeout=600)
         content = r["choices"][0]["message"].get("content") or ""
         data = extract_json(content) or {}
         miss = [t.strip() for t in str(data.get("missing", "")).split(",") if t.strip()]
@@ -1526,7 +1552,9 @@ def main():
     ap.add_argument("--no-tags", action="store_true",
                     help="не дописывать в subject теги WD14-теггера")
     ap.add_argument("--no-think", action="store_true",
-                    help="выключить размышления модели описания (Qwen3: 86 с -> 6 с на фото)")
+                    help="размышления выключены по умолчанию; флаг оставлен для явности")
+    ap.add_argument("--think", action="store_true",
+                    help="включить размышления модели описания (86 с против 6 с на фото)")
     ap.add_argument("--keep-llm", action="store_true")
     ap.add_argument("--unload-all", action="store_true",
                     help="выгрузить из LM Studio все модели, а не только свою (трогает чужие задачи)")
@@ -1549,6 +1577,8 @@ def main():
     # и подмены в проверках — без глобальной переменной и лишних аргументов.
     if a.no_think:
         os.environ["LM_THINKING"] = "off"
+    if a.think:
+        os.environ["LM_THINKING"] = "on"
 
     workflow = resolve_workflow(a.workflow, a.style)
     if a.batch:

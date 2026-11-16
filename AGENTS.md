@@ -295,9 +295,11 @@ ComfyUI не трогает. Без готового описания (кэш, `
 
 0.17. **Размышления и чужой сервис — две вещи, на которых теряется время впустую.**
    Первое: думающая модель на этом же фото тратит 1934 токена и 86 с, а без размышлений —
-   97 токенов и 5.9 с. `--no-think` (или `LM_THINKING=off`) ставит
-   `chat_template_kwargs.enable_thinking=false` и дописывает `/no_think` в текст: без
-   второго поля некоторые сборки llama.cpp поле игнорируют. Второе: `lm_models()`
+   97 токенов и 5.9 с, поэтому `enable_thinking=false` и `/no_think` стоят по умолчанию
+   (`--think` / `LM_THINKING=on` возвращают размышления). Без второго поля некоторые
+   сборки llama.cpp первое игнорируют. Сервер, который не знает `chat_template_kwargs`,
+   отвечает 400 — `post_chat()` повторяет запрос без поля и запоминает это до конца
+   прогона; иначе LM Studio на 1234 сломался бы на первом же фото. Второе: `lm_models()`
    пробует `/api/v1/models` (LM Studio), а при отказе — `/v1/models` и помечает ответ
    `openai: true`; `free_llm()` тогда ничего не выгружает и не падает на 404, иначе
    описание отрабатывало, а прогон умирал на выгрузке. Третье: подмены `pp.lm_models`
@@ -371,9 +373,10 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
   а выгрузка пропускается — сервис сам держит модель. Признак в ответе — `openai: true`
   у `lm_models()`. Проверено на `Huihui-Qwen3.6-35B-A3B-abliterated` (порт 8765, llama.cpp):
   `/api/v1/models` там нет, `/health` и `/props` тоже.
-- **`--no-think` / `LM_THINKING=off`** выключают размышления Qwen3
-  (`chat_template_kwargs.enable_thinking=false` плюс `/no_think`): то же фото — 86 с и
-  1934 токена против 5.9 с и 97. Без флага сервер решает сам, как в LM Studio.
+- **Размышления выключены по умолчанию** (`chat_template_kwargs.enable_thinking=false`
+  плюс `/no_think`): то же фото — 97 токенов и 5.9 с против 1934 токенов и 86 с.
+  `--think` или `LM_THINKING=on` включают обратно. Сервер, который поля не знает,
+  получает запрос без него (`post_chat`), поэтому LM Studio на 1234 не ломается.
 - Ответ приходит в ```json-обёртке — `extract_json()` снимает fence и болтовню.
 - Возраст: `with_adult()` вырезает `young/teen/girl/boy/1girl/school`, ставит `adult woman|man` первым тегом.
   Негатив всегда заканчивается `NEG_GUARD` (`child, loli, shota, young, underage`).
