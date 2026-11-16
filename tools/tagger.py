@@ -49,6 +49,11 @@ BREAST_HINT = ("breast", "cleavage", "nipple", "areola", "nude", "topless", "bar
 # Полки, которые идут в промпт. Сцена, свет и поза остаются за VLM.
 KEEP_BUCKETS = ("анатомия", "одежда/материал", "аксессуар", "кадр")
 
+# Порядок проверки полок. Поза и сцена идут первыми: `hands on own hips` должно
+# попасть в позу, а не в анатомию из-за слова `hips`, — иначе в промпт утечёт поза,
+# которую и так описал VLM.
+BUCKET_ORDER = ("поза", "сцена", "свет", "кадр", "аксессуар", "одежда/материал", "анатомия")
+
 BUCKETS = {
     "анатомия": ("breast", "areola", "nipple", "hip", "waist", "thigh", "belly",
                  "navel", "skin", "collarbone", "shoulder", "butt", "ass", "vulva",
@@ -58,7 +63,7 @@ BUCKETS = {
                         "boot", "heel", "shoe", "jacket", "coat", "glove", "belt",
                         "button", "zipper", "fabric", "corset", "garter", "pantyhose",
                         "lingerie", "uniform", "swimsuit", "bikini", "bodysuit",
-                        "jumpsuit", "robe", "stockings", "sleeves"),
+                        "jumpsuit", "robe", "stockings", "sleeves", "thong", "briefs"),
     "аксессуар": ("necklace", "earring", "glasses", "ring", "watch", "bracelet", "tattoo",
                   "piercing", "choker", "hat", "scarf", "bag", "pendant", "jewelry",
                   "hairband", "hairpin", "tiara", "crown"),
@@ -85,6 +90,12 @@ JUNK = {"cosplay", "parody", "cup", "symbol", "logo", "twitter username", "6+gir
         "speech bubble", "censored", "artist name"}
 
 PERSON = {"adult woman", "adult man", "woman", "man", "female", "male", "lady", "guy"}
+
+# Места, которые есть на любом кадре с человеком. Сами по себе они не деталь, а
+# слот: `skin`, `shoulder`, `hip`, `arm` только разбавляют промпт. Осмысленные
+# уточнения (`bare shoulders`, `wide hips`) сюда не попадают — сравнивается тег целиком.
+GENERIC = {"skin", "shoulder", "shoulders", "arm", "arms", "hand", "hands", "leg",
+           "legs", "hip", "hips", "waist", "back", "belly", "body", "torso"}
 
 # Слоты одежды: в одном слоте вещь одна. Если описание уже назвало платье,
 # теггер не должен добавлять к нему халат — это не деталь, а другая одежда.
@@ -192,6 +203,7 @@ def norm(text):
     t = str(text or "").lower()
     t = re.sub(r"\(([^:)]+)(?::[\d.]+)?\)", r"\1", t)
     t = t.replace("_", " ")
+    t = re.sub(r"\b(ass|booty)\b", "butt", t)      # один смысл — один тег в сравнении
     t = re.sub(r"[\[\]{}<>\"'`]", " ", t)
     t = re.sub(r"[-/]+", " ", t)
     t = re.sub(r"\s+", " ", t)
@@ -239,15 +251,15 @@ def _hit(tag_words, key):
         return key in " ".join(tag_words)
     if key in tag_words:
         return True
-    if len(key) < 4:
+    if len(key) < 3:
         return False
     return any(w.startswith(key) or w.endswith(key) for w in tag_words)
 
 
 def bucket_of(tag):
     words = norm(tag).split()
-    for name, keys in BUCKETS.items():
-        if any(_hit(words, k) for k in keys):
+    for name in BUCKET_ORDER:
+        if any(_hit(words, k) for k in BUCKETS[name]):
             return name
     return "прочее"
 
@@ -286,7 +298,7 @@ def drop_redundant(tags, scores=None):
 def keep(tag):
     """Идёт ли тег в промпт: своя полка, не служебный, не мусор, не персона."""
     low = norm(tag)
-    if low in META or low in JUNK or low in PERSON:
+    if low in META or low in JUNK or low in PERSON or low in GENERIC:
         return False
     return bucket_of(low) in KEEP_BUCKETS
 
@@ -353,14 +365,24 @@ def tags(image_path, warn=True):
         return {"tags": [], "size": "", "version": VERSION, "skipped": str(e)[:120]}
 
 
-def add_to_subject(subject, extra):
+def add_to_subject(subject, extra, removed=None):
     """Вставляет теги сразу после персоны: начало первого чанка влияет сильнее.
 
     Дубли и то, что VLM уже сказал словами, не добавляются: `bare breasts with
     dark areolas` не должно превращаться в `large breasts, bare breasts ...`.
     Одежда проверяется по слоту: к «satin robe» не дописывается `white_dress`.
+    `removed` получает теги, которые пришлось убрать (заменённый размер груди) —
+    по ним `--no-tags` возвращает исходный текст.
     """
     parts = [p.strip() for p in str(subject or "").split(",") if p.strip()]
+    # Размер груди заменяет прежний, а не встаёт рядом: `large breasts, huge breasts`
+    # в одном промпте — это два противоречащих указания модели.
+    if any(norm(tag) in SIZES for tag in extra):
+        drop = [p for p in parts if norm(p) in SIZES]
+        if drop:
+            parts = [p for p in parts if p not in drop]
+            if removed is not None:
+                removed.extend(drop)
     used = {slot for slot in (slot_of(p) for p in parts) if slot}
     fresh = []
     for tag in extra:
@@ -386,8 +408,14 @@ def add_to_subject(subject, extra):
     return ", ".join(parts)
 
 
-def strip_from_subject(subject, extra):
-    """Убирает ровно свои добавки: `--no-tags` не должен оставлять теги в subject."""
+def strip_from_subject(subject, extra, restore=()):
+    """Убирает ровно свои добавки: `--no-tags` не должен оставлять теги в subject.
+
+    `restore` — теги, которые добавка вытеснила (размер груди), их возвращаем,
+    иначе отказ от теггера молча терял бы часть описания VLM.
+    """
     drop = {norm(t) for t in extra or []}
     parts = [p.strip() for p in str(subject or "").split(",") if p.strip()]
-    return ", ".join(p for p in parts if norm(p) not in drop)
+    kept = [p for p in parts if norm(p) not in drop]
+    kept += [p.strip() for p in restore or [] if p.strip()]
+    return ", ".join(kept)

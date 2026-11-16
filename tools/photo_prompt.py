@@ -410,10 +410,13 @@ def enrich_subject(desc, image_path, warn=True):
         print(f"   теги не добавлены: {found['skipped']}")
         return desc.get("subject", "")
     before = [p.strip() for p in str(desc.get("subject", "")).split(",") if p.strip()]
-    after = tagger.add_to_subject(desc.get("subject", ""), found["tags"])
+    removed = []
+    after = tagger.add_to_subject(desc.get("subject", ""), found["tags"], removed)
     added = [p.strip() for p in after.split(",") if p.strip() and p.strip() not in before]
     desc["addon_tags"] = added
     desc["addons"] = tagger.VERSION
+    if removed:
+        desc["addon_replaced"] = removed
     if found.get("size"):
         desc["addon_size"] = found["size"]
     desc["subject"] = after
@@ -426,7 +429,8 @@ def apply_tags(desc, image_path, no_tags=False, dry_run=False):
     """Теггер в конвейере: выключатель, ленивый dry-run и снятие своих добавок."""
     if no_tags:
         # Теги могли прийти из кэша: --no-tags снимает ровно их, а не весь subject.
-        return tagger.strip_from_subject(desc.get("subject", ""), desc.get("addon_tags") or [])
+        return tagger.strip_from_subject(desc.get("subject", ""), desc.get("addon_tags") or [],
+                                         desc.get("addon_replaced") or [])
     if dry_run and (desc.get("addons") or "") != tagger.VERSION:
         # --dry-run обещает не грузить модели; теггер — тоже модель, пусть и на CPU.
         print("   теги не считаю: --dry-run не грузит модели")

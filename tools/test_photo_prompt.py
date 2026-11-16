@@ -1406,6 +1406,24 @@ def test_tagger_addon():
         check("чулки к платью добавляются — другой слот",
               "thighhighs" in pp.tagger.add_to_subject(
                   "adult woman, red dress", ["thighhighs"]))
+        check("skin, shoulder, hip не проходят как пустые места",
+              not any(pp.tagger.keep(t) for t in ("skin", "shoulder", "hip", "arm")))
+        check("bare shoulders и wide hips проходят",
+              pp.tagger.keep("bare shoulders") and pp.tagger.keep("wide hips"))
+        check("thong — одежда, а не «прочее»",
+              pp.tagger.bucket_of("thong") == "одежда/материал",
+              pp.tagger.bucket_of("thong"))
+        sized = pp.tagger.add_to_subject("adult woman, large breasts, red dress",
+                                         ["huge breasts"])
+        check("размер заменяет прежний, а не встаёт рядом",
+              sized.count("breasts") == 1 and "huge breasts" in sized, sized)
+        removed = []
+        pp.tagger.add_to_subject("adult woman, large breasts, red dress",
+                                 ["huge breasts"], removed)
+        back = pp.tagger.strip_from_subject("adult woman, huge breasts, red dress",
+                                            ["huge breasts"], removed)
+        check("--no-tags возвращает вытесненный размер",
+              "large breasts" in back and "huge" not in back, back)
     finally:
         pp.tagger.tags = real_tags
         os.environ["COMIC_TAGGER"] = "off"
