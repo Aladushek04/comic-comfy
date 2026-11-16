@@ -2034,6 +2034,113 @@ def test_cache_wrapper_keys():
     check("пустая сцена — без slug", pp.scene_slug("") == "")
 
 
+def test_run_record():
+    """41) паспорт прогона: запись схемы 2 и настоящий baseline.
+
+    `out\\v2-baseline\\run.json` — паспорт, снятый на P0: его читаем и пишем
+    обратно, и файл не должен ни измениться, ни получить выдуманных полей.
+    Схема 2 — про формат чтения; старая запись на диске остаётся как была,
+    иначе паспорт начал бы утверждать то, чего не знает (AGENTS 0.15).
+    """
+    from comic import run as cr
+
+    repo = Path(__file__).resolve().parent.parent
+    base = repo / "out" / "v2-baseline"
+    records = cr.read(base)
+    check("baseline: 10 кадров прочитаны", len(records) == 10, str(len(records)))
+    check("baseline: все записи схемы 2",
+          all(r.schema == cr.SCHEMA for r in records), str([r.schema for r in records]))
+    first = records[0]
+    check("baseline: проходы сохранены как есть",
+          [(p.denoise, p.steps) for p in first.passes or []] == [(0.75, 30), (0.3, 15)],
+          str(first.passes))
+    check("baseline: denoise null остаётся null, а не 0.0",
+          first.denoise is None, str(first.denoise))
+    check("baseline: метка исхода из файла", first.outcome == "unknown", first.outcome)
+    check("baseline: проходы не объявлены восстановленными",
+          first.estimated is False, str(first.estimated))
+
+    # Круг чтения-записи: ни одного нового ключа и ни одного потерянного.
+    copy = TMP / "run_roundtrip"
+    copy.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(base / "run.json", copy / "run.json")
+    before = json.loads((copy / "run.json").read_text(encoding="utf-8"))
+    cr.write(copy, cr.read(copy))
+    after = json.loads((copy / "run.json").read_text(encoding="utf-8"))
+    check("круг паспорта без изменений", after == before,
+          first_diff(json.dumps(after, ensure_ascii=False, sort_keys=True),
+                     json.dumps(before, ensure_ascii=False, sort_keys=True))[:200])
+    check("schema не дописан задним числом", "schema" not in after["runs"][0],
+          str(sorted(after["runs"][0])))
+
+    # Проход несёт только то, что в нём было: cfg и сэмплер не появляются сами.
+    rich = cr.migrate({"file": "x.png", "passes": [
+        {"denoise": 0.6, "steps": 20, "cfg": 5.5, "sampler": "dpmpp_2m"}]})
+    check("проход помнит cfg и сэмплер",
+          cr.to_dict(rich)["passes"] == [{"denoise": 0.6, "steps": 20,
+                                          "cfg": 5.5, "sampler": "dpmpp_2m"}],
+          str(cr.to_dict(rich)["passes"]))
+    plain = cr.migrate({"file": "x.png", "passes": [{"denoise": 0.3, "steps": 15}]})
+    check("проход без cfg не получает cfg: null",
+          cr.to_dict(plain)["passes"] == [{"denoise": 0.3, "steps": 15}],
+          str(cr.to_dict(plain)["passes"]))
+
+    # Новый кадр: паспорт пишется через запись и помечен схемой 2.
+    img = TMP / "record.png"
+    make(img, (40, 41, 42))
+    saved = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT, pp.OUTPUT_DIR = TMP / "root_record", TMP / "out_record"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        frame = "07_photo_thepit_00050_.png"
+        (pp.OUTPUT_DIR / frame).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "x", "negative_extra": ""}, 5, 0.8, frame,
+                        settings={"steps": 30, "cfg": 6.0, "sampler": "euler_ancestral",
+                                  "scheduler": "normal",
+                                  "passes": [{"denoise": 0.8, "steps": 30},
+                                             {"denoise": 0.3, "steps": 15}]})
+        folder = pp.ROOT / "out" / pp.image_tag(img)
+        rec = json.loads((folder / "run.json").read_text(encoding="utf-8"))["runs"][0]
+        check("новый кадр помечен схемой 2", rec.get("schema") == cr.SCHEMA,
+              str(rec.get("schema")))
+        check("новый кадр помнит оба прохода",
+              rec.get("passes") == [{"denoise": 0.8, "steps": 30},
+                                    {"denoise": 0.3, "steps": 15}],
+              str(rec.get("passes")))
+        check("служебная метка estimated на диск не идёт", "estimated" not in rec,
+              str(sorted(rec)))
+        back = cr.read(folder)
+        check("свой же паспорт читается записью",
+              len(back) == 1 and bool(back[0].passes)
+              and back[0].passes[0].denoise == 0.8 and back[0].estimated is False,
+              str(back))
+        check("новый кадр не выдаёт себя за старый",
+              back[0].raw is not None and back[0].raw.get("schema") == cr.SCHEMA,
+              str(back[0].raw))
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved
+
+    # Битый паспорт — отказ, а не пустая история: пустой паспорт теряет кадры.
+    broken = TMP / "run_broken"
+    broken.mkdir(parents=True, exist_ok=True)
+    (broken / "run.json").write_text("{не json", encoding="utf-8")
+    try:
+        cr.read(broken)
+        check("битый паспорт — отказ, а не пустая история", False, "прочитался")
+    except cr.RunError as e:
+        check("битый паспорт — отказ, а не пустая история", "не читается" in str(e), str(e))
+    check("нет файла — пустая история", cr.read(TMP / "run_empty") == [])
+
+    # Метка исхода вне OUTCOMES не пишется: набор закрытый.
+    try:
+        cr.write(copy, [cr.RunRecord(outcome="принят")])
+        check("метка вне OUTCOMES не пишется", False, "запись прошла")
+    except ValueError as e:
+        check("метка вне OUTCOMES не пишется", "unknown" in str(e), str(e))
+
+
 def test_prompt_builder():
     """38) PromptBuilder: промпт кадра собирается побайтно, как в эталоне P0.
 
@@ -2276,6 +2383,7 @@ def main():
         test_settings_adapter()
         test_cache_schema()
         test_cache_wrapper_keys()
+        test_run_record()
         test_prompt_builder()
         test_prompt_golden()
         test_guard_overrides()

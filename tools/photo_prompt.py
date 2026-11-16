@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import settings
 import tagger
 from comic import cache  # noqa: E402  — корень репозитория добавляет settings.py
+from comic import run  # noqa: E402
 from comic.guard import (  # noqa: E402
     AGE_WORDS, GENERIC_PERSON, ensure_guard, sanitize_subject, scrub_tags,
 )
@@ -726,18 +727,12 @@ def preset_path(name):
 
 def workflow_from_file(name):
     """Сборка по имени кадра: SaveImage пишет префикс comic/<сборка>_NNNNN_.png."""
-    stem = Path(str(name or "")).name
-    best = ""
-    for p in WF_DIR.glob("*.json"):
-        w = p.name[:-len(".json")]
-        if w.endswith(".api"):
-            continue
-        if stem.startswith(w) and len(w) > len(best):
-            best = w
-    return best
+    return run.workflow_from_file(name, WF_DIR)
 
 
-OUTCOMES = ("unknown", "accepted", "rejected", "refined", "cancelled")
+# Метки исхода живут в формате паспорта (comic.run): набор закрытый, и второе
+# место с тем же списком разошлось бы с первым.
+OUTCOMES = run.OUTCOMES
 
 
 def save_run(image_path, workflow, desc, seed, denoise, name,
@@ -763,6 +758,9 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
     в паспорт чего попало.
     `None` означает «как в сборке».
 
+    Сам формат паспорта — в `comic.run` (схема 2, миграция старых записей):
+    здесь только собирается запись нового кадра.
+
     Возвращает папку или None, если кадра нет в OUTPUT_DIR: паспорт на
     несуществующий файл хуже, чем отсутствие паспорта.
     """
@@ -779,46 +777,39 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
         return None
 
     folder = ROOT / "out" / image_tag(image_path)
-    book_path = folder / "run.json"
-    book = {"runs": []}
-    if book_path.exists():
+    try:
+        records, head = run.read_book(folder, read_json=read_json)
+    except run.RunError as e:
         # Паспорт уже есть — переписываем только прочитанный: пустой «паспорт»
         # вместо истории хуже, чем кадр без записи, и молча теряет прошлые кадры.
-        try:
-            book = read_json(book_path)
-        except Exception as e:
-            raise PipelineError(
-                f"паспорт {book_path} не читается ({e}) — кадр не записан, "
-                f"паспорт не тронут") from e
+        raise PipelineError(f"{e} — кадр не записан, паспорт не тронут") from e
     folder.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, folder / name)
-    for r in book.get("runs", []):
-        if not r.get("workflow"):
-            r["workflow"] = workflow_from_file(r.get("file", ""))
-    book.setdefault("runs", []).append({
-        "workflow": workflow,
-        "seed": seed, "denoise": denoise, "file": name,
-        "cn_strength": cn_strength, "style_weight": style_weight,
-        "overrides": overrides or None,
-        "refined": bool(refined),
-        "positive": positive, "negative": negative,
-        "subject": desc.get("subject", ""), "negative_extra": desc.get("negative_extra", ""),
+    for r in records:
+        if not r.workflow:
+            r.workflow = workflow_from_file(r.file)
+    records.append(run.RunRecord(
+        workflow=workflow,
+        seed=seed, denoise=denoise, file=name,
+        cn_strength=cn_strength, style_weight=style_weight,
+        overrides=overrides or None,
+        refined=bool(refined),
+        positive=positive, negative=negative,
+        subject=desc.get("subject", ""), negative_extra=desc.get("negative_extra", ""),
         # Настройки главного прохода: без них паспорт не отличает кадр на 30 шагах
         # от кадра на 15. Нет настроек — None, а не 0.
-        "steps": (settings or {}).get("steps"),
-        "cfg": (settings or {}).get("cfg"),
-        "sampler": (settings or {}).get("sampler"),
-        "scheduler": (settings or {}).get("scheduler"),
+        steps=(settings or {}).get("steps"),
+        cfg=(settings or {}).get("cfg"),
+        sampler=(settings or {}).get("sampler"),
+        scheduler=(settings or {}).get("scheduler"),
         # Оба прохода: у 07 главный 0.75/30 и второй 0.3/15. По одному `denoise`
         # не видно, что кадр сделан двумя сэмплерами.
-        "passes": (settings or {}).get("passes"),
+        passes=run.passes_of((settings or {}).get("passes")),
         # Исход кадра: по умолчанию unknown, а не accepted — принял кадр человек,
         # и до его решения паспорт не имеет права это утверждать.
-        "outcome": outcome,
-    })
-    book.pop("workflow", None)
-    book["workflows"] = sorted({r["workflow"] for r in book["runs"] if r.get("workflow")})
-    write_json(book_path, book)
+        outcome=outcome,
+    ))
+    run.write(folder, records, head=head, write_json=write_json)
     return folder
 
 
