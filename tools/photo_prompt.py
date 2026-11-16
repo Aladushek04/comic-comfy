@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import settings
 import tagger
 
-LM = os.environ.get("LM_URL") or "http://127.0.0.1:1234"
+LM = settings.LM_URL or "http://127.0.0.1:1234"
 
 
 def thinking_off():

@@ -242,6 +242,17 @@ class ComfyHandler(_Handler):
         self._json({}, 404)
 
 
+class OpenAILMHandler(_Handler):
+    """Сервис описаний без LM Studio: только OpenAI-совместимый /v1/models."""
+
+    def do_GET(self):
+        if self.path.startswith("/v1/models"):
+            self._json({"object": "list", "data": [{"id": "huihui@q4"},
+                                                   {"id": "text-only@q4"}]})
+        else:
+            self._json({"error": "not found"}, 404)
+
+
 def lm_stub():
     stub = Stub(LMHandler)
     s = stub.state
@@ -1406,6 +1417,25 @@ def _png_bytes():
     return buf.getvalue()
 
 
+def test_openai_service_health():
+    print("\n26) страница видит сервис описаний без LM Studio")
+    stub = Stub(OpenAILMHandler)
+    try:
+        info = catalog.health(stub.url)
+        check("сервис найден", info["lm"]["ok"] is True, str(info["lm"]))
+        check("провайдер openai", info["lm"]["provider"] == "openai", str(info["lm"]))
+        check("модели перечислены",
+              info["lm"]["models"] == ["huihui@q4", "text-only@q4"],
+              str(info["lm"]["models"]))
+        check("адрес в ответе тот же", info["lm"]["url"] == stub.url, str(info["lm"]["url"]))
+    finally:
+        stub.stop()
+
+    dead = catalog.lm_health("http://127.0.0.1:1")
+    check("лежащий сервис: понятный отказ",
+          dead["ok"] is False and dead["models"] == [] and not dead["provider"], str(dead))
+
+
 def main():
     try:
         test_catalog_fields()
@@ -1434,6 +1464,7 @@ def main():
         test_expired_job_text()
         test_past_jobs_swept()
         test_upload_headers()
+        test_openai_service_health()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

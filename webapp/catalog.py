@@ -138,24 +138,39 @@ def find_comfy():
     return pp.comfy_state()[0]
 
 
+def lm_health(lm_url):
+    """Сервис описаний: LM Studio или обычный OpenAI-совместимый сервер.
+
+    Порядок тот же, что у `photo_prompt.lm_models()`: сначала `/api/v1/models`,
+    затем `/v1/models`. Модели без объявленных возможностей (второй случай) считаем
+    зрячими — за этим такой сервис и берут. Ключи вида `...@?` пропускаем: такой id
+    даёт 400 при запросе.
+    """
+    base = str(lm_url).rstrip("/")
+    for path, provider in (("/api/v1/models", "lmstudio"), ("/v1/models", "openai")):
+        try:
+            with urllib.request.urlopen(base + path, timeout=5) as r:
+                data = json.loads(r.read())
+        except Exception:
+            continue
+        models = []
+        for m in (data.get("models") or data.get("data") or []):
+            key = str(m.get("key") or m.get("id") or "")
+            if not key or "@?" in key:
+                continue
+            if provider == "openai" or (m.get("capabilities") or {}).get("vision"):
+                models.append(key)
+        return {"ok": True, "url": base, "provider": provider, "models": models}
+    return {"ok": False, "url": base, "provider": "", "models": []}
+
+
 def health(lm_url):
     """Лёгкие проверки уже запущенных сервисов. Ничего не поднимает.
 
     Адрес ComfyUI выбирается тем же правилом, что и для генерации, поэтому
     «готов» на странице означает ровно тот сервер, куда уйдёт задание.
     """
-    lm = {"ok": probe(lm_url, "/api/v1/models"), "url": lm_url, "models": []}
-    if lm["ok"]:
-        try:
-            with urllib.request.urlopen(lm_url.rstrip("/") + "/api/v1/models", timeout=5) as r:
-                data = json.loads(r.read())
-            for m in (data.get("models") or data.get("data") or []):
-                caps = m.get("capabilities") or {}
-                key = m.get("key") or m.get("id") or ""
-                if caps.get("vision") and "@?" not in key:
-                    lm["models"].append(key)
-        except Exception:
-            pass
+    lm = lm_health(lm_url)
     url, error = pp.comfy_state()
     comfy = {"ok": not error, "url": url, "error": error}
     return {"lm": lm, "comfy": comfy}

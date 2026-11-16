@@ -566,7 +566,8 @@ def test_portable_paths():
 
     paths = TMP / "comic_paths.json"
     paths.write_text(json.dumps({"input": "R:\\in", "output": "R:\\out",
-                                 "lm_model": "pinned@iq3_m"}), encoding="utf-8")
+                                 "lm_model": "pinned@iq3_m",
+                                 "lm_url": "http://127.0.0.1:8765"}), encoding="utf-8")
     got = st.resolve(env={}, yaml_path=yaml, paths_path=paths)
     check("comic_paths.json задаёт input/output отдельно от models",
           str(got["input"]) == "R:\\in" and str(got["output"]) == "R:\\out",
@@ -576,6 +577,10 @@ def test_portable_paths():
           str(got.get("lm_model")))
     got = st.resolve(env={"LM_MODEL": "env@q8"}, yaml_path=yaml, paths_path=paths)
     check("LM_MODEL важнее файла", got["lm_model"] == "env@q8", str(got.get("lm_model")))
+    check("comic_paths.json задаёт адрес сервиса описаний",
+          got["lm"] == "http://127.0.0.1:8765", str(got.get("lm")))
+    got = st.resolve(env={"LM_URL": "http://127.0.0.1:9999"}, yaml_path=yaml, paths_path=paths)
+    check("LM_URL важнее файла", got["lm"] == "http://127.0.0.1:9999", str(got.get("lm")))
     got = st.resolve(env={"COMFY_INPUT": str(TMP / "env_in")}, yaml_path=yaml, paths_path=paths)
     check("COMFY_INPUT важнее comic_paths.json", got["input"] == TMP / "env_in", str(got["input"]))
     got = st.resolve(env={"COMFY_SHARED": str(TMP / "shared")}, yaml_path=yaml, paths_path=paths)

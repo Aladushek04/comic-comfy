@@ -259,6 +259,8 @@ class ComicPage:
             models = list(self.state.get("lm_models") or [])
             if current and current not in models:
                 models.insert(0, current)
+            if not current and len(models) == 1:
+                current = models[0]     # единственная модель сервиса — показываем её
             model.set_options(models, value=current)
         note = self.w.get("models_note")
         if note is not None:
@@ -302,7 +304,9 @@ class ComicPage:
             with ui.row().classes("items-center gap-2 flex-wrap"):
                 self.w["link_badge"] = ui.badge("связь: есть", color="positive")
                 self.w["comfy_badge"] = ui.badge("ComfyUI: проверяю", color="grey")
-                self.w["lm_badge"] = ui.badge("LM Studio: проверяю", color="grey")
+                self.w["lm_badge"] = ui.badge("Описание: проверяю", color="grey")
+                with self.w["lm_badge"]:
+                    self.w["lm_tip"] = ui.tooltip(pp.LM)
                 ui.button("Проверить сервисы", on_click=self.refresh_health).props(
                     "flat dense no-caps")
                 self.w["theme_button"] = ui.button(
@@ -508,13 +512,19 @@ class ComicPage:
         if not self.w.get("comfy_badge"):
             return
         self.w["comfy_badge"].set_text("ComfyUI: проверяю")
-        self.w["lm_badge"].set_text("LM Studio: проверяю")
+        self.w["lm_badge"].set_text("Описание: проверяю")
         info = await asyncio.to_thread(catalog.health, pp.LM)
-        lm_ok = info["lm"]["ok"]
+        lm = info["lm"]
+        lm_ok = lm["ok"]
         comfy_ok = info["comfy"]["ok"]
-        self.w["lm_badge"].set_text(
-            "LM Studio: " + ("готов" if lm_ok else "не отвечает"))
+        name = "LM Studio" if lm.get("provider") == "lmstudio" else "Сервис описаний"
+        text = f"{name}: " + ("готов" if lm_ok else "не отвечает")
+        if lm_ok and lm.get("models"):
+            text += f" ({len(lm['models'])})"
+        self.w["lm_badge"].set_text(text)
         self.w["lm_badge"].props(f'color={"positive" if lm_ok else "warning"}')
+        self.w["lm_tip"].set_text(
+            lm["url"] + ("\n" + ", ".join(lm["models"][:3]) if lm.get("models") else ""))
         self.state["comfy_url"] = info["comfy"]["url"]
         self.state["comfy_error"] = info["comfy"]["error"]
         launchable = cl.available()
@@ -556,6 +566,9 @@ class ComicPage:
         with ui.row().classes("w-full gap-3 flex-wrap items-end"):
             models = self.state.get("lm_models") or []
             pinned = settings.LM_MODEL if settings.LM_MODEL in models else None
+            if pinned is None and len(models) == 1:
+                # Сервис объявил одну модель — не заставляем выбирать её руками.
+                pinned = models[0]
             self.w["model"] = ui.select(
                 models, value=pinned,
                 label="Модель описания (пусто — по умолчанию)",
@@ -621,9 +634,9 @@ class ComicPage:
             "text-xs opacity-60 mt-1")
         self.w["models_note"] = ui.label(self.models_note()).classes(
             "text-xs comic-warn")
-        ui.label("Модель описания (LM Studio) и чекпойнт генерации (ComfyUI) — "
-                 "разные настройки: первая смотрит фото, второй рисует.").classes(
-            "text-xs opacity-50")
+        ui.label("Модель описания (LM Studio или другой OpenAI-совместимый сервис на "
+                 "LM_URL / lm_url) и чекпойнт генерации (ComfyUI) — разные настройки: "
+                 "первая смотрит фото, второй рисует.").classes("text-xs opacity-50")
 
     def on_style(self):
         """Смена стиля: общие поля остаются, стилевые — к значениям новой сборки."""

@@ -66,7 +66,7 @@ def read_paths(path):
         return {}
     if not isinstance(data, dict):
         return {}
-    return {key: str(data[key]) for key in ("input", "output", "lm_model")
+    return {key: str(data[key]) for key in ("input", "output", "lm_model", "lm_url")
             if isinstance(data.get(key), str) and data[key].strip()}
 
 
@@ -104,6 +104,7 @@ def resolve(env=None, yaml_path=None, paths_path=None):
         "input": pick("COMFY_INPUT", "input", "input"),
         "output": pick("COMFY_OUTPUT", "output", "output"),
         "lm_model": env.get("LM_MODEL") or cfg.get("lm_model") or "",
+        "lm": env.get("LM_URL") or cfg.get("lm_url") or "",
         "url": env.get("COMFY_URL") or "http://127.0.0.1:8199",
     }
 
@@ -118,4 +119,5 @@ OUTPUT_ROOT = _PATH["output"]
 OUTPUT_DIR = OUTPUT_ROOT / "comic"
 WF_DIR = ROOT / "workflows"
 COMFY_URL = _PATH["url"]
+LM_URL = _PATH["lm"]
 LM_MODEL = _PATH["lm_model"]

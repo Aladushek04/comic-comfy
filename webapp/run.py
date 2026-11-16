@@ -38,6 +38,11 @@ def main(argv=None):
         return 1
     if a.host not in ("127.0.0.1", "localhost", "::1"):
         print(f"внимание: сервер слушает {a.host}, а не только loopback", file=sys.stderr)
+    # Задание печатает по-русски (логи теггера, этапы). В пайп или файл Python пишет
+    # в кодировке локали, и первая такая строка роняла бы всё задание
+    # UnicodeEncodeError — поэтому поток переводим в UTF-8 до старта сервера.
+    import settings
+    settings.utf8_streams()
     from webapp.ui import start
     print(f"comic-comfy: http://{a.host}:{a.port}")
     try:

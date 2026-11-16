@@ -58,7 +58,15 @@
   `requirements-web.txt`, проверки — `tools\test_web_ui.py` (Playwright,
   `requirements-web-dev.txt`). Ctrl+C в `run.py` — штатная остановка без трейсбека;
   вопрос cmd «Terminate batch job?» — это cmd, сервер уже остановлен.
-  **Своё окружение `.venv-web`**: NiceGUI не ставится в venv ComfyUI.
+  **Своё окружение `.venv-web`**: NiceGUI не ставится в venv ComfyUI; там же нужен
+  `onnxruntime` — теггер работает в процессе страницы, а без него добавки к описанию
+  молча пропускаются (и «Теггер добавил» видно только в CLI).
+  Сервис описаний на странице — общий с CLI: адрес из `LM_URL` или `lm_url` в
+  `comic_paths.json`, бейдж пишет «LM Studio» или «Сервис описаний» по ответу
+  `/api/v1/models` против `/v1/models`.
+  `run.py` сам зовёт `settings.utf8_streams()`: при запуске в пайп или файл сервер пишет
+  в кодировке локали, и первая русская строка задания (лог теггера) роняла всё задание
+  `UnicodeEncodeError`.
   Тема: тёмная по умолчанию (`ui.run(dark=True)` плюс `ui.dark_mode` на странице), переключатель —
   кнопка в шапке, выбор лежит в `out\theme.json` (env `COMIC_THEME_FILE`, им пользуются проверки).
   Тёмную страницу делает `Quasar.Dark.set` через `ui.dark_mode`: если просто навесить класс
@@ -270,7 +278,7 @@ ComfyUI не трогает. Без готового описания (кэш, `
    `verify`. Четвёртое: `settings.utf8_streams()` в точках входа —
    в пайп Python пишет в кодировке локали (cp1252), и `print` с кириллицей падал с
    `UnicodeEncodeError`; без этого команды из README работают только с `PYTHONIOENCODING`.
-   Проверка: `python tools\test_photo_prompt.py` (255) и `python tools\test_web_app.py` (176).
+   Проверка: `python tools\test_photo_prompt.py` (261) и `python tools\test_web_app.py` (181).
 
 0.16. **Теггер: порог, полка и кэш — три места, где легко соврать себе.**
    Первое: WD14 v3 ждёт float32 **BGR в шкале 0..255**. С делением на 255 модель видит
@@ -306,7 +314,11 @@ ComfyUI не трогает. Без готового описания (кэш, `
    в проверках обязаны принимать `strict=True` — иначе подмена падает на новом аргументе.
    Четвёртое: `clean_negative()` убирает из негатива то, что subject прямо называет
    («long dark hair» против `dark hair`), — самопротиворечие вместо страховки.
-   Проверка: `python tools\test_photo_prompt.py`, пункт 30 и 32.
+   Пятое: страница пользуется тем же сервисом, что CLI, но живёт в своём процессе —
+   ей нужен `onnxruntime`, иначе теггер молча ничего не добавляет. А `run.py` без
+   `utf8_streams()` в пайпе/файле роняет задание на первой русской строке лога.
+   Проверка: `python tools\test_photo_prompt.py`, пункты 30 и 32;
+   `python tools\test_web_app.py`, пункт 26.
 
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
@@ -368,7 +380,8 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
   `Qwen3-Coder` и `Lobo-27B` текстовые, для фото не годятся.
 - **Id модели важен целиком.** Ключ вида `...-mtp@?` даёт 400 Bad Request; нужен точный квант `@iq3_m`.
 - Думающие модели тратят токены на рассуждения: держать `max_tokens` 3000 (на 400–1000 ответ обрезался).
-- **Сервис описаний не обязан быть LM Studio.** `LM_URL` принимает любой OpenAI-совместимый
+- **Сервис описаний не обязан быть LM Studio.** `LM_URL` (или `lm_url` в
+  `comic_paths.json`) принимает любой OpenAI-совместимый
   (`/v1/models`, `/v1/chat/completions`): модель тогда берётся из `LM_MODEL` или `--model`,
   а выгрузка пропускается — сервис сам держит модель. Признак в ответе — `openai: true`
   у `lm_models()`. Проверено на `Huihui-Qwen3.6-35B-A3B-abliterated` (порт 8765, llama.cpp):
