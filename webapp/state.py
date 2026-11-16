@@ -66,7 +66,9 @@ def phase_states(events, status="running"):
             states.append(PENDING)
         elif status in ("failed", "error"):
             states.append(ERR)
-        elif status == "partial":
+        elif status in ("partial", "cancelled"):
+            # Отмена — не ошибка, но и не «пройдено»: фаза, на которой встали,
+            # остаётся незакрытой.
             states.append(WARN)
         elif status in ("done", "described"):
             states.append(DONE)

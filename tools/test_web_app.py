@@ -144,7 +144,8 @@ class LMHandler(_Handler):
 
 class ComfyHandler(_Handler):
     WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-    CONTROL_KEYS = ("ws_disabled", "delay", "make_files", "empty_outputs", "prompt_fail")
+    CONTROL_KEYS = ("ws_disabled", "delay", "make_files", "empty_outputs", "prompt_fail",
+                    "interrupt_keeps")
 
     def _ws_frame(self, obj):
         data = json.dumps(obj, ensure_ascii=False).encode()
@@ -200,6 +201,13 @@ class ComfyHandler(_Handler):
         if self.path.startswith("/history/"):
             pid = self.path.rsplit("/", 1)[-1]
             st.polls[pid] = st.polls.get(pid, 0) + 1
+            if pid in st.interrupted and not st.interrupt_keeps:
+                # Прерванный промпт: кадра нет, история говорит «error» с
+                # execution_interrupted — ровно как у настоящего ComfyUI.
+                self._json({pid: {"status": {"status_str": "error", "messages": [
+                    ["execution_interrupted", {"node_type": "KSampler"}]]},
+                    "outputs": {}}})
+                return
             if st.polls[pid] < st.delay:
                 self._json({})
                 return
@@ -246,6 +254,12 @@ class ComfyHandler(_Handler):
         if self.path == "/free":
             self._json({})
             return
+        if self.path == "/interrupt":
+            st.interrupts.append(self.path)
+            if st.pending:
+                st.interrupted.add(st.pending[-1])
+            self._json({})
+            return
         self._json({}, 404)
 
 
@@ -275,9 +289,11 @@ def comfy_stub():
     s = stub.state
     s.gets, s.posts, s.prompts, s.pending = [], [], [], []
     s.polls, s.frames = {}, {}
+    s.interrupts, s.interrupted = [], set()
     s.delay = 1
     s.make_files = True
     s.prompt_fail = s.history_error = s.empty_outputs = False
+    s.interrupt_keeps = False
     s.ws_disabled = False
 
     def ws_script(pid):
@@ -1749,7 +1765,7 @@ def test_push_from_job():
     def listener(rev, job_id):
         seen.append((rev, job_id))
 
-    def fake(req, emit=None):
+    def fake(req, emit=None, cancel=None):
         emit({"seq": 1, "t": 0.1, "stage": "start", "message": "", "data": {}})
         emit({"seq": 2, "t": 0.2, "stage": "done", "message": "", "data": {}})
         return jobs.JobResult(ok=True, code=0, stage="done")
@@ -1989,6 +2005,152 @@ def _rule(css, selector):
     return css[start + len(head): css.find("}", start)]
 
 
+# --------------------------------------------------------------- отмена и расширенные
+def _wait_for(cond, timeout=30.0, step=0.01):
+    """Дождаться условия в чужом потоке: без фиксированных пауз."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if cond():
+            return True
+        time.sleep(step)
+    return False
+
+
+def _settled(svc, job_id, timeout=60):
+    """Снимок задания после того, как поток действительно закончил работу.
+
+    `svc.wait` возвращает сразу после `cancel`: статус `cancelled` ставится до
+    того, как поток допишет результат. Ждём освобождения исполнителя, иначе
+    проверка «кадра нет» проходила бы и тогда, когда кадр ещё появится.
+    """
+    if not _wait_for(lambda: svc.active_id() is None, timeout=timeout):
+        raise TimeoutError(f"задание {job_id} не отпустило исполнителя за {timeout} с")
+    return svc.snapshot(job_id)
+
+
+def test_cancel():
+    print("\n34) отмена: очередь снимается без ComfyUI, работа — через /interrupt")
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy) as root:
+            img = TMP / "cancel.png"
+            make(img, (12, 34, 56))
+            comfy.state.delay = 60      # история «думает»: первое успевает пойти
+            svc = JobService(jobs_root=root / "out" / "jobs")
+            try:
+                first = svc.submit(jobs.JobRequest(
+                    image="", workflow="07_photo_thepit",
+                    subject="adult woman, one", seed=1), source_path=str(img))
+                uid, _ = svc.save_upload("cancel_two.png", img.read_bytes())
+                second = svc.submit(jobs.JobRequest(
+                    image="", workflow="07_photo_thepit",
+                    subject="adult woman, two", seed=2), upload_id=uid)
+                check("первое задание уже в ComfyUI",
+                      _wait_for(lambda: len(comfy.state.prompts) == 1),
+                      str(len(comfy.state.prompts)))
+                ok, note = svc.cancel(second.id)
+                check("задание из очереди снято",
+                      ok and note == "" and second.status == "cancelled",
+                      f"{ok} {note!r} {second.status}")
+                check("снятое из очереди не зовёт /interrupt",
+                      comfy.state.interrupts == [], str(comfy.state.interrupts))
+                check("соседнее задание продолжает идти", first.status == "running",
+                      first.status)
+                snap = svc.snapshot(second.id)
+                check("снятое: исход, а не ошибка",
+                      snap["status"] == "cancelled" and snap["error"] == ""
+                      and snap["running"] is False and snap["queue"] == 0,
+                      str((snap["status"], snap["error"], snap["queue"])))
+                check("снять снятое больше нельзя", svc.cancel(second.id)[0] is False)
+                check("журнал снятого говорит об отмене",
+                      [e["stage"] for e in snap["events"]][-1:] == ["cancelled"],
+                      str([e["stage"] for e in snap["events"]][-3:]))
+                done = svc.wait(first.id, timeout=60)
+                check("первое задание дошло своим ходом", done["status"] == "done",
+                      str(done["status"]))
+                check("кадр первого на месте", len(done["frames"]) == 1,
+                      str(done["frames"]))
+                check("в ComfyUI ушёл ровно один промпт",
+                      len(comfy.state.prompts) == 1, str(len(comfy.state.prompts)))
+            finally:
+                svc.shutdown()
+
+            # ---- работающее задание: /interrupt и ни одного лишнего кадра ----
+            comfy.state.prompts.clear()
+            comfy.state.pending.clear()
+            comfy.state.interrupts.clear()
+            comfy.state.interrupted.clear()
+            comfy.state.polls.clear()
+            comfy.state.delay = 200
+            run_img = TMP / "cancel_run.png"
+            make(run_img, (56, 34, 12))
+            comfy.state.frames["p1"] = "cancel_run_p1.png"
+            svc = JobService(jobs_root=root / "out" / "jobs2")
+            try:
+                job = svc.submit(jobs.JobRequest(
+                    image="", workflow="07_photo_thepit",
+                    subject="adult woman, running", seed=3), source_path=str(run_img))
+                check("работающее задание отправило промпт",
+                      _wait_for(lambda: len(comfy.state.prompts) == 1),
+                      str(len(comfy.state.prompts)))
+                ok, note = svc.cancel(job.id)
+                check("работающее задание отменено", ok and note == "",
+                      f"{ok} {note!r}")
+                check("/interrupt ушёл в ComfyUI того задания",
+                      comfy.state.interrupts == ["/interrupt"],
+                      str(comfy.state.interrupts))
+                snap = _settled(svc, job.id)
+                check("статус cancelled, текста провала нет",
+                      snap["status"] == "cancelled" and snap["error"] == ""
+                      and snap["running"] is False,
+                      str((snap["status"], snap["error"])))
+                check("недоделанный кадр не попал в снимок",
+                      snap["frames"] == [], str(snap["frames"]))
+                check("кадр не записан и в паспорт",
+                      book_for(run_img) is None, str(book_for(run_img)))
+                check("файла кадра нет на диске",
+                      not (pp.OUTPUT_DIR / "cancel_run_p1.png").exists(),
+                      str(pp.OUTPUT_DIR / "cancel_run_p1.png"))
+                check("исполнитель освобождён", svc.active_id() is None,
+                      str(svc.active_id()))
+            finally:
+                svc.shutdown()
+
+            # ---- кадр успел появиться до отмены: outcome=cancelled ----
+            comfy.state.prompts.clear()
+            comfy.state.pending.clear()
+            comfy.state.interrupts.clear()
+            comfy.state.interrupted.clear()
+            comfy.state.polls.clear()
+            comfy.state.delay = 2
+            comfy.state.interrupt_keeps = True      # кадр появился раньше отмены
+            kept_img = TMP / "cancel_kept.png"
+            make(kept_img, (90, 12, 34))
+            svc = JobService(jobs_root=root / "out" / "jobs3")
+            try:
+                job = svc.submit(jobs.JobRequest(
+                    image="", workflow="07_photo_thepit",
+                    subject="adult woman, kept", seed=4), source_path=str(kept_img))
+                _wait_for(lambda: len(comfy.state.prompts) == 1)
+                svc.cancel(job.id)
+                snap = _settled(svc, job.id)
+                check("кадр, успевший появиться, помечен отменённым",
+                      snap["status"] == "cancelled"
+                      and [f["outcome"] for f in snap["frames"]] == ["cancelled"],
+                      str((snap["status"], [f.get("outcome") for f in snap["frames"]])))
+                book = book_for(kept_img)
+                check("в паспорте outcome=cancelled",
+                      bool(book) and book["runs"][-1]["outcome"] == "cancelled",
+                      str(book and [r.get("outcome") for r in book["runs"]]))
+                check("отмена кадра не делает ошибку",
+                      snap["error"] == "" and snap["partial"] is False,
+                      str((snap["error"], snap["partial"])))
+            finally:
+                svc.shutdown()
+    finally:
+        lm.stop()
+        comfy.stop()
+
 
 def main():
     try:
@@ -2029,6 +2191,7 @@ def main():
         test_phases_and_step()
         test_stage_panels()
         test_rail_and_badges()
+        test_cancel()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

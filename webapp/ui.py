@@ -58,6 +58,7 @@ STAGE_LABEL = {
     "described": "описание готово",
     "done": "готово",
     "partial": "частично",
+    "cancelled": "отменено",
     "error": "ошибка",
     "preview": "итоговый промпт",
 }

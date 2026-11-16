@@ -38,6 +38,7 @@ STAGE_LABEL = {
     "described": "описание готово",
     "done": "готово",
     "partial": "частично",
+    "cancelled": "отменено",
     "error": "ошибка",
     "preview": "итоговый промпт",
 }
@@ -54,6 +55,7 @@ STATUS_LABEL = {
     "described": "Описание готово",
     "done": "Готово",
     "partial": "Частично",
+    "cancelled": "Отменено",
     "failed": "Ошибка",
     "expired": "История задания истекла",
     "blocked": "Нет годных сборок",

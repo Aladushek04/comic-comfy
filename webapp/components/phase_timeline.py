@@ -29,6 +29,10 @@ def title_text(snap, status):
         return f"{STATUS_LABEL['done']} · кадров {frames}"
     if status == "partial":
         return f"{STATUS_LABEL['partial']} · кадров {frames}"
+    if status == "cancelled":
+        # Отмена — исход, а не ошибка: кадров может не быть вовсе.
+        return f"{STATUS_LABEL['cancelled']} · кадров {frames}" if frames \
+            else STATUS_LABEL["cancelled"]
     if status == "failed":
         where = state.failed_phase(snap.get("events") or [], status)
         return f"{STATUS_LABEL['failed']} · {where}" if where else STATUS_LABEL["failed"]

@@ -163,8 +163,14 @@ def _prompts(req, desc, landscape=False, image_name=None):
     return payload
 
 
-def run_job(req, emit=None):
-    """Полный проход одного фото. Возвращает JobResult, не бросает SystemExit."""
+def run_job(req, emit=None, cancel=None):
+    """Полный проход одного фото. Возвращает JobResult, не бросает SystemExit.
+
+    `cancel` — `threading.Event` отмены (его ставит `webapp.service.cancel`).
+    Отмена — исход, а не ошибка: задание останавливается, недоделанный кадр не
+    записывается, а кадр, который успел появиться, помечается `outcome=cancelled`
+    (решение 7.7: метка попадает в паспорт, только если кадр есть).
+    """
     out = Emitter(emit)
     result = JobResult()
     desc = None
@@ -174,6 +180,9 @@ def run_job(req, emit=None):
     model = req.model
     t_desc = t_unload = 0.0
     handle = None
+
+    def stopped():
+        return cancel is not None and cancel.is_set()
 
     out("start", "", workflow=req.workflow, image=str(req.image),
         variants=max(1, req.variants))
@@ -320,6 +329,11 @@ def run_job(req, emit=None):
             return result
 
         # ---- 4. ComfyUI: очередь, шаги, кадры ------------------------------
+        if stopped():
+            # Отмена во время описания: до ComfyUI не доходим, кадра нет.
+            out("cancelled", "задание отменено до генерации")
+            result.stage = "cancelled"
+            return result
         if req.start_comfy:
             # Только здесь: VLM уже выгружен, память под SDXL свободна.
             handle = cl.ensure(emit=out)
@@ -335,6 +349,9 @@ def run_job(req, emit=None):
         t = time.monotonic()
         ok_all = True
         for i in range(n):
+            if stopped():
+                out("cancelled", f"   отменено: сделано вариантов {i} из {n}")
+                break
             sd = _seed(req, i)
             out("variant", f"   вариант {i + 1}/{n}, seed {sd}", index=i + 1, total=n, seed=sd)
             report = {}
@@ -348,13 +365,17 @@ def run_job(req, emit=None):
             ok_all &= bool(ok)
             folder = None
             if name:
+                # Кадр успел появиться до отмены — он настоящий, но помечен
+                # отменённым: паспорт не имеет права звать его обычным.
+                outcome = "cancelled" if stopped() else "unknown"
                 folder = pp.save_run(str(req.image), req.workflow, desc, sd, req.denoise, name,
                                      cn_strength=req.cn_strength,
                                      style_weight=req.style_weight,
                                      overrides=req.overrides or None,
                                      positive=report.get("positive"),
                                      negative=report.get("negative"),
-                                     settings=report.get("settings"))
+                                     settings=report.get("settings"),
+                                     outcome=outcome)
                 if folder is None:
                     ok_all = False
                 else:
@@ -365,12 +386,12 @@ def run_job(req, emit=None):
                         "refined": False, "subject": desc.get("subject", ""),
                         "positive": report.get("positive", ""),
                         "negative": report.get("negative", ""),
-                        "outcome": "unknown",
+                        "outcome": outcome,
                         **_sampler_fields(report),
                     })
                     result.folders.append(str(folder))
                     out("save", f"   кадр сохранён: {name}", file=name, folder=str(folder))
-            if req.recheck and i == 0 and name:
+            if req.recheck and i == 0 and name and not stopped():
                 ok_recheck, refined = _recheck(req, desc, name, out, sd)
                 ok_all &= ok_recheck
                 if refined:
@@ -380,6 +401,15 @@ def run_job(req, emit=None):
 
         result.elapsed = out.elapsed
         result.partial = (not ok_all) and bool(result.frames)
+        if stopped():
+            # Отмена — исход, а не провал: статус задания ставит сервис, а кадр
+            # без файла в паспорт не попадает вовсе.
+            result.ok = bool(result.frames)
+            result.code = 0 if result.ok else 1
+            result.stage = "cancelled"
+            out("cancelled", f"   отменено: кадров {len(result.frames)} из {n}",
+                frames=len(result.frames), total=n)
+            return result
         out("done", f"\nитого: описание {t_desc:.0f} с + выгрузка {t_unload:.1f} с + "
                     f"генерация {t_gen:.0f} с = {t_desc + t_unload + t_gen:.0f} с",
             frames=len(result.frames), total=n, elapsed=out.elapsed)
