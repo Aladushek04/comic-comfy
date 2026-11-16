@@ -1,0 +1,34 @@
+{
+  "_about": "Эталоны промптов: те же входы -> те же байты (spec 7.7). Снято с workflows/*.api.json после разрешённого фикса шаблонов; входы — subject и negative_extra кадров из out/v2-baseline/run.json.",
+  "_diff_from_baseline": [
+    "07_photo_thepit: без изменений",
+    "07_photo_comic: - theofficialpit style",
+    "07_photo_jp: - theofficialpit style",
+    "07_photo_bimbo: - theofficialpit style",
+    "08_photo_gta: без изменений"
+  ],
+  "subject": "adult woman, large breasts, nipples, jewelry, ass, wavy brown hair, green eyes, heavy black eyeliner, glossy lips, pearl necklace, pearl bracelet, rings on fingers, pink nail polish, topless, bare chest, grey lace panties, black lace thigh-high stockings, standing pose, one hand touching necklace, one hand on hip, white sofa, white curtains background, soft indoor light",
+  "negative_extra": "missing necklace, missing bracelet, missing rings, missing stockings, extra fingers, wrong eye color",
+  "prompts": {
+    "07_photo_thepit": {
+      "positive": "comic book illustration, theofficialpit style, thick lips, adult woman, large breasts, nipples, jewelry, ass, wavy brown hair, green eyes, heavy black eyeliner, glossy lips, pearl necklace, pearl bracelet, rings on fingers, pink nail polish, topless, bare chest, grey lace panties, black lace thigh-high stockings, standing pose, one hand touching necklace, one hand on hip, white sofa, white curtains background, soft indoor light, bold black outlines, flat colors, clean skin, high contrast, limited palette, clean silhouette",
+      "negative": "missing necklace, missing bracelet, missing rings, missing stockings, extra fingers, wrong eye color, photo, photorealistic, 3d render, soft shading, airbrush, gradient, blurry, low quality, halftone dots, screentone, dotted texture, moire, freckles, skin texture, bad anatomy, bad hands, fewer fingers, watermark, text, signature, child, loli, shota, young, underage"
+    },
+    "07_photo_comic": {
+      "positive": "comic book illustration, ComicPitXX, adult woman, large breasts, nipples, jewelry, ass, wavy brown hair, green eyes, heavy black eyeliner, glossy lips, pearl necklace, pearl bracelet, rings on fingers, pink nail polish, topless, bare chest, grey lace panties, black lace thigh-high stockings, standing pose, one hand touching necklace, one hand on hip, white sofa, white curtains background, soft indoor light, bold black outlines, flat colors, clean skin, high contrast, limited palette, clean silhouette",
+      "negative": "missing necklace, missing bracelet, missing rings, missing stockings, extra fingers, wrong eye color, photo, photorealistic, 3d render, soft shading, airbrush, gradient, blurry, low quality, halftone dots, screentone, dotted texture, moire, freckles, skin texture, bad anatomy, bad hands, fewer fingers, watermark, text, signature, child, loli, shota, young, underage"
+    },
+    "07_photo_jp": {
+      "positive": "comic book illustration, jpstyle, adult woman, large breasts, nipples, jewelry, ass, wavy brown hair, green eyes, heavy black eyeliner, glossy lips, pearl necklace, pearl bracelet, rings on fingers, pink nail polish, topless, bare chest, grey lace panties, black lace thigh-high stockings, standing pose, one hand touching necklace, one hand on hip, white sofa, white curtains background, soft indoor light, bold black outlines, flat colors, clean skin, high contrast, limited palette, clean silhouette",
+      "negative": "missing necklace, missing bracelet, missing rings, missing stockings, extra fingers, wrong eye color, photo, photorealistic, 3d render, soft shading, airbrush, gradient, blurry, low quality, halftone dots, screentone, dotted texture, moire, freckles, skin texture, bad anatomy, bad hands, fewer fingers, watermark, text, signature, child, loli, shota, young, underage"
+    },
+    "07_photo_bimbo": {
+      "positive": "comic book illustration, bimbofusion artstyle, adult woman, large breasts, nipples, jewelry, ass, wavy brown hair, green eyes, heavy black eyeliner, glossy lips, pearl necklace, pearl bracelet, rings on fingers, pink nail polish, topless, bare chest, grey lace panties, black lace thigh-high stockings, standing pose, one hand touching necklace, one hand on hip, white sofa, white curtains background, soft indoor light, bold black outlines, flat colors, clean skin, high contrast, limited palette, clean silhouette, warm skin tone, natural skin color",
+      "negative": "missing necklace, missing bracelet, missing rings, missing stockings, extra fingers, wrong eye color, photo, photorealistic, 3d render, soft shading, airbrush, gradient, blurry, low quality, halftone dots, screentone, dotted texture, moire, freckles, skin texture, bad anatomy, bad hands, fewer fingers, watermark, text, signature, child, loli, shota, young, grey skin, pale skin, red eyes, monochrome, desaturated, underage"
+    },
+    "08_photo_gta": {
+      "positive": "GTA V loading screen artwork, gtav, copic-makers, western comics (style), copic_markers_painting, digital painting, warm golden sunlight, saturated colors, adult woman, large breasts, nipples, jewelry, ass, wavy brown hair, green eyes, heavy black eyeliner, glossy lips, pearl necklace, pearl bracelet, rings on fingers, pink nail polish, topless, bare chest, grey lace panties, black lace thigh-high stockings, standing pose, one hand touching necklace, one hand on hip, white sofa, white curtains background, soft indoor light, bold black outlines, semi-realistic, Los Santos, palm trees, blue sky, beach, lens flare, advertising poster",
+      "negative": "missing necklace, missing bracelet, missing rings, missing stockings, extra fingers, wrong eye color, photo, photorealistic, 3d render, dark, gloomy, desaturated, black and white, night, rain, blurry, low quality, bad anatomy, bad hands, watermark, text, signature, child, loli, shota, young, underage"
+    }
+  }
+}

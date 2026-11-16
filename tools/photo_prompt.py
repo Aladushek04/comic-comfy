@@ -9,13 +9,13 @@
 
 Ключи:
   --workflow   имя сборки из workflows\\ (без .json)
+  --batch      папка с фото: все описания, потом выгрузка VLM, потом кадры
   --generate   после описания сразу запустить ComfyUI
   --no-llm     не звать LM Studio, взять --subject
   --model      id модели в LM Studio (иначе первая загруженная / первая vision)
   --keep-llm   не выгружать модель (только если хватает памяти)
   --unload-all выгрузить из LM Studio все модели, а не только свою
   --dry-run    показать промпт, ничего не загружая: нужен кэш/пресет/--no-llm
-  --no-think   размышления выключены по умолчанию; флаг оставлен для явности
   --think      включить размышления (86 с против 6 с на фото); то же делает LM_THINKING=on
   --no-tags    не дописывать в subject теги WD14-теггера
 """
@@ -24,14 +24,12 @@ import base64
 import hashlib
 import json
 import os
-import random
 import re
 import shutil
 import socket
 import ssl
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.request
@@ -40,6 +38,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import settings
 import tagger
+from comic import cache  # noqa: E402  — корень репозитория добавляет settings.py
+from comic import run  # noqa: E402
+from comic.guard import (  # noqa: E402
+    AGE_WORDS, GENERIC_PERSON, ensure_guard, sanitize_subject, scrub_tags,
+)
+from comic.prompt import (  # noqa: E402
+    NEG_CORE, NEG_GUARD, SUBJECT_SLOT, PromptBuilder, join_tags,
+)
 
 LM = settings.LM_URL or "http://127.0.0.1:1234"
 
@@ -188,6 +194,16 @@ def image_tag(image_path):
     return f"{src.stem}_{fingerprint(src)}"
 
 
+def input_name(image_path):
+    """Имя, под которым фото ляжет в input: без копирования (нужно предпросмотру).
+
+    `ensure_input` кладёт файл и возвращает это же имя, поэтому предпросмотр и
+    кадр называют один файл, а `--dry-run` ничего не пишет на диск.
+    """
+    src = Path(image_path)
+    return image_tag(src) + src.suffix.lower()
+
+
 def ensure_input(image_path):
     """Кладёт фото в общую папку input и возвращает имя для LoadImage.
 
@@ -196,7 +212,7 @@ def ensure_input(image_path):
     Одинаковые байты дают одно имя и одну копию.
     """
     src = Path(image_path)
-    name = image_tag(src) + src.suffix.lower()
+    name = input_name(src)
     dst = INPUT_DIR / name
     if not dst.exists() or dst.stat().st_size != src.stat().st_size:
         INPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -205,18 +221,8 @@ def ensure_input(image_path):
 
 
 def scene_slug(scene):
-    """Имя сцены для кэша. Кириллица не должна исчезать.
-
-    Раньше «на пляже» и «в горах» давали пустой slug и попадали в один файл с запуском
-    без сцены. Теперь к читаемой части всегда добавляется короткий хэш полной строки,
-    поэтому разные сцены не сталкиваются, в каком бы алфавите они ни были записаны.
-    """
-    if not scene:
-        return ""
-    text = str(scene).strip()
-    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:32].strip("-")
-    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
-    return (slug + "-" if slug else "s-") + digest
+    """Имя сцены для кэша: см. comic.cache.scene_slug (кириллица не исчезает)."""
+    return cache.scene_slug(scene)
 
 
 def cache_path(image_path, scene=None):
@@ -225,103 +231,45 @@ def cache_path(image_path, scene=None):
     Раньше ключом был stem: same.png и same.jpg попадали в один файл, а --scene
     при попадании в кэш молча игнорировался. Теперь другая сцена — другой файл.
     """
-    tag = image_tag(image_path)
-    slug = scene_slug(scene)
-    if slug:
-        tag += "__" + slug
-    return ROOT / "out" / (tag + ".prompt.json")
+    return cache.path_for(ROOT / "out", image_tag(image_path), scene)
 
 
-def read_json(path, retries=5):
-    """JSON с диска; на Windows короткий повтор.
-
-    os.replace делает старый файл на миг недоступным для чтения: без повтора
-    случайный читатель в этот момент получил бы PermissionError.
-    """
-    for attempt in range(retries):
-        try:
-            return json.loads(Path(path).read_text(encoding="utf-8"))
-        except PermissionError:
-            if attempt == retries - 1:
-                raise
-            time.sleep(0.02)
+# Атомарный JSON (tmp -> fsync -> os.replace) живёт в comic.cache: им пишутся и
+# кэш, и паспорт кадра, и пресеты, и тема. Имена оставлены прежними — их зовут
+# webapp и проверки, — но второго места, где запись может стать неатомарной,
+# быть не должно.
+read_json = cache.read_json
+write_json = cache.write_json
 
 
 def read_cache(image_path, scene=None):
     """Описание с диска, если оно снято с этого же содержимого и для этой же сцены."""
-    p = cache_path(image_path, scene)
-    if not p.exists():
+    rec = cache.read(cache_path(image_path, scene))
+    if rec is None:
         return None
-    try:
-        data = read_json(p)
-    except Exception:
-        return None
-    if (data.get("scene") or "") != (scene or ""):
-        # Имя файла могло совпасть, но описание — от другой сцены.
-        return None
-    if scene and not data.get("scene_applied"):
+    why = cache.check(rec, scene=scene or "", describe_version=DESCRIBE_VERSION,
+                      sha1=lambda: fingerprint(image_path))
+    if why == cache.SCENE_UNMARKED:
         # Записи до 3af4b58 писались под ключом сцены даже когда сцену применить
         # не удалось: доверять их полю scene нельзя, сцену надо переписать.
         print("   кэш сцены без метки (старая версия) — сцену переписываю заново")
         return None
-    if int(data.get("describe") or 1) < DESCRIBE_VERSION:
+    if why == cache.DESCRIBE:
         # В описании нет цвета глаз: с ним модель угадывает радужку и красит её
         # в красный. Ручные описания (--no-llm, --from-json) метку не ставят и
         # сюда не попадают — их переснимать нечем.
         print("   кэш описания снят старым промптом (без цвета глаз) — описываю заново")
         return None
-    if data.get("sha1") and data["sha1"] != fingerprint(image_path):
+    if why:
         return None
-    return data
-
-
-def write_json(path, data, indent=2):
-    """Пишет JSON целиком или не трогает файл: обрыв не оставляет половину.
-
-    Временный файл лежит рядом с целевым: os.replace атомарен только в пределах
-    одной файловой системы. fsync до замены — чтобы после сбоя питания на диске
-    остался прежний файл, а не пустой новый.
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(data, ensure_ascii=False, indent=indent)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        # На Windows replace не проходит, пока файл открыт читателем: короткая
-        # пауза и повтор дешевле, чем сорванная запись паспорта из-за вкладки.
-        for attempt in range(10):
-            try:
-                os.replace(tmp, path)
-                break
-            except PermissionError:
-                if attempt == 9:
-                    raise
-                time.sleep(0.02)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    return path
+    return cache.to_dict(rec)
 
 
 def write_cache(image_path, desc, scene=None):
     """Пишет описание вместе с отпечатком и сценой — кэш сам себя проверяет."""
-    p = cache_path(image_path, scene)
-    data = dict(desc)
-    data["sha1"] = fingerprint(image_path)
-    data["source"] = str(image_path)
-    data["scene"] = scene or ""
-    # Метка «поле scene правдиво»: без неё запись считается старой и не берётся.
-    data["scene_applied"] = True
-    # Каким промптом снято описание: см. DESCRIBE_VERSION.
-    data["describe"] = DESCRIBE_VERSION
-    return write_json(p, data)
+    return cache.write(cache_path(image_path, scene), cache.from_desc(
+        desc, sha1=fingerprint(image_path), source=str(image_path),
+        scene=scene or "", describe_version=DESCRIBE_VERSION))
 
 
 def legacy_cache_hint(image_path):
@@ -374,16 +322,9 @@ def rewrite_scene(desc, scene, model):
         print("   сцена не переписалась:", e)
         return None
 
-# ComfyUI режет текст на чанки по 77 токенов и кодирует их подряд (SDTokenizer: batched_tokens),
-# поэтому длинный промпт не обрезается. Проверено токенизатором: GTA-блок — 1 чанк,
-# со субъектом — 2, 120 тегов — 7. Важное всё равно ставим в начало: дальние теги влияют слабее.
-NEG_CORE = ("photorealistic, 3d render, bad anatomy, bad hands, extra fingers, "
-            "watermark, text, signature, blurry, low quality")
-
-NEG_GUARD = "child, loli, shota, underage"
-
-# Плейсхолдер субъекта в шаблоне промпта из build_workflows.py.
-SUBJECT_SLOT = "{{subject}}"
+# Рамка возраста, запасное ядро негатива и плейсхолдер субъекта живут в
+# comic\prompt.py: там же сборка промпта. Здесь только прежние имена — на них
+# ссылаются старые вызовы и проверки.
 
 # Версия промпта описания. Запись кэша помнит, каким промптом она снята: без цвета
 # глаз модель красит радужку случайным насыщенным цветом (чаще всего красным),
@@ -421,52 +362,14 @@ Rules:
 Example output:
 {"subject":"adult woman, early 30s, long wavy blonde hair, blue eyes, black framed glasses, light eye makeup, red sleeveless dress, thin gold necklace, arms spread wide, neutral grey studio background, soft frontal light","negative_extra":"white lenses, opaque glasses, missing necklace","notes":"главное — сохранить очки и цепочку."}"""
 
-# Возрастные слова, которые модель любит добавлять в описание.
-AGE_WORDS = ("young", "teen", "teenage", "teenager", "girl", "boy", "child", "kid",
-             "schoolgirl", "schoolboy", "adolescent", "loli", "shota", "underage", "minor")
-
-
-def scrub_tags(text):
-    """Убирает возрастные слова и точные дубли, сохраняя порядок."""
-    out, seen = [], set()
-    for part in str(text).split(","):
-        tag = part.strip().strip(".")
-        if not tag:
-            continue
-        low = tag.lower()
-        if any(re.search(r"(?<![a-z])" + re.escape(w) + r"(?![a-z])", low) for w in AGE_WORDS):
-            continue
-        if low in seen:
-            continue
-        seen.add(low)
-        out.append(tag)
-    return out
-
-
-GENERIC_PERSON = {"woman", "women", "lady", "female", "man", "male", "guy", "gentleman", "person"}
-
 
 def with_adult(subject):
-    """Взрослый — первым тегом, с явным родом. Убирает дубли-роды и всё школьное."""
-    raw = scrub_tags(subject)
-    if not raw:
-        return ""
-    low = str(subject).lower()
-    male = re.search(r"(?<![a-z])(man|male|guy|gentleman|boy)(?![a-z])", low)
-    female = re.search(r"(?<![a-z])(woman|women|female|lady|girl)(?![a-z])", low)
-    man = bool(male) and not bool(female)
+    """Взрослый — первым тегом, с явным родом. Убирает дубли-роды и всё школьное.
 
-    tags = [t for t in raw if t.lower() not in GENERIC_PERSON and "school" not in t.lower()]
-    adult_idx = next((i for i, t in enumerate(tags) if "adult" in t.lower()), None)
-    if adult_idx is None:
-        tags.insert(0, "adult man" if man else "adult woman")
-    else:
-        if adult_idx != 0:
-            tags.insert(0, tags.pop(adult_idx))
-        first = tags[0].lower()
-        if "man" not in first and "woman" not in first:
-            tags[0] = tags[0] + (" man" if man else " woman")
-    return ", ".join(tags)
+    Сама логика — `comic.guard.sanitize_subject`: ею же проверяются переопределения
+    промпта, иначе рамку можно было снять, заменив текст целиком.
+    """
+    return sanitize_subject(subject)
 
 
 def enrich_subject(desc, image_path, warn=True):
@@ -584,8 +487,12 @@ def lm_models(strict=True):
 
 
 def model_list(resp):
-    """LM Studio 0.4 отдаёт {'models':[...]}, старые сборки — {'data':[...]}."""
-    return resp.get("models") or resp.get("data") or []
+    """Список моделей из ответа `lm_models`: он всегда нормализован в `models`.
+
+    Ответ `/v1/models` (`{"data": [...]}`) сюда не доходит: `lm_models` переводит
+    его в тот же вид, поэтому ветки «а вдруг тут data» больше нет.
+    """
+    return resp.get("models") or []
 
 
 def pick_model(resp, wanted):
@@ -785,26 +692,14 @@ def free_llm(model, unload_everything=False):
     return unload_model(resp, model)
 
 
-def join_tags(*chunks):
-    """Склеивает теги без дублей, сохраняя порядок."""
-    parts, seen = [], set()
-    for chunk in chunks:
-        for tag in str(chunk or "").split(","):
-            t = tag.strip()
-            if t and t.lower() not in seen:
-                seen.add(t.lower())
-                parts.append(t)
-    return ", ".join(parts)
-
-
 def compose_negative(negative_extra, meta=None):
     """Сначала то, что важно подавить на этом фото, потом негатив сборки, потом рамка.
 
     Негатив берётся из графа: у GTA там «night, rain, dark», у bimbo — «white lenses,
     opaque lenses, grey skin». Раньше CLI подменял его своим коротким ядром целиком.
+    Сборка — в comic\prompt.py: обёртка осталась ради прежних имён.
     """
-    base = (meta or {}).get("negative") or NEG_CORE
-    return join_tags(negative_extra, base, NEG_GUARD)
+    return PromptBuilder(meta).negative(negative_extra)
 
 
 def compose_positive(meta, subject, workflow=""):
@@ -814,9 +709,9 @@ def compose_positive(meta, subject, workflow=""):
     промпт, что и панель, вместе со стилевыми настройками сборки. Если meta нет
     (старый .api.json) — собираем из таблицы STYLE_PREFIX, как раньше.
     """
-    tpl = (meta or {}).get("positive_template") or ""
-    if tpl:
-        return join_tags(tpl.replace(SUBJECT_SLOT, str(subject).strip().rstrip(",")))
+    builder = PromptBuilder(meta)
+    if builder.refuse_reason() is None:
+        return builder.positive(subject)
     return join_tags(STYLE_PREFIX.get(workflow, ""), subject, "bold outlines, flat colors")
 
 
@@ -835,20 +730,17 @@ def preset_path(name):
 
 def workflow_from_file(name):
     """Сборка по имени кадра: SaveImage пишет префикс comic/<сборка>_NNNNN_.png."""
-    stem = Path(str(name or "")).name
-    best = ""
-    for p in WF_DIR.glob("*.json"):
-        w = p.name[:-len(".json")]
-        if w.endswith(".api"):
-            continue
-        if stem.startswith(w) and len(w) > len(best):
-            best = w
-    return best
+    return run.workflow_from_file(name, WF_DIR)
+
+
+# Метки исхода живут в формате паспорта (comic.run): набор закрытый, и второе
+# место с тем же списком разошлось бы с первым.
+OUTCOMES = run.OUTCOMES
 
 
 def save_run(image_path, workflow, desc, seed, denoise, name,
              cn_strength=None, style_weight=None, overrides=None, refined=False,
-             positive=None, negative=None):
+             positive=None, negative=None, settings=None, outcome="unknown"):
     """Складывает кадр и его паспорт в папку out/<фото>_<хэш>/.
 
     Сборка пишется в каждый кадр, а не одна на папку: в одной папке лежат кадры
@@ -860,11 +752,23 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
     подписанными, хотя сделаны с разной силой ControlNet или LoRA.
     `positive` и `negative` — фактический запрос (шаблон стиля, переопределения
     и негатив вместе): по одному `subject` его не восстановить.
+    `settings` — применённые настройки сэмплера из `build_payload`: шаги, cfg,
+    сэмплер и планировщик. По аргументам их не восстановить: `--denoise` и поля
+    формы правят граф на лету.
+    `outcome` — метка исхода: по умолчанию `unknown`, повторный кадр recheck
+    помечается `refined`. `accepted`/`rejected` ставит действие пользователя в
+    галерее, `cancelled` — отмена. Метка не из `OUTCOMES` — отказ, а не запись
+    в паспорт чего попало.
     `None` означает «как в сборке».
+
+    Сам формат паспорта — в `comic.run` (схема 2, миграция старых записей):
+    здесь только собирается запись нового кадра.
 
     Возвращает папку или None, если кадра нет в OUTPUT_DIR: паспорт на
     несуществующий файл хуже, чем отсутствие паспорта.
     """
+    if outcome not in OUTCOMES:
+        raise PipelineError(f"метка исхода {outcome!r} не из списка {', '.join(OUTCOMES)}")
     if not name:
         print("   паспорт не пишу: ComfyUI не назвал файл")
         return None
@@ -876,34 +780,36 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
         return None
 
     folder = ROOT / "out" / image_tag(image_path)
-    book_path = folder / "run.json"
-    book = {"runs": []}
-    if book_path.exists():
+    try:
+        records, head = run.read_book(folder, read_json=read_json, wf_dir=WF_DIR)
+    except run.RunError as e:
         # Паспорт уже есть — переписываем только прочитанный: пустой «паспорт»
         # вместо истории хуже, чем кадр без записи, и молча теряет прошлые кадры.
-        try:
-            book = read_json(book_path)
-        except Exception as e:
-            raise PipelineError(
-                f"паспорт {book_path} не читается ({e}) — кадр не записан, "
-                f"паспорт не тронут") from e
+        raise PipelineError(f"{e} — кадр не записан, паспорт не тронут") from e
     folder.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, folder / name)
-    for r in book.get("runs", []):
-        if not r.get("workflow"):
-            r["workflow"] = workflow_from_file(r.get("file", ""))
-    book.setdefault("runs", []).append({
-        "workflow": workflow,
-        "seed": seed, "denoise": denoise, "file": name,
-        "cn_strength": cn_strength, "style_weight": style_weight,
-        "overrides": overrides or None,
-        "refined": bool(refined),
-        "positive": positive, "negative": negative,
-        "subject": desc.get("subject", ""), "negative_extra": desc.get("negative_extra", ""),
-    })
-    book.pop("workflow", None)
-    book["workflows"] = sorted({r["workflow"] for r in book["runs"] if r.get("workflow")})
-    write_json(book_path, book)
+    records.append(run.RunRecord(
+        workflow=workflow,
+        seed=seed, denoise=denoise, file=name,
+        cn_strength=cn_strength, style_weight=style_weight,
+        overrides=overrides or None,
+        refined=bool(refined),
+        positive=positive, negative=negative,
+        subject=desc.get("subject", ""), negative_extra=desc.get("negative_extra", ""),
+        # Настройки главного прохода: без них паспорт не отличает кадр на 30 шагах
+        # от кадра на 15. Нет настроек — None, а не 0.
+        steps=(settings or {}).get("steps"),
+        cfg=(settings or {}).get("cfg"),
+        sampler=(settings or {}).get("sampler"),
+        scheduler=(settings or {}).get("scheduler"),
+        # Оба прохода: у 07 главный 0.75/30 и второй 0.3/15. По одному `denoise`
+        # не видно, что кадр сделан двумя сэмплерами.
+        passes=run.passes_of((settings or {}).get("passes")),
+        # Исход кадра: по умолчанию unknown, а не accepted — принял кадр человек,
+        # и до его решения паспорт не имеет права это утверждать.
+        outcome=outcome,
+    ))
+    run.write(folder, records, head=head, write_json=write_json)
     return folder
 
 
@@ -1087,6 +993,37 @@ def apply_loras(api, meta, loras):
     return applied
 
 
+def sampler_settings(samplers):
+    """Применённые настройки сэмплеров: главный проход и все проходы графа.
+
+    Значения читаются из собранного графа, а не из аргументов: `--denoise` правит
+    главный KSampler, поля формы могут переписать `steps` и `cfg`, и паспорт должен
+    говорить то, что реально ушло в ComfyUI. Главный проход — тот же, который правит
+    `denoise` (наибольший denoise), поэтому шаги, cfg и сэмплер в записи принадлежат
+    одному узлу, а не смеси двух.
+
+    `passes` идут в порядке графа: главный проход первым, у 07 это 0.75/30, потом
+    0.3/15. Сортировать по denoise не нужно и опасно: с `--denoise 0.2` главный
+    проход уехал бы на второе место, и паспорт снова назвал бы второй проход первым.
+
+    `None` вместо нулей: у старого паспорта настройки не записаны, и 0 шагов
+    выглядел бы настоящим значением.
+    """
+    if not samplers:
+        return {"steps": None, "cfg": None, "sampler": None, "scheduler": None,
+                "passes": []}
+    main = max(samplers, key=lambda s: float(s["inputs"].get("denoise") or 0))
+    inputs = main["inputs"]
+    return {
+        "steps": inputs.get("steps"),
+        "cfg": inputs.get("cfg"),
+        "sampler": inputs.get("sampler_name"),
+        "scheduler": inputs.get("scheduler"),
+        "passes": [{"denoise": s["inputs"].get("denoise"), "steps": s["inputs"].get("steps")}
+                   for s in samplers],
+    }
+
+
 def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, landscape=False,
                   style_weight=None, image_name=None, cn_strength=None,
                   overrides=None, positive=None, negative=None):
@@ -1095,7 +1032,9 @@ def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, la
     Правки не касаются файла сборки: граф загружается заново, поэтому два
     задания с разными настройками не мешают друг другу. Полный positive или
     negative (overrides) заменяет собранный текст целиком — это явное
-    переопределение, а не добавка к описанию.
+    переопределение, а не добавка к описанию. Рамку возраста заменить нельзя:
+    positive проходит `sanitize_subject`, negative замыкается `ensure_guard`
+    (`comic.guard`), поэтому переопределение не снимает правила проекта 18+.
     """
     api, meta = load_workflow(workflow)
     problems = check_bindings(api, meta)
@@ -1106,9 +1045,9 @@ def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, la
     if not prefix:
         raise PipelineError(f"для {workflow} не задан стилевой блок: пересобери воркфлоу")
 
-    positive_text = (str(positive) if positive is not None
+    positive_text = (sanitize_subject(positive) if positive is not None
                      else compose_positive(meta, subject, workflow))
-    negative_text = (str(negative) if negative is not None
+    negative_text = (ensure_guard(negative) if negative is not None
                      else compose_negative(negative_extra, meta))
 
     patched = 0
@@ -1177,6 +1116,7 @@ def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, la
         "positive": positive_text,
         "negative": negative_text,
         "applied": applied,
+        "settings": sampler_settings(samplers),
     }
 
 
@@ -1399,7 +1339,8 @@ def generate(workflow, subject, negative_extra, denoise=None, seed=None, landsca
     positive_text, negative_text = payload["positive"], payload["negative"]
     if isinstance(report, dict):
         # Фактический запрос: его сохраняют паспорт кадра и галерея.
-        report.update({"positive": positive_text, "negative": negative_text})
+        report.update({"positive": positive_text, "negative": negative_text,
+                       "settings": payload.get("settings") or {}})
 
     print("   positive:", positive_text[:160] + ("…" if len(positive_text) > 160 else ""))
     print("   negative:", negative_text[:160] + ("…" if len(negative_text) > 160 else ""))
@@ -1414,162 +1355,14 @@ def generate(workflow, subject, negative_extra, denoise=None, seed=None, landsca
     return wait_for_prompt(pid, progress=progress, client_id=client_id)
 
 
-def run_batch(args, workflow):
-    """Пачка фото в два прохода: сначала все описания, потом выгрузка и генерация.
+def build_request(a, workflow, image=None):
+    """Аргументы CLI -> задание. Один и тот же JobRequest получает и страница.
 
-    Так модель грузится один раз, а не на каждый файл.
+    `image` — файл пачки: у каждого фото свой JobRequest, остальные флаги общие.
     """
-    global COMFY
-    folder = Path(args.batch)
-    if not folder.is_dir():
-        sys.exit(f"{folder} не папка")
-    files = sorted(p for p in folder.iterdir()
-                   if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"))
-    if not files:
-        sys.exit("в папке нет картинок")
-
-    need_llm = not args.no_llm and not args.from_json
-    print(f"пачка: {len(files)} файлов, стиль {workflow}, "
-          f"описание: {'LLM' if need_llm else 'без модели'}")
-
-    # --dry-run модель не грузит: значит и опрашивать LM Studio незачем. В остальных
-    # случаях модель спрашиваем только когда действительно нужно описание.
-    model = None
-    described = 0
-    descs = {}
-    skipped = []
-    for i, f in enumerate(files, 1):
-        print(f"\n=== [{i}/{len(files)}] {f.name}")
-        fresh = False        # описание для этой сцены готово сейчас и его можно кэшировать
-        cached = read_cache(str(f), args.scene) if need_llm and not args.force else None
-        base_desc = (read_cache(str(f))
-                     if need_llm and not args.force and args.scene and not cached else None)
-        if args.from_json:
-            desc = json.loads(Path(args.from_json).read_text(encoding="utf-8"))
-        elif cached:
-            desc = cached
-            print(f"   из кэша {cache_path(str(f), args.scene).name}")
-        elif args.no_llm:
-            desc = {"subject": args.subject or "", "negative_extra": "", "notes": "без LLM"}
-        elif args.dry_run:
-            print("   в кэше нет описания, а --dry-run модель не грузит — пропускаю")
-            skipped.append(f.name)
-            continue
-        elif base_desc:
-            print("   фото уже описано — переписываю только сцену")
-            desc = base_desc
-        else:
-            if model is None:
-                model = pick_model(lm_models(), args.model)
-            desc = describe(str(f), model)
-            described += 1
-            fresh = True
-
-        if args.scene and need_llm and not cached:
-            if model is None:
-                model = pick_model(lm_models(), args.model)
-            print(f"   сцена: {args.scene}")
-            new = rewrite_scene(desc, args.scene, model)
-            described += 1
-            if not new:
-                # Не пишем исходный текст под ключом сцены: иначе следующий запуск
-                # возьмёт его из кэша и сцену уже не попробует.
-                print("   сцену применить не удалось — пропускаю файл")
-                if fresh:
-                    print("   описание фото сохранено без сцены:",
-                          write_cache(str(f), desc, None).name)
-                skipped.append(f.name)
-                continue
-            desc = new
-            fresh = True
-        if args.scene and args.no_llm:
-            desc["subject"] = (desc["subject"].rstrip(", ") + ", " + args.scene).strip(", ")
-
-        desc["subject"] = with_adult(desc.get("subject", ""))
-        if desc["subject"]:
-            before = desc["subject"]
-            desc["subject"] = apply_tags(desc, str(f), args.no_tags, args.dry_run)
-            # Дозаполнили кэш этого фото — перезапишем. Ручное описание и пресет
-            # в кэш не пишем: там его быть не должно (пункт 0.11.2 в AGENTS).
-            if cached and not args.no_tags and not args.dry_run and desc["subject"] != before:
-                fresh = True
-        clean_negative(desc)
-        if not desc["subject"]:
-            print("   пустое описание — пропускаю")
-            skipped.append(f.name)
-            print("   нет описания, кадр не появится")
-            continue
-        # Кэш — до подмешивания ключей командной строки, иначе флаги прогона
-        # остаются в описании навсегда.
-        if fresh:
-            print("   сохранено:", write_cache(str(f), desc, args.scene).name)
-
-        extra = [x.strip() for x in (desc.get("negative_extra") or "").split(",") if x.strip()]
-        drop = [x.strip().lower() for x in args.negative_drop.split(",") if x.strip()]
-        if drop:
-            extra = [x for x in extra if x.lower() not in drop]
-        extra += [x.strip() for x in args.negative_extra.split(",") if x.strip()]
-        desc["negative_extra"] = ", ".join(dict.fromkeys(extra))
-        descs[f] = desc
-        print("   subject:", desc["subject"][:110])
-
-    if need_llm and described and model and not args.keep_llm:
-        freed = free_llm(model, args.unload_all)
-        print(f"\nвыгружено: {', '.join(freed) if freed else 'нечего'}")
-
-    if args.dry_run or not args.generate:
-        print(f"\nготово описаний: {len(descs)} (генерация не запускалась)")
-        if args.dry_run and not descs:
-            print("нечего показать: ни одного описания")
-            return 1
-        if skipped:
-            print("без описания: " + ", ".join(skipped))
-            return 1
-        return 0
-    if not descs:
-        print(f"\nкадров: 0, провалов: {len(skipped)}"
-              + (f", без описания: {len(skipped)} ({', '.join(skipped)})" if skipped else "")
-              + " — генерировать нечего")
-        return 1
-
-    COMFY = resolve_comfy(args.comfy)
-    frames, failed, folders = 0, 0, []
-    for i, (f, desc) in enumerate(descs.items(), 1):
-        for v in range(max(1, args.variants)):
-            sd = (args.seed + v) if args.seed is not None else random.randint(1, 2_000_000_000)
-            print(f"\n=== [{i}/{len(descs)}] {f.name}, вариант {v + 1}, seed {sd}")
-            report = {}
-            ok, name = generate(workflow, desc["subject"], desc.get("negative_extra", ""),
-                                denoise=args.denoise, seed=sd,
-                                landscape=image_is_landscape(str(f)), style_weight=args.style_weight,
-                                cn_strength=args.cn_strength,
-                                image_name=ensure_input(str(f)), report=report)
-            if not ok:
-                failed += 1
-                print("   кадр не получен")
-                continue
-            folder = save_run(str(f), workflow, desc, sd, args.denoise, name,
-                              cn_strength=args.cn_strength, style_weight=args.style_weight,
-                              positive=report.get("positive"),
-                              negative=report.get("negative"))
-            if folder is None:
-                failed += 1
-                continue
-            frames += 1
-            folders.append(folder)
-    print(f"\nкадров: {frames}, провалов: {failed}"
-          + (f", без описания: {len(skipped)} ({', '.join(skipped)})" if skipped else ""))
-    if folders:
-        print("  результаты:", ", ".join(sorted({p.name for p in folders})))
-    # Пропуск на любом этапе — не успех: код возврата это покажет.
-    return 0 if frames and not failed and not skipped else 1
-
-
-def build_request(a, workflow):
-    """Аргументы CLI -> задание. Один и тот же JobRequest получает и страница."""
     import jobs
     req = jobs.JobRequest(
-        image=a.image, workflow=workflow, scene=a.scene or "",
+        image=image or a.image, workflow=workflow, scene=a.scene or "",
         variants=max(1, a.variants), model=a.model,
         subject=a.subject if a.no_llm else None,
         negative_extra=a.negative_extra, negative_drop=a.negative_drop,
@@ -1609,8 +1402,6 @@ def main():
                     help="после генерации проверить кадр моделью и один раз дописать негатив")
     ap.add_argument("--no-tags", action="store_true",
                     help="не дописывать в subject теги WD14-теггера")
-    ap.add_argument("--no-think", action="store_true",
-                    help="размышления выключены по умолчанию; флаг оставлен для явности")
     ap.add_argument("--think", action="store_true",
                     help="включить размышления модели описания (86 с против 6 с на фото)")
     ap.add_argument("--keep-llm", action="store_true")
@@ -1631,24 +1422,43 @@ def main():
     ap.add_argument("--generate", action="store_true")
     a = ap.parse_args()
 
-    # Размышления выключаются через окружение: так их видят и CLI, и страница,
+    # Размышления включаются через окружение: так их видят и CLI, и страница,
     # и подмены в проверках — без глобальной переменной и лишних аргументов.
-    if a.no_think:
-        os.environ["LM_THINKING"] = "off"
+    # Выключены они по умолчанию, поэтому флага «выключить» нет.
     if a.think:
         os.environ["LM_THINKING"] = "on"
 
     workflow = resolve_workflow(a.workflow, a.style)
-    if a.batch:
-        sys.exit(run_batch(a, workflow))
-        return
-    if not a.image:
-        sys.exit("нужен --image или --batch")
-    a.workflow = workflow
     if a.no_llm and not a.subject:
         sys.exit("--no-llm требует --subject")
 
     import jobs
+    if a.batch:
+        # Пачка идёт тем же путём, что одиночный кадр: каждый файл — задание
+        # `jobs.run_job`, пачка задаёт только порядок (все описания, потом кадры).
+        if a.preset:
+            sys.exit("--batch с --preset: одно библиотечное описание на всю папку — "
+                     "это одинаковые кадры. Убери --preset или запускай по одному фото.")
+        if a.save_preset:
+            sys.exit("--batch с --save-preset: имя пресета одно, а описаний в папке "
+                     "много. Сохрани пресет одиночным прогоном.")
+        folder = Path(a.batch)
+        if not folder.is_dir():
+            sys.exit(f"{folder} не папка")
+        files = sorted(p for p in folder.iterdir()
+                       if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"))
+        if not files:
+            sys.exit("в папке нет картинок")
+        need_llm = not a.no_llm and not a.from_json
+        print(f"пачка: {len(files)} файлов, стиль {workflow}, "
+              f"описание: {'LLM' if need_llm else 'без модели'}")
+        reqs = [build_request(a, workflow, image=str(f)) for f in files]
+        sys.exit(jobs.run_batch(reqs, emit=jobs.cli_sink).code)
+
+    if not a.image:
+        sys.exit("нужен --image или --batch")
+    a.workflow = workflow
+
     result = jobs.run_job(build_request(a, workflow), emit=jobs.cli_sink)
     if result.code != 0:
         sys.exit(result.code)

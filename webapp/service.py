@@ -3,6 +3,10 @@
 Один исполнитель на всё приложение: две вкладки не запускают две генерации,
 вторая задача ждёт в очереди. Состояние живёт на сервере, поэтому обновление
 вкладки показывает текущий этап, а не начинает задание заново.
+
+`cancel` — единственное действие, которое трогает чужой процесс: задание из
+очереди снимается до старта, работающему уходит `POST /interrupt` в ComfyUI,
+и только если оно уже отправило туда свой промпт.
 """
 import io
 import re
@@ -141,12 +145,19 @@ class Job:
     created: float = field(default_factory=time.time)
     started: float | None = None
     finished: float | None = None
-    status: str = "queued"          # queued | running | done | partial | error | described
+    status: str = "queued"          # queued | running | done | partial | error | described | cancelled
     stage: str = "queued"
     variant: dict | None = None
     events: list = field(default_factory=list)
     result: jobs.JobResult | None = None
     error: str = ""
+    # Отмена: событие читает задание, `prompt_id` — адрес того, что прерывать.
+    # Промпт запоминается, когда ComfyUI назвал id: `/interrupt` без него прервал
+    # бы чужой граф, а снятое из очереди задание не должно звать ComfyUI вовсе.
+    cancel: threading.Event = field(default_factory=threading.Event,
+                                    repr=False, compare=False)
+    prompt_id: str | None = None
+    future: object | None = field(default=None, repr=False, compare=False)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
 
@@ -291,11 +302,16 @@ class JobService:
             self._jobs[jid] = job
             self._order.append(jid)
             self._latest = jid
-        self._pool.submit(self._run, job)
+        job.future = self._pool.submit(self._run, job)
         return job
 
     def _run(self, job):
         with job.lock:
+            if job.cancel.is_set():
+                # Снятое из очереди не доходит до ComfyUI: ни /prompt, ни кадра.
+                job.status = job.stage = "cancelled"
+                job.finished = time.time()
+                return
             job.status = "running"
             job.started = time.time()
         with self._lock:
@@ -307,23 +323,81 @@ class JobService:
                 job.stage = event.get("stage") or job.stage
                 if event.get("stage") == "variant":
                     job.variant = event.get("data") or {}
+                if event.get("stage") == "comfy_queue":
+                    job.prompt_id = (event.get("data") or {}).get("prompt_id") or job.prompt_id
 
         try:
-            result = jobs.run_job(job.request, emit=sink)
+            result = jobs.run_job(job.request, emit=sink, cancel=job.cancel)
         except BaseException as e:                  # поток не должен умереть молча
             result = jobs.JobResult(error=f"{type(e).__name__}: {e}", code=1, stage="error")
         with job.lock:
             job.result = result
             job.finished = time.time()
-            job.error = result.error if not result.ok else ""
-            if result.ok:
-                job.status = "described" if result.stage == "described" else "done"
+            if job.cancel.is_set():
+                # Отмена — исход, а не ошибка: текст провала не показываем.
+                job.status = job.stage = "cancelled"
+                job.error = ""
             else:
-                job.status = "partial" if result.partial else "error"
-            job.stage = result.stage or ("done" if result.ok else "error")
+                job.error = result.error if not result.ok else ""
+                if result.ok:
+                    job.status = "described" if result.stage == "described" else "done"
+                else:
+                    job.status = "partial" if result.partial else "error"
+                job.stage = result.stage or ("done" if result.ok else "error")
         with self._lock:
             if self._active == job.id:
                 self._active = None
+
+    # ------------------------------------------------------------ отмена
+    def cancel(self, job_id):
+        """Отменяет задание. Возвращает `(снято, замечание)`.
+
+        В очереди — задание снимается и ComfyUI не зовётся вовсе. Работающее —
+        `POST /interrupt` в ComfyUI (без него сервис продолжит сэмплить и держать
+        GPU), но только если это задание уже отправило туда свой промпт: иначе
+        прервался бы чужой граф. Недоделанный кадр не появляется, поэтому и в
+        паспорт не попадает; `run.json` и готовые кадры не трогаются (AGENTS 0.15).
+
+        Отмена — исход, а не ошибка: статус `cancelled`, текста провала нет.
+        """
+        job = self.get(job_id)
+        if job is None:
+            return False, "задания нет"
+        with job.lock:
+            if job.status not in ("queued", "running"):
+                return False, "задание уже закончилось"
+            queued = job.status == "queued"
+            prompt_id = job.prompt_id
+            job.cancel.set()
+            job.status = job.stage = "cancelled"
+            job.finished = time.time()
+            # Событие будит открытые вкладки (push подписан на список событий):
+            # без него страница узнала бы об отмене только сторожевым таймером.
+            job.events.append({
+                "seq": len(job.events) + 1,
+                "t": round(max(0.0, job.finished - (job.started or job.created)), 2),
+                "stage": "cancelled",
+                "message": "снято из очереди" if queued else "прервано в ComfyUI",
+                "data": {},
+            })
+        if queued and job.future is not None:
+            # Задание ещё не взято исполнителем — снимаем до старта. Если его уже
+            # взяли, `_run` увидит тот же флаг и выйдет, не дойдя до ComfyUI.
+            job.future.cancel()
+        return True, self._interrupt(job) if prompt_id else ""
+
+    @staticmethod
+    def comfy_url(job=None):
+        """Адрес ComfyUI для отмены: тот, куда ушло задание, иначе из настроек."""
+        return str((job.request.comfy if job is not None else None) or pp.COMFY).rstrip("/")
+
+    def _interrupt(self, job):
+        """`POST /interrupt`: отпускает GPU. Ошибка — замечание, а не провал."""
+        try:
+            pp.post(self.comfy_url(job) + "/interrupt", {}, timeout=10)
+            return ""
+        except Exception as e:
+            return f"ComfyUI не принял /interrupt: {e}"
 
     # ------------------------------------------------------------ чтение
     def get(self, job_id):
@@ -369,7 +443,8 @@ class JobService:
             frames.append({k: frame.get(k) for k in
                            ("file", "folder", "seed", "workflow", "cn_strength",
                             "style_weight", "denoise", "refined", "subject", "positive",
-                            "negative")})
+                            "negative", "steps", "cfg", "sampler", "scheduler",
+                            "passes", "outcome")})
         desc = (result.description if result else None) or None
         return {
             "id": job.id,

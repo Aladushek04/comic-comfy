@@ -30,7 +30,7 @@ os.environ["COMFY_OUTPUT"] = str(TMP / "output")
 os.environ["COMFY_INPUT"] = str(TMP / "input")
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
-for path in (str(ROOT / "tools"), str(ROOT)):
+for path in (str(ROOT / "tools"),):
     if path not in sys.path:
         sys.path.insert(0, path)
 
@@ -160,6 +160,30 @@ def http_ok(url):
             return r.status == 200 and bool(r.read())
     except Exception:
         return False
+
+
+def fetch(url):
+    """Статус и текст страницы: /v2 проверяется и без браузера."""
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except Exception as e:
+        return 0, str(e)
+
+
+def rgb(hex_value):
+    """#7c3aed → rgb(124, 58, 237): так браузер отдаёт вычисленный цвет."""
+    h = hex_value.lstrip("#")
+    return "rgb(%d, %d, %d)" % (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def wait_v2_upload(page, timeout=20000):
+    """Загрузка на /v2: рамка скрыта, превью с картинкой на месте."""
+    page.wait_for_function(
+        "() => { const i = Array.from(document.querySelectorAll('img'))"
+        ".find(x => (x.getAttribute('src') || '').includes('/media/upload/'));"
+        " return !!i && i.naturalWidth > 0; }", timeout=timeout)
+    page.wait_for_timeout(300)
 
 
 def main():
@@ -468,6 +492,567 @@ def main():
             check("истёкшее задание объясняет себя",
                   "Задание не запущено" not in body(page3))
             page3.close()
+
+            print("\n13) страница /v2 рядом со старой")
+            status, html = fetch(f"http://127.0.0.1:{port}/v2")
+            check("/v2 отдаёт 200", status == 200, str(status))
+            names = [s["label"] for s in tw.catalog.style_list()]
+            check("в HTML есть названия стилей из каталога",
+                  bool(names) and all(n in html for n in names),
+                  str([n for n in names if n not in html]))
+            check("в HTML есть требование 1280",
+                  "Нужен экран от 1280 px" in html)
+            check("старая страница на / по-прежнему жива", "comic-comfy" in fetch(
+                f"http://127.0.0.1:{port}/")[1])
+
+            v2 = ctx.new_page()
+            v2.set_viewport_size({"width": 1440, "height": 900})
+            v2.goto(f"http://127.0.0.1:{port}/v2")
+            v2.wait_for_function(
+                "() => !document.body.innerText.includes('проверяю')", timeout=30000)
+
+            print("\n13а) оба токена темы и один акцент")
+            dark = v2.evaluate("""() => ({
+                dark: document.body.classList.contains('body--dark'),
+                app: getComputedStyle(document.querySelector('.cp-app')).backgroundColor,
+                ink: getComputedStyle(document.querySelector('.cp-app')).color,
+                card: getComputedStyle(document.querySelector('.cp-card')).backgroundColor,
+                start: getComputedStyle(document.querySelector('.cp-btn--fill')).backgroundColor,
+                mono: getComputedStyle(document.querySelector('.cp-num')).fontVariantNumeric,
+                field: getComputedStyle(
+                    document.querySelector('.cp-app .q-field__control'), ':before').borderColor,
+            })""")
+            check("тёмная тема: фон, текст и поверхность из токенов",
+                  dark["dark"] is True
+                  and dark["app"] == rgb(tw.theme.DARK["--bg"])
+                  and dark["ink"] == rgb(tw.theme.DARK["--ink"])
+                  and dark["card"] == rgb(tw.theme.DARK["--surface"]), str(dark))
+            check("рамка поля ввода из токена --line",
+                  dark["field"] == rgb(tw.theme.DARK["--line"]), dark["field"])
+            check("кнопка Старт — акцентная заливка",
+                  dark["start"] == rgb(tw.theme.DARK["--accent-fill"]), dark["start"])
+            check("числа моноширинные и табличные",
+                  "tabular-nums" in (dark["mono"] or ""), dark["mono"])
+            v2.locator(".cp-topbar .cp-icon").click()
+            v2.wait_for_function(
+                "() => !document.body.classList.contains('body--dark')", timeout=10000)
+            # Рамка поля перекрашивается переходом Quasar, поэтому ждём конечное
+            # значение, а не «прошло 300 мс».
+            v2.wait_for_function(
+                "line => getComputedStyle(document.querySelector("
+                "'.cp-app .q-field__control'), ':before').borderColor === line",
+                arg=rgb(tw.theme.LIGHT["--line"]), timeout=5000)
+            light = v2.evaluate("""() => ({
+                app: getComputedStyle(document.querySelector('.cp-app')).backgroundColor,
+                card: getComputedStyle(document.querySelector('.cp-card')).backgroundColor,
+                start: getComputedStyle(document.querySelector('.cp-btn--fill')).backgroundColor,
+                field: getComputedStyle(
+                    document.querySelector('.cp-app .q-field__control'), ':before').borderColor,
+            })""")
+            check("светлая тема: те же блоки из токенов",
+                  light["app"] == rgb(tw.theme.LIGHT["--bg"])
+                  and light["card"] == rgb(tw.theme.LIGHT["--surface"])
+                  and light["start"] == rgb(tw.theme.LIGHT["--accent-fill"])
+                  and light["field"] == rgb(tw.theme.LIGHT["--line"]), str(light))
+            v2.reload()
+            v2.wait_for_function(
+                "() => document.querySelector('.cp-app') !== null", timeout=20000)
+            v2.wait_for_timeout(400)
+            check("выбор темы пережил перезагрузку вкладки",
+                  v2.evaluate(
+                      "() => !document.body.classList.contains('body--dark')"))
+            v2.locator(".cp-topbar .cp-icon").click()
+            v2.wait_for_function(
+                "() => document.body.classList.contains('body--dark')", timeout=10000)
+
+            print("\n13б) стиль выбирается списком, вес виден")
+            styles = v2.evaluate("""() => {
+                const rows = Array.from(document.querySelectorAll('.cp-style'));
+                return {
+                    count: rows.length,
+                    weights: rows.map(r => r.querySelector('.cp-style__weight').innerText),
+                    pressed: rows.map(r => r.getAttribute('aria-pressed')),
+                    weightColor: getComputedStyle(
+                        document.querySelector('.cp-style--on .cp-style__weight')).color,
+                    select: document.querySelectorAll('.cp-select, select').length,
+                };
+            }""")
+            check("список, а не выпадающий список",
+                  styles["count"] == len(names) and styles["select"] == 0,
+                  str(styles))
+            check("вес LoRA справа у каждого стиля",
+                  styles["weights"] == ["0.6", "0.9", "0.9", "0.9", "0.85"],
+                  str(styles["weights"]))
+            check("выбран ровно один, и он помечен",
+                  styles["pressed"].count("true") == 1
+                  and styles["weightColor"] == rgb(tw.theme.DARK["--accent"]),
+                  str(styles["pressed"]))
+            v2.locator(".cp-style").nth(4).click()
+            v2.wait_for_timeout(400)
+            chosen = v2.evaluate("""() => {
+                const row = document.querySelector('.cp-style--on');
+                return {text: row.innerText, pressed: row.getAttribute('aria-pressed')};
+            }""")
+            check("клик по стилю выделяет его",
+                  chosen["pressed"] == "true" and "GTA" in chosen["text"], str(chosen))
+
+            print("\n13в) рельс липкий сверху и влезает в окно 900")
+            rail = v2.evaluate("""() => {
+                const rail = document.querySelector('.cp-rail');
+                const start = document.querySelector('.cp-start');
+                const params = document.querySelector('.cp-params');
+                const cs = getComputedStyle(rail);
+                const ss = getComputedStyle(start);
+                const sb = start.getBoundingClientRect();
+                const pb = params.getBoundingClientRect();
+                return {overflow: cs.overflowY, maxHeight: cs.maxHeight,
+                        position: cs.position, top: cs.top,
+                        inner: document.querySelector('.cp-rail__scroll') !== null,
+                        start: ss.position, startTop: Math.round(sb.top),
+                        startBottom: Math.round(sb.bottom),
+                        paramsBottom: Math.round(pb.bottom),
+                        height: Math.round(rail.getBoundingClientRect().height),
+                        innerH: window.innerHeight,
+                        photo: Math.round(document.querySelector('.cp-frame, .cp-drop')
+                            .getBoundingClientRect().height),
+                        row: Math.round(document.querySelector('.cp-style')
+                            .getBoundingClientRect().height),
+                        fields: [...document.querySelectorAll('.cp-params .q-field')]
+                            .map(f => Math.round(f.getBoundingClientRect().height)),
+                        page: document.documentElement.scrollHeight - window.innerHeight,
+                        width: Math.round(rail.getBoundingClientRect().width)};
+            }""")
+            check("рельс липкий сверху, без своей прокрутки",
+                  rail["position"] == "sticky" and rail["top"] == "72px"
+                  and rail["overflow"] in ("visible", "clip")
+                  and rail["inner"] is False and rail["maxHeight"] == "none",
+                  str(rail))
+            check("блок запуска не липнет и ничего не перекрывает",
+                  rail["start"] == "static"
+                  and rail["paramsBottom"] <= rail["startTop"], str(rail))
+            check("рельс целиком в окне 900: Старт виден",
+                  rail["height"] + 72 <= rail["innerH"]
+                  and rail["startBottom"] <= rail["innerH"], str(rail))
+            check("фото 160, строка стиля 32, поля по 32",
+                  rail["photo"] == 160 and rail["row"] == 32
+                  and rail["fields"] == [32, 32], str(rail))
+            check("рельс 400 px до 1600", rail["width"] == 400, str(rail["width"]))
+            v2.set_viewport_size({"width": 1600, "height": 900})
+            v2.wait_for_timeout(400)
+            wide = v2.evaluate("() => Math.round("
+                               "document.querySelector('.cp-rail').getBoundingClientRect().width)")
+            check("рельс 420 px после 1600", wide == 420, str(wide))
+            v2.set_viewport_size({"width": 1440, "height": 900})
+            v2.wait_for_timeout(400)
+            check("список стилей целиком в рельсе, без обрезки",
+                  v2.evaluate("""() => {
+                      const rows = document.querySelectorAll('.cp-style');
+                      const rail = document.querySelector('.cp-rail');
+                      return rows.length === 5
+                          && rail.scrollHeight <= rail.clientHeight + 1;
+                  }"""))
+            v2.evaluate("() => window.scrollTo(0, 400)")
+            v2.wait_for_timeout(300)
+            box = v2.evaluate("""() => {
+                const b = document.querySelector('.cp-start').getBoundingClientRect();
+                return {top: Math.round(b.top), bottom: Math.round(b.bottom),
+                        inner: window.innerHeight,
+                        scroll: Math.round(window.scrollY)};
+            }""")
+            check("после прокрутки страницы Старт на месте",
+                  box["scroll"] > 0 and box["top"] >= 0 and box["bottom"] <= box["inner"],
+                  str(box))
+            v2.evaluate("() => window.scrollTo(0, 0)")
+            v2.wait_for_timeout(200)
+            v2.screenshot(path=str(shots / "v2-dark.png"), full_page=True)
+
+            print("\n13г) проверка сервисов не стирает ввод")
+            scene = v2.locator(".cp-card .q-field input").first
+            scene.fill("тестовая сцена v2")
+            v2.get_by_role("button", name="Проверить сервисы").click()
+            v2.wait_for_function(
+                "() => !document.body.innerText.includes('проверяю')", timeout=30000)
+            check("сцена на месте после health-check",
+                  scene.input_value() == "тестовая сцена v2", scene.input_value())
+
+            print("\n13г2) расширенные параметры: диалог, дефолты из meta, ноль — ноль")
+            # Стиль здесь — GTA: 13б выбрал его кликом, и подсказки диалога обязаны
+            # прийти из его meta, а не из thepit.
+            gta = tw.catalog.load_meta("08_photo_gta")
+            v2.set_input_files('input[type="file"]', str(photo_a))
+            wait_v2_upload(v2)
+            before_book = len((tw.book_for(photo_a) or {}).get("runs") or [])
+            v2.get_by_role("button", name="Расширенные…").click()
+            v2.wait_for_function(
+                "() => { const d = document.querySelector('.cp-dialog');"
+                " return d && d.getBoundingClientRect().width > 0; }", timeout=10000)
+            dialog = v2.evaluate("""() => ({
+                fields: [...document.querySelectorAll('.cp-dialog .q-field')].map(f => ({
+                    label: (f.querySelector('.q-field__label') || {}).innerText || '',
+                    value: (f.querySelector('input, textarea') || {}).value,
+                    placeholder: (f.querySelector('input, textarea') || {}).placeholder,
+                })),
+                titles: [...document.querySelectorAll('.cp-dialog .cp-prompt__label')]
+                    .map(e => e.innerText.trim().toLowerCase()),
+            })""")
+            check("диалог открылся и сгруппирован",
+                  dialog["titles"] == ["генерация", "стиль", "прочее"]
+                  and len(dialog["fields"]) == 8, str(dialog["titles"]))
+            fields = {f["label"].strip(): f for f in dialog["fields"]}
+            gta_fields = gta["fields"]
+            check("дефолты из meta видны подсказкой, поля пустые",
+                  fields["Шаги"]["placeholder"]
+                  == f"как в графе · {gta_fields['steps']['default']}"
+                  and fields["CFG"]["placeholder"]
+                  == f"как в графе · {gta_fields['cfg']['default']}"
+                  and fields["Denoise"]["placeholder"]
+                  == f"как в графе · {gta_fields['denoise']['default']}"
+                  and fields["Сила ControlNet"]["placeholder"]
+                  == f"как в графе · {gta_fields['cn_strength']['default']}"
+                  and fields["Вес стилевой LoRA"]["placeholder"]
+                  == f"как в графе · {gta['style_weight']}"
+                  and fields["Сид"]["placeholder"] == "пусто — случайный"
+                  and all(not (f["value"] or "").strip()
+                          for f in dialog["fields"]
+                          if f["label"].strip() != "Вариантов"),
+                  str(dialog["fields"]))
+            check("«Вариантов» в диалоге — то же число, что в рельсе",
+                  fields["Вариантов"]["value"] == "1"
+                  and v2.locator(".cp-params .q-field", has_text="Вариантов")
+                  .locator("input").first.input_value() == "1",
+                  str(fields["Вариантов"]))
+            fill_field(v2, "Шаги", 12)
+            fill_field(v2, "Сид", 0)
+            fill_field(v2, "Сила ControlNet", 0)
+            v2.get_by_role("button", name="Готово").click()
+            v2.wait_for_timeout(300)
+            v2.get_by_role("button", name="Старт").click()
+            wait_text(v2, "Готово", 60000)
+            frames = api_job(port, job_from_url(v2))["frames"]
+            runs = (tw.book_for(photo_a) or {}).get("runs") or []
+            check("введённое из диалога попало в кадр",
+                  bool(frames) and frames[0]["steps"] == 12
+                  and frames[0]["seed"] == 0 and frames[0]["cn_strength"] == 0,
+                  str(frames[:1]))
+            check("и в паспорт кадра — ноль остался нулём",
+                  len(runs) == before_book + 1 and runs[-1]["steps"] == 12
+                  and runs[-1]["seed"] == 0 and runs[-1]["cn_strength"] == 0
+                  and runs[-1]["cn_strength"] is not None,
+                  str({k: runs[-1].get(k) for k in
+                       ("steps", "seed", "cn_strength")}) if runs else "")
+            v2.get_by_role("button", name="Расширенные…").click()
+            v2.wait_for_timeout(400)
+            v2.get_by_role("button", name="Сбросить").click()
+            v2.wait_for_timeout(300)
+            reset = v2.evaluate("""() => [...document.querySelectorAll('.cp-dialog .q-field input')]
+                .map(i => i.value)""")
+            check("«Сбросить» возвращает «как в графе»",
+                  all(not (v or "").strip() for v in reset), str(reset))
+            v2.get_by_role("button", name="Готово").click()
+            v2.wait_for_timeout(300)
+
+            print("\n13д) задание V2: старт, адрес и перезагрузка")
+            v2.set_input_files('input[type="file"]', str(photo_a))
+            wait_v2_upload(v2)
+            box = v2.evaluate("""() => {
+                const b = document.querySelector('.cp-start').getBoundingClientRect();
+                return {bottom: Math.round(b.bottom), inner: window.innerHeight};
+            }""")
+            check("с фото рельс тоже влезает: Старт виден",
+                  box["bottom"] <= box["inner"], str(box))
+            caption = v2.locator(".cp-frame").locator("..").inner_text()
+            check("размер фото из заголовка", "588×860" in caption or "×" in caption,
+                  caption[:80])
+            v2.get_by_role("button", name="Старт").click()
+            wait_text(v2, "Готово", 60000)
+            job_v2 = v2.evaluate("() => location.search")
+            check("номер задания в адресе /v2",
+                  job_v2.startswith("?job=") and len(job_v2) == 15, job_v2)
+            check("очередь снова свободна", "очередь: свободна" in body(v2))
+            v2.reload()
+            v2.wait_for_function("() => document.querySelector('.cp-app') !== null",
+                                 timeout=20000)
+            wait_text(v2, "Готово", 20000)
+            check("перезагрузка вкладки вернула то же задание",
+                  v2.evaluate("() => location.search") == job_v2
+                  and "Задание не запущено" not in body(v2))
+            v2.screenshot(path=str(shots / "v2-done.png"), full_page=True)
+
+            print("\n13ж) фазы задания и шаг текущего прохода")
+            v2.set_input_files('input[type="file"]', str(photo_a))
+            wait_v2_upload(v2)
+            control(comfy, delay=3)
+            v2.get_by_role("button", name="Старт").click()
+            v2.wait_for_function("() => document.body.innerText.includes('Шаг')",
+                                 timeout=40000)
+            phases = v2.evaluate("""() => {
+                const rows = [...document.querySelectorAll('.cp-phase')];
+                return {
+                    names: rows.map(r => r.innerText.trim()),
+                    done: rows.filter(r => r.classList.contains('cp-phase--done')).length,
+                    on: rows.filter(r => r.classList.contains('cp-phase--on')).length,
+                    step: document.querySelector('.cp-step').innerText,
+                    dots: rows.map(r => getComputedStyle(r.querySelector('.cp-dot'))
+                        .backgroundColor),
+                    bar: (() => { const b = document.querySelector('.cp-step__bar');
+                        return b ? Math.round(b.getBoundingClientRect().width) : 0; })(),
+                };
+            }""")
+            check("четыре фазы в порядке спецификации",
+                  phases["names"] == ["Описание", "Промпт", "Генерация", "Кадр"],
+                  str(phases["names"]))
+            check("шаг сэмплера с номером прохода",
+                  phases["step"].startswith("Шаг ")
+                  and " · проход 1/2" in phases["step"], phases["step"])
+            check("пройденные фазы отмечены, текущая одна",
+                  phases["done"] >= 2 and phases["on"] == 1, str(phases))
+            check("цвет состояния несут точки фаз",
+                  rgb(tw.theme.DARK["--ok"]) in phases["dots"]
+                  and rgb(tw.theme.DARK["--accent-fill"]) in phases["dots"],
+                  str(phases["dots"]))
+            check("полоска шага видна", phases["bar"] > 0, str(phases["bar"]))
+            v2.screenshot(path=str(shots / "v2-running.png"), full_page=True)
+            wait_text(v2, "Готово", 60000)
+            control(comfy, delay=1)
+            v2.wait_for_timeout(400)
+            check("готовое задание закрывает все четыре фазы",
+                  v2.evaluate("() => document.querySelectorAll('.cp-phase--done').length") == 4)
+
+            print("\n13з) вкладки переключают панели и переживают перезагрузку")
+            v2.locator(".cp-tab").nth(2).click()
+            v2.wait_for_timeout(400)
+            panels = v2.evaluate("""() => [...document.querySelectorAll('.cp-panel')]
+                .filter(p => getComputedStyle(p).display !== 'none').map(p => p.innerText)""")
+            check("вкладка «Промпт» показывает ровно одну панель",
+                  len(panels) == 1, str(len(panels)))
+            frames = api_job(port, job_from_url(v2))["frames"]
+            check("промпт кадра — фактический, из паспорта",
+                  bool(frames) and frames[0]["positive"] in panels[0]
+                  and frames[0]["negative"] in panels[0], panels[0][:80])
+            check("выбрана ровно одна вкладка",
+                  v2.evaluate("() => document.querySelectorAll('.cp-tab--on').length") == 1)
+            v2.screenshot(path=str(shots / "v2-prompt.png"), full_page=True)
+            v2.reload()
+            v2.wait_for_function("() => document.querySelector('.cp-app') !== null",
+                                 timeout=20000)
+            wait_text(v2, "Готово", 20000)
+            v2.wait_for_timeout(600)
+            check("перезагрузка вернула вкладку «Промпт»",
+                  v2.evaluate("""() => [...document.querySelectorAll('.cp-tab')]
+                      .find(t => t.classList.contains('cp-tab--on'))
+                      .innerText.trim()""") == "Промпт")
+
+            print("\n13и) полоса кадров: выбор по имени файла, без пересборки")
+            v2.locator(".cp-tab").nth(0).click()
+            v2.wait_for_timeout(300)
+            v2.set_input_files('input[type="file"]', str(photo_a))
+            wait_v2_upload(v2)
+            fill_field(v2, "Вариантов", 2)
+            control(comfy, delay=3)
+            previous_job = job_from_url(v2)
+            v2.get_by_role("button", name="Старт").click()
+            v2.wait_for_function("old => location.search !== old", arg=previous_job,
+                                 timeout=20000)
+            # Новое задание начинается с пустой полосы: иначе «первой» окажется
+            # миниатюра прошлого задания, и метка уедет вместе с ней.
+            v2.wait_for_function(
+                "() => document.querySelectorAll('.cp-thumb').length === 0",
+                timeout=20000)
+            v2.wait_for_function(
+                "() => document.querySelectorAll('.cp-thumb').length >= 1", timeout=60000)
+            v2.evaluate("() => document.querySelector('.cp-thumb')"
+                        ".setAttribute('data-probe', 'kept')")
+            v2.locator(".cp-thumb").first.click()
+            v2.wait_for_timeout(300)
+            v2.wait_for_function(
+                "() => document.querySelectorAll('.cp-thumb').length >= 2", timeout=60000)
+            kept = v2.evaluate("""() => ({
+                probe: document.querySelectorAll('.cp-thumb')[0].getAttribute('data-probe'),
+                on: [...document.querySelectorAll('.cp-thumb')]
+                    .findIndex(t => t.classList.contains('cp-thumb--on')),
+                count: document.querySelectorAll('.cp-thumb').length,
+            })""")
+            check("новая миниатюра не пересобрала полосу",
+                  kept["probe"] == "kept" and kept["count"] == 2, str(kept))
+            check("выбор человека не сбит новым кадром", kept["on"] == 0, str(kept))
+            wait_text(v2, "Готово", 60000)
+            control(comfy, delay=1)
+            v2.wait_for_timeout(400)
+            frames = api_job(port, job_from_url(v2))["frames"]
+            check("в задании два кадра", len(frames) == 2, str(len(frames)))
+            big = v2.evaluate(
+                "() => document.querySelector('.cp-frame__img--on')"
+                "?.getAttribute('src') || ''")
+            check("большой кадр — выбранный", big.endswith(frames[0]["file"]), big)
+            v2.locator(".cp-thumb").nth(1).click()
+            v2.wait_for_timeout(400)
+            big = v2.evaluate(
+                "() => document.querySelector('.cp-frame__img--on')"
+                "?.getAttribute('src') || ''")
+            check("клик по миниатюре меняет кадр", big.endswith(frames[1]["file"]), big)
+            v2.screenshot(path=str(shots / "v2-strip.png"), full_page=True)
+            v2.reload()
+            v2.wait_for_function("() => document.querySelector('.cp-app') !== null",
+                                 timeout=20000)
+            wait_text(v2, "Готово", 20000)
+            v2.wait_for_timeout(800)
+            chosen = v2.evaluate("""() => ({
+                on: [...document.querySelectorAll('.cp-thumb')]
+                    .findIndex(t => t.classList.contains('cp-thumb--on')),
+                big: document.querySelector('.cp-frame__img--on')
+                    ?.getAttribute('src') || '',
+            })""")
+            check("выбранный кадр пережил перезагрузку",
+                  chosen["on"] == 1 and chosen["big"].endswith(frames[1]["file"]),
+                  str(chosen))
+
+            print("\n13и2) история читает паспорт кадра")
+            v2.locator(".cp-tab").nth(3).click()
+            v2.wait_for_timeout(900)
+            rows = v2.evaluate("""() => {
+                const table = document.querySelector('.cp-history .q-table');
+                if (!table) return [];
+                return [...table.querySelectorAll('tbody tr')]
+                    .map(r => r.innerText.replace(/\\s+/g, ' ').trim());
+            }""")
+            check("в истории строки паспорта, свежий кадр сверху",
+                  bool(rows) and frames[-1]["file"] in rows[0], str(rows[:2]))
+            check("история не из памяти страницы: паспорт копится по фото",
+                  len(rows) >= 2, str(len(rows)))
+            v2.screenshot(path=str(shots / "v2-history.png"), full_page=True)
+            v2.locator(".cp-tab").nth(0).click()
+            v2.wait_for_timeout(300)
+
+            print("\n13и3) отмена работающего задания: /interrupt и ни одного кадра")
+            v2c = ctx.new_page()
+            v2c.set_viewport_size({"width": 1440, "height": 900})
+            v2c.goto(f"http://127.0.0.1:{port}/v2")
+            v2c.wait_for_function(
+                "() => !document.body.innerText.includes('проверяю')", timeout=30000)
+            v2c.set_input_files('input[type="file"]', str(photo_a))
+            wait_v2_upload(v2c)
+            runs_before = len((tw.book_for(photo_a) or {}).get("runs") or [])
+            prompts_before = len(comfy.state.prompts)
+            interrupts_before = len(comfy.state.interrupts)
+            control(comfy, delay=3)
+            v2c.get_by_role("button", name="Старт").click()
+            v2c.wait_for_function(
+                "() => { const b = [...document.querySelectorAll('button')]"
+                ".find(x => x.innerText.includes('Отмена'));"
+                " return !!b && b.getBoundingClientRect().width > 0; }", timeout=20000)
+            started = time.time()
+            while len(comfy.state.prompts) == prompts_before and time.time() - started < 60:
+                time.sleep(0.1)
+            check("работающее задание отправило промпт",
+                  len(comfy.state.prompts) == prompts_before + 1,
+                  str(len(comfy.state.prompts)))
+            buttons = v2c.evaluate("""() => {
+                const on = t => [...document.querySelectorAll('button')].some(
+                    b => b.innerText.includes(t) && b.getBoundingClientRect().width > 0);
+                return {cancel: on('Отмена'), start: on('Старт'),
+                        describe: on('Только описание')};
+            }""")
+            check("пока задание идёт, видна «Отмена», а не «Старт»",
+                  buttons == {"cancel": True, "start": False, "describe": False},
+                  str(buttons))
+            v2c.get_by_role("button", name="Отмена").click()
+            wait_text(v2c, "Отменено", 40000)
+            check("/interrupt ушёл в ComfyUI",
+                  len(comfy.state.interrupts) == interrupts_before + 1,
+                  str(comfy.state.interrupts[interrupts_before:]))
+            # Один цикл опроса истории: убеждаемся, что кадр не появится и после
+            # ответа ComfyUI на /interrupt, а не только в момент клика.
+            v2c.wait_for_timeout(4000)
+            job_c = job_from_url(v2c)
+            snap_c = api_job(port, job_c)
+            check("отменённое задание: исход, а не ошибка",
+                  snap_c["status"] == "cancelled" and not (snap_c.get("error") or "").strip(),
+                  str((snap_c["status"], snap_c.get("error"))))
+            check("недоделанный кадр не записан",
+                  snap_c["frames"] == []
+                  and len((tw.book_for(photo_a) or {}).get("runs") or []) == runs_before,
+                  str((snap_c["frames"],
+                       len((tw.book_for(photo_a) or {}).get("runs") or []))))
+            v2c.wait_for_function(
+                "() => { const b = [...document.querySelectorAll('button')]"
+                ".find(x => x.innerText.includes('Отмена'));"
+                " return !b || b.getBoundingClientRect().width === 0; }", timeout=20000)
+            check("после отмены «Отмена» спрятана, «Старт» снова виден",
+                  v2c.evaluate("""() => {
+                      const on = t => [...document.querySelectorAll('button')].some(
+                          b => b.innerText.includes(t)
+                          && b.getBoundingClientRect().width > 0);
+                      return !on('Отмена') && on('Старт');
+                  }"""))
+            v2c.screenshot(path=str(shots / "v2-cancel.png"), full_page=True)
+            v2c.close()
+            control(comfy, delay=1)
+
+            print("\n13к) ошибка в одном месте, журнал в диалоге")
+            v2.set_input_files('input[type="file"]', str(photo_b))
+            wait_v2_upload(v2)
+            control(comfy, prompt_fail=True)
+            previous_job = job_from_url(v2)
+            v2.get_by_role("button", name="Старт").click()
+            v2.wait_for_function("old => location.search !== old", arg=previous_job,
+                                 timeout=20000)
+            v2.wait_for_function(
+                "() => { const e = document.querySelector('.cp-error');"
+                " return e && getComputedStyle(e).display !== 'none'; }", timeout=60000)
+            control(comfy, prompt_fail=False)
+            v2.wait_for_timeout(300)
+            err = v2.evaluate("""() => ({
+                zones: document.querySelectorAll('.cp-error').length,
+                title: document.querySelector('.cp-error__head').innerText,
+                text: document.querySelector('.cp-error__text').innerText,
+                wrap: getComputedStyle(document.querySelector('.cp-error__text')).whiteSpace,
+            })""")
+            job_error = (api_job(port, job_from_url(v2)).get("error") or "").strip()
+            check("зона ошибки одна на странице", err["zones"] == 1, str(err["zones"]))
+            check("ошибка видна целиком, без обрезки",
+                  bool(job_error) and err["text"].strip() == job_error
+                  and err["wrap"] == "pre-wrap", str(err))
+            check("в заголовке — фаза, где упало", "Генерация" in err["title"], err["title"])
+            v2.screenshot(path=str(shots / "v2-error.png"), full_page=True)
+            v2.get_by_role("button", name="Журнал").click()
+            v2.wait_for_timeout(600)
+            journal = v2.evaluate("""() => {
+                const log = document.querySelector('.cp-log');
+                return {open: !!log && log.getBoundingClientRect().width > 0,
+                        text: log ? log.innerText : ''};
+            }""")
+            check("журнал задания открылся в диалоге",
+                  journal["open"] and "промпт" in journal["text"].lower(),
+                  journal["text"][:80])
+            v2.screenshot(path=str(shots / "v2-journal.png"))
+            v2.keyboard.press("Escape")
+            v2.wait_for_timeout(400)
+
+            print("\n13л) узкий экран: требование 1280 вместо раскладки")
+            # Плашки `ui.notify` висят несколько секунд и попадают в текст страницы.
+            v2.wait_for_function(
+                "() => document.querySelectorAll('.q-notification').length === 0",
+                timeout=20000)
+            v2.set_viewport_size({"width": 1279, "height": 800})
+            v2.wait_for_timeout(500)
+            narrow = v2.evaluate("""() => ({
+                app: getComputedStyle(document.querySelector('.cp-app')).display,
+                note: getComputedStyle(document.querySelector('.cp-narrow')).display,
+                text: document.body.innerText.trim(),
+                scroll: document.documentElement.scrollWidth,
+                inner: window.innerWidth,
+            })""")
+            check("на 1279 видно только требование",
+                  narrow["app"] == "none" and narrow["note"] == "flex"
+                  and narrow["text"] == "Нужен экран от 1280 px"
+                  and narrow["scroll"] <= narrow["inner"], str(narrow))
+            v2.set_viewport_size({"width": 1280, "height": 800})
+            v2.wait_for_timeout(500)
+            check("на 1280 раскладка возвращается",
+                  v2.evaluate("() => getComputedStyle("
+                              "document.querySelector('.cp-app')).display") != "none")
+            v2.screenshot(path=str(shots / "v2-narrow.png"))
+            v2.close()
             browser.close()
 
         print(f"\nскриншоты: {shots}")

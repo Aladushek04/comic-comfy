@@ -57,6 +57,7 @@ class JobRequest:
     tags: bool = True                     # дописывать теги WD14-теггера в subject
     client_id: str | None = None
     start_comfy: bool = False             # поднять headless ComfyUI после фазы описания
+    describe_only: bool = False           # первый проход пачки: только описание
 
 
 @dataclass
@@ -72,6 +73,7 @@ class JobResult:
     error: str = ""
     stage: str = ""
     elapsed: float = 0.0
+    model: str = ""                       # какой моделью описано фото (для выгрузки пачки)
 
 
 class Emitter:
@@ -120,6 +122,18 @@ def _seed(req, index):
     return (req.seed + index) if req.seed is not None else random.randint(1, 2_000_000_000)
 
 
+def _sampler_fields(report):
+    """Настройки сэмплера из отчёта generate: кадр и паспорт говорят одно и то же.
+
+    Берутся из собранного графа (report["settings"]), а не из req: `--denoise`
+    правит главный проход, поля формы могут переписать steps и cfg.
+    """
+    s = (report or {}).get("settings") or {}
+    return {"steps": s.get("steps"), "cfg": s.get("cfg"),
+            "sampler": s.get("sampler"), "scheduler": s.get("scheduler"),
+            "passes": s.get("passes")}
+
+
 def _negative_tags(desc, req):
     extra = [x.strip() for x in (desc.get("negative_extra") or "").split(",") if x.strip()]
     drop = [x.strip().lower() for x in (req.negative_drop or "").split(",") if x.strip()]
@@ -129,19 +143,36 @@ def _negative_tags(desc, req):
     return ", ".join(dict.fromkeys(extra))
 
 
-def _prompts(req, desc, image_name=None):
-    """Итоговые positive/negative по графу: их видит и CLI, и страница."""
-    return pp.build_payload(
+def _prompts(req, desc, landscape=False, image_name=None):
+    """Итоговые positive/negative по графу: их видит и CLI, и страница.
+
+    `landscape` и имя input-файла приходят из того же места, что уходит в
+    `generate()`: иначе `--dry-run` показывал бы промпт другого кадра (и молча
+    расходился бы с паспортом). На текст они не влияют — на граф влияют, поэтому
+    `applied` говорит, с какими входами собран предпросмотр.
+    """
+    payload = pp.build_payload(
         req.workflow, desc.get("subject", ""), desc.get("negative_extra", ""),
-        denoise=req.denoise, seed=req.seed, landscape=False,
+        denoise=req.denoise, seed=req.seed, landscape=landscape,
         style_weight=req.style_weight, image_name=image_name,
         cn_strength=req.cn_strength, overrides=req.overrides,
         positive=req.positive_override, negative=req.negative_override,
     )
+    applied = dict(payload.get("applied") or {})
+    applied.setdefault("landscape", bool(landscape))
+    applied.setdefault("image_name", str(image_name or ""))
+    payload["applied"] = applied
+    return payload
 
 
-def run_job(req, emit=None):
-    """Полный проход одного фото. Возвращает JobResult, не бросает SystemExit."""
+def run_job(req, emit=None, cancel=None):
+    """Полный проход одного фото. Возвращает JobResult, не бросает SystemExit.
+
+    `cancel` — `threading.Event` отмены (его ставит `webapp.service.cancel`).
+    Отмена — исход, а не ошибка: задание останавливается, недоделанный кадр не
+    записывается, а кадр, который успел появиться, помечается `outcome=cancelled`
+    (решение 7.7: метка попадает в паспорт, только если кадр есть).
+    """
     out = Emitter(emit)
     result = JobResult()
     desc = None
@@ -151,6 +182,9 @@ def run_job(req, emit=None):
     model = req.model
     t_desc = t_unload = 0.0
     handle = None
+
+    def stopped():
+        return cancel is not None and cancel.is_set()
 
     out("start", "", workflow=req.workflow, image=str(req.image),
         variants=max(1, req.variants))
@@ -214,7 +248,9 @@ def run_job(req, emit=None):
                         # Сцену просили, но модель её не переписала. Писать это в кэш
                         # под ключом сцены нельзя: следующий запуск взял бы чужой текст.
                         scene_failed = True
-                if not req.keep_llm:
+                if not req.keep_llm and not req.describe_only:
+                    # describe_only: модель ещё нужна следующему файлу пачки,
+                    # выгружает её вызывающий (run_batch) один раз на всю папку.
                     t = time.monotonic()
                     freed = pp.free_llm(model, req.unload_all)
                     t_unload = time.monotonic() - t
@@ -269,13 +305,26 @@ def run_job(req, emit=None):
             raise pp.PipelineError(
                 "описание не получилось — генерацию не запускаю. Проверь заметку выше.")
 
+        result.model = model or ""
+
+        if req.describe_only:
+            # Первый проход пачки останавливается здесь: промпт, кадр и паспорт —
+            # дело второго прохода, а модель описания ещё не выгружена.
+            out("described", "   описание готово, кадр не генерирую")
+            result.ok, result.code, result.stage = True, 0, "described"
+            return result
+
         if req.save_preset:
             path = pp.preset_path(req.save_preset)
             pp.write_json(path, desc)
             out("preset", "   пресет: " + path.name)
 
         # ---- 3. Итоговые промпты и проверка привязок ---------------------
-        payload = _prompts(req, desc)
+        # Входы кадра считаем здесь и передаём и предпросмотру, и генерации:
+        # имя input-файла берётся без копирования, чтобы --dry-run не писал на диск.
+        landscape = pp.image_is_landscape(str(req.image))
+        image_name = pp.input_name(str(req.image))
+        payload = _prompts(req, desc, landscape=landscape, image_name=image_name)
         result.positive = payload["positive"]
         result.negative = payload["negative"]
         out("prompt", "", positive=payload["positive"], negative=payload["negative"],
@@ -293,6 +342,11 @@ def run_job(req, emit=None):
             return result
 
         # ---- 4. ComfyUI: очередь, шаги, кадры ------------------------------
+        if stopped():
+            # Отмена во время описания: до ComfyUI не доходим, кадра нет.
+            out("cancelled", "задание отменено до генерации")
+            result.stage = "cancelled"
+            return result
         if req.start_comfy:
             # Только здесь: VLM уже выгружен, память под SDXL свободна.
             handle = cl.ensure(emit=out)
@@ -301,30 +355,40 @@ def run_job(req, emit=None):
         out("comfy", "ComfyUI: " + comfy, url=comfy)
 
         n = max(1, req.variants)
-        landscape = pp.image_is_landscape(str(req.image))
+        # Файл кладём в input только перед генерацией: имя уже посчитано выше
+        # (--dry-run ничего не копировал).
+        pp.ensure_input(str(req.image))
         out("generate", f"3) генерация в ComfyUI, вариантов: {n}")
         t = time.monotonic()
         ok_all = True
         for i in range(n):
+            if stopped():
+                out("cancelled", f"   отменено: сделано вариантов {i} из {n}")
+                break
             sd = _seed(req, i)
             out("variant", f"   вариант {i + 1}/{n}, seed {sd}", index=i + 1, total=n, seed=sd)
             report = {}
             ok, name = pp.generate(
                 req.workflow, desc["subject"], desc.get("negative_extra", ""),
                 denoise=req.denoise, seed=sd, landscape=landscape,
-                style_weight=req.style_weight, image_name=pp.ensure_input(str(req.image)),
+                style_weight=req.style_weight, image_name=image_name,
                 cn_strength=req.cn_strength, overrides=req.overrides,
                 positive=req.positive_override, negative=req.negative_override,
                 progress=out.progress, client_id=req.client_id, report=report)
             ok_all &= bool(ok)
             folder = None
             if name:
+                # Кадр успел появиться до отмены — он настоящий, но помечен
+                # отменённым: паспорт не имеет права звать его обычным.
+                outcome = "cancelled" if stopped() else "unknown"
                 folder = pp.save_run(str(req.image), req.workflow, desc, sd, req.denoise, name,
                                      cn_strength=req.cn_strength,
                                      style_weight=req.style_weight,
                                      overrides=req.overrides or None,
                                      positive=report.get("positive"),
-                                     negative=report.get("negative"))
+                                     negative=report.get("negative"),
+                                     settings=report.get("settings"),
+                                     outcome=outcome)
                 if folder is None:
                     ok_all = False
                 else:
@@ -335,10 +399,12 @@ def run_job(req, emit=None):
                         "refined": False, "subject": desc.get("subject", ""),
                         "positive": report.get("positive", ""),
                         "negative": report.get("negative", ""),
+                        "outcome": outcome,
+                        **_sampler_fields(report),
                     })
                     result.folders.append(str(folder))
                     out("save", f"   кадр сохранён: {name}", file=name, folder=str(folder))
-            if req.recheck and i == 0 and name:
+            if req.recheck and i == 0 and name and not stopped():
                 ok_recheck, refined = _recheck(req, desc, name, out, sd)
                 ok_all &= ok_recheck
                 if refined:
@@ -348,6 +414,15 @@ def run_job(req, emit=None):
 
         result.elapsed = out.elapsed
         result.partial = (not ok_all) and bool(result.frames)
+        if stopped():
+            # Отмена — исход, а не провал: статус задания ставит сервис, а кадр
+            # без файла в паспорт не попадает вовсе.
+            result.ok = bool(result.frames)
+            result.code = 0 if result.ok else 1
+            result.stage = "cancelled"
+            out("cancelled", f"   отменено: кадров {len(result.frames)} из {n}",
+                frames=len(result.frames), total=n)
+            return result
         out("done", f"\nитого: описание {t_desc:.0f} с + выгрузка {t_unload:.1f} с + "
                     f"генерация {t_gen:.0f} с = {t_desc + t_unload + t_gen:.0f} с",
             frames=len(result.frames), total=n, elapsed=out.elapsed)
@@ -481,7 +556,8 @@ def _one_more(req, desc, out, seed=None, positive=None):
                          cn_strength=req.cn_strength, style_weight=req.style_weight,
                          overrides=req.overrides or None, refined=True,
                          positive=report.get("positive"),
-                         negative=report.get("negative"))
+                         negative=report.get("negative"),
+                         settings=report.get("settings"), outcome="refined")
     if folder is None:
         return False, None
     out("save", f"   кадр сохранён: {name2}", file=name2, folder=str(folder),
@@ -494,4 +570,104 @@ def _one_more(req, desc, out, seed=None, positive=None):
         # Фактический запрос: для полного переопределения это он, а не subject.
         "positive": report.get("positive") or refined_positive or "",
         "negative": report.get("negative", ""),
+        "outcome": "refined",
+        **_sampler_fields(report),
     }
+
+
+@dataclass
+class BatchResult:
+    """Итог пачки: код возврата, кадры, провалы и файлы без описания."""
+    code: int = 1
+    frames: int = 0
+    failed: int = 0
+    described: int = 0
+    skipped: list = field(default_factory=list)
+    results: list = field(default_factory=list)
+
+
+def run_batch(reqs, emit=None, cancel=None):
+    """Пачка фото в два прохода; каждый файл идёт через `run_job`.
+
+    Своего конвейера у пачки нет: описание, кэш, теггер, промпт, паспорт и
+    провал считает `run_job`. Пачка задаёт только порядок — сначала все
+    описания (поэтому модель грузится один раз, а не на каждый файл), потом
+    выгрузка модели, потом кадры с готовым описанием.
+
+    Провал одного файла не отменяет остальные: файл без описания попадает в
+    `skipped` и называется в итоговой строке, а код возврата остаётся 1.
+    """
+    out = Emitter(emit)
+    res = BatchResult()
+    if not reqs:
+        return res
+    # Флаги прогона (generate, dry_run, keep_llm, unload_all) у всей пачки одни:
+    # её собирает один вызов CLI, и они одинаковы во всех заданиях.
+    first = reqs[0]
+    total = len(reqs)
+    described, model, folders = [], "", set()
+
+    for i, req in enumerate(reqs, 1):
+        if cancel is not None and cancel.is_set():
+            break
+        req.describe_only = True
+        out("batch", f"=== [{i}/{total}] {Path(req.image).name}")
+        r = run_job(req, emit=emit, cancel=cancel)
+        res.results.append(r)
+        model = r.model or model
+        if r.code != 0 or not r.description:
+            res.skipped.append(Path(req.image).name)
+            continue
+        described.append((req, r.description))
+        res.described += 1
+
+    if model and not first.keep_llm:
+        freed = pp.free_llm(model, first.unload_all)
+        out("unload", f"\nвыгружено: {', '.join(freed) if freed else 'нечего'}",
+            freed=freed)
+
+    if first.dry_run or not first.generate:
+        out("batch_done", f"\nготово описаний: {res.described} (генерация не запускалась)",
+            described=res.described)
+        if first.dry_run and not described:
+            out("batch_done", "нечего показать: ни одного описания")
+        if res.skipped:
+            out("batch_done", "без описания: " + ", ".join(res.skipped))
+        res.code = 0 if described and not res.skipped else 1
+        return res
+
+    if not described:
+        out("batch_done", f"\nкадров: 0, провалов: {len(res.skipped)}"
+            + (f", без описания: {len(res.skipped)} ({', '.join(res.skipped)})"
+               if res.skipped else "")
+            + " — генерировать нечего")
+        return res
+
+    for i, (req, desc) in enumerate(described, 1):
+        if cancel is not None and cancel.is_set():
+            break
+        # Готовое описание первого прохода: VLM второй раз не зовём, кэш не
+        # переписываем, а флаги прогона (--recheck и прочие) работают как в
+        # одиночном запуске — они и есть причина, по которой пачка здесь.
+        req.describe_only = False
+        req.description = desc
+        req.description_source = "описания пачки"
+        req.generate = True
+        out("batch", f"=== [{i}/{len(described)}] {Path(req.image).name}")
+        r = run_job(req, emit=emit, cancel=cancel)
+        res.results.append(r)
+        res.frames += len(r.frames)
+        if not r.ok:
+            res.failed += 1
+        folders.update(r.folders)
+
+    out("batch_done", f"\nкадров: {res.frames}, провалов: {res.failed}"
+        + (f", без описания: {len(res.skipped)} ({', '.join(res.skipped)})"
+           if res.skipped else ""), frames=res.frames, failed=res.failed)
+    if folders:
+        out("batch_done", "  результаты: "
+            + ", ".join(sorted({Path(p).name for p in folders})))
+    # Пропуск на любом этапе — не успех: код возврата это покажет.
+    res.code = 0 if res.frames and not res.failed and not res.skipped else 1
+    return res
+

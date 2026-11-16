@@ -2,7 +2,9 @@
 import sys
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent.parent
-for _path in (str(_ROOT), str(_ROOT / "tools")):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
+# Корень репозитория добавит tools\settings.py при первом импорте settings —
+# это единственный такой insert. Здесь только tools: ui.py импортирует settings,
+# а сам settings лежит в tools.
+_TOOLS = Path(__file__).resolve().parent.parent / "tools"
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))

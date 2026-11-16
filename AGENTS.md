@@ -6,7 +6,8 @@
 ## Где что лежит
 
 - ComfyUI: `G:\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI` (Desktop 1.1.9, движок 0.45.2, torch 2.12.1+cu130).
-- Общие модели: `G:\Comfy-Desktop\ComfyUI-Shared\models` (models/input/output — тоже там).
+- Общие модели: каталог из `base_path` в `extra_model_paths.yaml` (сейчас `E:\ComfyUI-Shared\models`,
+  models/input/output — тоже там).
   **В коде этих путей нет.** `tools\settings.py` берёт их из `COMIC_ROOT`, `COMFY_MODELS`,
   `COMFY_SHARED`, `COMFY_INPUT`, `COMFY_OUTPUT`, `COMFY_URL`, иначе из `base_path`
   в `extra_model_paths.yaml` (образец — `extra_model_paths.example.yaml`, сам файл в git
@@ -33,16 +34,23 @@
   `syncCustomModelFolders` → `ensureModelPathsConfig`), поэтому правки `settings.json` при
   закрытом приложении достаточно; после старта всё равно проверить `base_path` в YAML.
 - Воркфлоу: `G:\AI\comic-comfy\workflows` — источник правды; копия для панели ComfyUI:
-  `...\ComfyUI\user\default\workflows`. Что открывать в какой ситуации — `G:\AI\comic-comfy\INDEX.md`.
-  Четырнадцать сборок, схема имени `номер_назначение_стиль`: 01_scene_{thepit,comic,jp}, 02_edit_mask,
-  03_edit_qwen_{quality,fast}, 04_pose_reference, 05_style_return, 06_scene_noct,
+  `...\ComfyUI\user\default\workflows` (её обновляет `tools\sync_panel.py`, только из репозитория;
+  папка панели — `COMFY_PANEL` или `panel`/`main` в `comfy_launch.json`).
+  Что открывать в какой ситуации — `G:\AI\comic-comfy\INDEX.md`.
+  Двенадцать сборок, схема имени `номер_назначение_стиль`: 01_scene_{thepit,comic,jp}, 02_edit_mask,
+  04_pose_reference, 05_style_return, 06_scene_noct,
   07_photo_{thepit,comic,jp,bimbo}, 08_photo_gta.
 - Каталог моделей и план тестов: `G:\AI\comic-comfy\docs\models.md`.
   Новые файлы раскладываются по подпапкам (`loras\detail`, `loras\comic`, `loras\style`, `loras\qwen`,
   `checkpoints\alt`), ComfyUI отдаёт их как `detail\hands_xl.safetensors`.
-- Генератор: `G:\AI\comic-comfy\tools\build_workflows.py`.
+- Генератор: `G:\AI\comic-comfy\tools\build_workflows.py` (80 строк) — тонкий драйвер над
+  `comic\builds.py` (спецификации сборок данными) и `comic\workflow.py` (сборщик графа).
+- Ядро V2: `comic\` — `config.py` (настройки), `paths.py`, `cache.py` (кэш описаний со схемой),
+  `prompt.py` (PromptBuilder — единственный путь сборки промпта), `guard.py` (возрастная рамка,
+  в том числе для переопределений), `run.py` (паспорт кадра, схема 2), `workflow.py`, `builds.py`.
+  `tools\settings.py` — тонкий адаптер над `comic\config.py`.
 - Загрузка: `tools\download-hf.ps1` (HF), `tools\download-civitai.ps1` (все нужные LoRA),
-  `tools\check_install.py` (сверяет 22 модели из сборок с диском и с `DOWNLOADS.md`).
+  `tools\check_install.py` (сверяет 17 моделей из сборок с диском и с `DOWNLOADS.md`).
 - Правила стиля: `G:\AI\comic-comfy\STYLE.md`.
 - Дизайн и тайминги: `G:\AI\comic-comfy\docs\2026-11-12-comic-stack-design.md`.
 - Оркестрация задания: `tools\jobs.py` — общий код CLI и страницы: описание, сцена, выгрузка VLM,
@@ -53,9 +61,11 @@
   трогает. `--no-tags` выключает, `COMIC_TAGGER=off` — для проверок. Стенд замера:
   `tools\tagger_bench.py` + `tools\tagger_compare.py`, отчёты в `out\bench\`.
   Решение и пороги — `docs\2026-11-16-tagger-addon-design.md`.
-- Веб-интерфейс: `webapp\` (`ui.py` — форма на NiceGUI, `service.py` — очередь и состояние,
+- Веб-интерфейс: `webapp\` (`ui.py` — форма на NiceGUI, `service.py` — очередь, состояние и
+  отмена (`cancel`: очередь снимается, работающему уходит `POST /interrupt`),
   `catalog.py` — сборки, `meta.fields`, `/object_info`, `state.py` — чистые правила шагов и
-  подписей), запуск `ComicWeb.cmd` / `ComicWeb.ps1` / `webapp\run.py`, зависимости
+  подписей, `components\advanced_dialog.py` — расширенные параметры диалогом), запуск
+  `ComicWeb.cmd` / `ComicWeb.ps1` / `webapp\run.py`, зависимости
   `requirements-web.txt`, проверки — `tools\test_web_ui.py` (Playwright,
   `requirements-web-dev.txt`). Ctrl+C в `run.py` — штатная остановка без трейсбека;
   вопрос cmd «Terminate batch job?» — это cmd, сервер уже остановлен.
@@ -258,6 +268,19 @@ ComfyUI не трогает. Без готового описания (кэш, `
    (`generate(..., report=...)`); по `subject` их не восстановить — шаблон стиля,
    переопределения и негатив собираются в графе.
    Проверка: `python tools\test_web_app.py` (176) и `python tools\test_web_ui.py` (35).
+   Одиннадцатое: элемент, созданный **после** `build()`, попадает в текущий слот
+   страницы, а не в свой контейнер. Миниатюры полосы и панели вкладок строятся
+   из обработчиков (`set`, `panel`), когда `with ... as card` уже закрыт, поэтому
+   их надо создавать внутри `with self.box:` — иначе они уезжают в конец сцены и
+   рисуются вне карточки. Симптом: миниатюра кадра висит в углу страницы, панель
+   вкладки оказывается без рамки.
+   Двенадцатое: у рельса V2 нет своей прокрутки (`overflow` не `auto/scroll`), а липнет
+   сам рельс (`top: calc(topbar + gutter)`), не блок запуска: липкий блок висел бы
+   поверх «Параметров запуска» (так и вышло на 1440×900). Рельс подобран по высоте
+   окна 900 px — фото 160, строка стиля 32, поля параметров по 32, кнопки запуска в
+   одну строку, — и ниже 900 px высоты не липнет, иначе «Старт» уехал бы под нижний
+   край. Бейдж — нейтральная пилюля, цвет несёт только `.cp-dot`. Проверка:
+   `python tools\test_web_ui.py`, раздел 13в.
 
 0.15. **Обрывы и мусор: четыре правила, которые нельзя терять.**
    Первое: задания и черновики загрузок живут по сроку — `JobService.purge()` снимает
@@ -349,6 +372,33 @@ ComfyUI не трогает. Без готового описания (кэш, `
    и модель дорисовывает бюстгальтер (кадр 00067 против 00068).
    Проверка: `python tools\test_photo_prompt.py`, пункт 33.
 
+0.19. **Отмена и расширенные: три места, где легко соврать себе.**
+   Первое: `/interrupt` уходит только заданию, которое уже отправило свой промпт
+   (`job.prompt_id`). Слепой `/interrupt` прервал бы чужой граф — например, работу
+   другого инструмента на том же ComfyUI; а задание, снятое из очереди, не зовёт
+   ComfyUI вовсе (ни `/prompt`, ни `/interrupt`). Второе: `svc.wait()` возвращает
+   сразу после `cancel` — статус ставится раньше, чем поток задания допишет
+   результат, поэтому проверки «кадра нет» ждут `active_id() is None`, иначе они
+   проходят и тогда, когда кадр ещё появится. Третье: отмена — исход, а не ошибка:
+   статус `cancelled`, `error` пуст, а `outcome=cancelled` попадает в паспорт
+   только если кадр успел появиться (`jobs.run_job(cancel=...)` ставит метку при
+   записи; после отмены `run.json` не переписывается). Пустое поле расширенного
+   диалога значит «как в графе», а введённый `0` остаётся нулём: `flat()` не
+   превращает его в «пусто», иначе `denoise 0` уехал бы в 0.75.
+   Проверка: `python tools\test_web_app.py`, пункты 34–35;
+   `python tools\test_web_ui.py`, 13г2 и 13и3.
+
+0.20. **Проверка виджетов и запуск наборов: два места, где легко обвинить код.**
+   Первое: `/object_info` в 0.45.2 объявляет комбинации не голым списком, а
+   `"COMBO"` плюс `{"options": [...]}`. Валидатор, который ждёт список, объявляет
+   ошибкой каждый `ImageToMask.channel` и `ImageScaleToTotalPixels.upscale_method` —
+   у нас так нашлось 185 «расхождений» там, где графы были правы. Разбор типа
+   должен идти через `COMBO`/`options`. Проверка: `python tools\check_widgets.py`.
+   Второе: `tools\test_web_app.py` и `tools\test_web_ui.py` гоняются из `.venv-web`,
+   а не из venv ComfyUI: после P5 страница импортирует `nicegui`, и в venv ComfyUI
+   набор падает с `ModuleNotFoundError: nicegui` — это не поломка кода, а не то
+   окружение. `test_photo_prompt.py`, наоборот, идёт из venv ComfyUI.
+
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
    съезжают на позицию влево, панель Issues пишет «Invalid input: sampler_name / cfg».
@@ -438,7 +488,9 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
   у GTA 0.85. Если стилевую LoRA опознать нельзя — отказ, а не тихий пропуск.
 - Запускать только с разрешения пользователя (см. «Нельзя без явной просьбы»).
 - Полезные ключи: `--style` (thepit|comic|jp|bimbo|gta вместо имени сборки), `--batch <папка>`
-  (два прохода: все описания при одной загрузке модели, потом выгрузка и генерация),
+  (два прохода: все описания при одной загрузке модели, потом выгрузка и генерация; каждый файл —
+  задание `jobs.run_job`, поэтому `--recheck` и прочие флаги работают, а `--preset` и
+  `--save-preset` отвергаются: одно имя на папку),
   `--variants N` (несколько сидов на фото), `--scene "beach at sunset"` (переписать сцену, сохранив человека),
   `--dry-run` (показать промпт без загрузки модели — нужен кэш, `--preset`, `--from-json` или
   `--no-llm --subject`), `--from-json`, `--negative-extra` / `--negative-drop`,
@@ -469,20 +521,22 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 
 ## Проверки перед словом «готово»
 
-- `python tools\test_photo_prompt.py` — 273 проверки CLI и пайплайна (модели не нужны).
-- `python tools\test_web_app.py` — 181 проверка заданий, очереди и веб-слоя на HTTP-заглушках
+- `python tools\test_photo_prompt.py` — 521 проверка CLI и пайплайна (модели не нужны).
+- `python tools\test_web_app.py` — 329 проверок заданий, очереди и веб-слоя на HTTP-заглушках
   (LM Studio и ComfyUI подменяются, GPU не нужен).
-- `python tools\test_web_ui.py` — 35 браузерных проверок Chromium на тех же заглушках:
+- `python tools\test_web_ui.py` — 99 браузерных проверок Chromium на тех же заглушках:
   раскладка, тёмная тема и её переключение, расширенная панель, сохранение ввода после health-check, замена фото, второй кадр
   Recheck, две вкладки, потеря связи браузера, отказ WebSocket ComfyUI, промпт формы,
-  истёкшая история задания.
+  истёкшая история задания, диалог расширенных параметров и отмена задания.
 - Переменные кодировки не нужны: `settings.utf8_streams()` в точках входа ставит UTF-8 сам,
   поэтому те же команды работают и в консоли, и с перенаправлением вывода в файл или пайп.
   Это про `tools\*`: `webapp\run.py` поднимается из `.cmd`/`.ps1` со своим окружением, а
   `test_web_ui.py` сам задаёт `PYTHONIOENCODING` дочернему серверу — браузерная проверка
   работу сервера без переменной не доказывает.
-- `python tools\check_install.py` — все 22 модели из сборок на диске и описаны в `DOWNLOADS.md`.
-- `python build_workflows.py` без ошибок, затем валидатор `widgets_values` по `/object_info`.
+- `python tools\check_install.py` — все 17 моделей из сборок на диске и описаны в `DOWNLOADS.md`.
+- `python build_workflows.py` без ошибок, затем `python tools\check_widgets.py` — сверка
+  `widgets_values` с `/object_info` (поднимает headless ComfyUI на 8199 и гасит его).
+- `python tools\sync_panel.py --check` — копия графов для панели ComfyUI совпадает с репозиторием.
 - Интерфейс: `ComicWeb.cmd` (или `.venv-web\Scripts\python.exe webapp\run.py`), затем живой
   прогон в браузере: загрузка фото → «Старт» → этапы и таймер → кадр и «Скачать».
   Обновление вкладки во время задания показывает его текущий этап, а не запускает заново.

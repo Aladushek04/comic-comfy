@@ -1,6 +1,7 @@
 {
   "main": "<путь>\\ComfyUI\\main.py",
   "python": "<путь>\\ComfyUI\\.venv\\Scripts\\python.exe",
+  "panel": "<путь>\\ComfyUI\\user\\default\\workflows",
   "port": 8199,
   "stop_after": true,
   "startup_timeout": 180

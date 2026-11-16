@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comicpit"
+version = "2.0.0"
+description = "Локальный конвейер ComfyUI для иллюстраций в стиле комиксов"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.setuptools]
+packages = ["comic"]
+
+[tool.pytest.ini_options]
+# Уровни из docs/superpowers/specs/2026-11-16-comicpit-v2-design.md, 7.5:
+# T0 fast — чистые функции, T1 app — заглушки и очередь, T2 ui — Chromium.
+# Пока наборы свои (tools/test_*.py), маркеры ждут переезда на pytest.
+markers = [
+    "fast: чистые функции, модели и GPU не нужны (бюджет 5 с)",
+    "app: HTTP-заглушки, жизненный цикл задания и очередь (бюджет 15 с)",
+    "ui: Chromium, раскладка и клики (бюджет 2 мин)",
+]
+# Пакет `comic` импортируется из корня репозитория без установки в venv ComfyUI.
+pythonpath = ["."]

@@ -15,8 +15,8 @@
 
     python tools/test_photo_prompt.py
 """
-import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -58,6 +58,14 @@ def capture(fn):
 def check(name, cond, detail=""):
     (passed if cond else failed).append(name)
     print(("  ok   " if cond else "  FAIL ") + name + (f" — {detail}" if detail and not cond else ""))
+
+
+def first_diff(got, want):
+    """Где две строки разошлись: позиция и кусок вокруг, а не «не равно»."""
+    for i, (a, b) in enumerate(zip(got, want)):
+        if a != b:
+            return f"символ {i}: {got[max(0, i - 30):i + 30]!r} vs {want[max(0, i - 30):i + 30]!r}"
+    return f"длина {len(got)} vs {len(want)}"
 
 
 def make(path, color, size=(240, 180)):
@@ -234,17 +242,40 @@ def test_generate_requires_image():
         pp.post, pp.get, pp.time = saved
 
 
-def batch_args(folder, **over):
-    ns = argparse.Namespace(
-        batch=str(folder), workflow=None, style="thepit", scene=None, variants=1,
-        model=None, subject=None, no_llm=False, from_json=None, preset=None, save_preset=None,
-        recheck=False, keep_llm=False, comfy=None, negative_extra="", negative_drop="",
-        denoise=None, style_weight=None, seed=7, force=False, dry_run=False, generate=True,
-        unload_all=False, cn_strength=None, no_tags=False,
-    )
-    for k, v in over.items():
-        setattr(ns, k, v)
-    return ns
+def batch_main(folder, workflow="07_photo_thepit", seed=7, generate=True, **flags):
+    """Пачка через командную строку: `--batch` идёт в `jobs.run_batch`.
+
+    Раньше проверки звали `pp.run_batch` напрямую — второго конвейера больше
+    нет, поэтому здесь тот же вход, что у пользователя: argparse, отказы на
+    несовместимые флаги и `jobs.run_job` на каждый файл.
+    """
+    argv = ["--batch", str(folder), "--workflow", workflow, "--seed", str(seed)]
+    if generate:
+        argv.append("--generate")
+    for key, value in flags.items():
+        flag = "--" + key.replace("_", "-")
+        if value is True:
+            argv.append(flag)
+        elif value not in (False, None):
+            argv += [flag, str(value)]
+    saved = sys.argv
+    sys.argv = ["photo_prompt.py"] + argv
+    buf = io.StringIO()
+    code = 0
+    try:
+        with contextlib.redirect_stdout(buf):
+            pp.main()
+    except SystemExit as e:
+        # sys.exit("текст") в процессе печатает текст в stderr и выходит с кодом 1;
+        # здесь текст попадает в тот же буфер, чтобы проверка видела причину отказа.
+        if isinstance(e.code, str):
+            buf.write(e.code + "\n")
+            code = 1
+        else:
+            code = e.code or 0
+    finally:
+        sys.argv = saved
+    return code, buf.getvalue()
 
 
 def test_batch_reports_failure():
@@ -261,7 +292,7 @@ def test_batch_reports_failure():
     books = lambda: list((pp.ROOT / "out").rglob("run.json"))
     try:
         pp.generate = lambda *a, **k: (False, None)
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder), "07_photo_thepit"))
+        rc, text = batch_main(folder)
         check("всё упало -> код 1", rc == 1, str(rc))
         check("кадров 0, провалов 2", "кадров: 0, провалов: 2" in text, text.strip()[-160:])
         check("run.json не создан", books() == [], str(books()))
@@ -273,7 +304,7 @@ def test_batch_reports_failure():
             return True, name
 
         pp.generate = fake_generate
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder), "07_photo_thepit"))
+        rc, text = batch_main(folder)
         check("все кадры -> код 0", rc == 0, str(rc))
         check("кадров 2, провалов 0", "кадров: 2, провалов: 0" in text, text.strip()[-160:])
         check("run.json на каждое фото", len(books()) == 2, str(books()))
@@ -295,6 +326,57 @@ def test_batch_reports_failure():
     finally:
         (pp.describe, pp.lm_models, pp.pick_model, pp.unload_all,
          pp.resolve_comfy, pp.generate) = saved
+
+
+def test_batch_recheck_and_refusals():
+    """8б) флаги пачки: --recheck срабатывает, --preset/--save-preset отвергаются.
+
+    Раньше пачка шла своим конвейером и эти флаги молча не делали ничего.
+    Теперь каждый файл — задание `run_job`, поэтому флаг либо работает, либо
+    назван несовместимым с папкой.
+    """
+    print("\n8б) пачка: --recheck работает, несовместимые флаги отвергаются")
+    folder = TMP / "batch_recheck"
+    make(folder / "a.png", (21, 21, 21))
+    calls = []
+    made = {"n": 0}
+    saved = (pp.describe, pp.lm_models, pp.pick_model, pp.unload_all, pp.free_llm,
+             pp.comfy_free, pp.recheck, pp.resolve_comfy, pp.generate)
+
+    def fake_generate(*a, **k):
+        made["n"] += 1
+        name = f"07_photo_thepit_{made['n']:05d}_.png"
+        pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        (pp.OUTPUT_DIR / name).write_bytes(b"png")
+        return True, name
+
+    pp.describe = lambda p, m: {"subject": "adult woman, red dress",
+                                "negative_extra": "", "notes": ""}
+    pp.lm_models = lambda strict=True: {"models": []}
+    pp.pick_model = lambda r, w: "m"
+    pp.unload_all = lambda r: []
+    pp.free_llm = lambda m, unload_all=False: []
+    pp.comfy_free = lambda: None
+    pp.recheck = lambda desc, path, model: (calls.append("recheck") or "gold necklace")
+    pp.resolve_comfy = lambda c: "http://x"
+    pp.generate = fake_generate
+    try:
+        rc, text = batch_main(folder, force=True, generate=True, recheck=True)
+        check("пачка с --recheck: код 0", rc == 0, text.strip()[-200:])
+        check("--recheck в пачке срабатывает", calls == ["recheck"], str(calls))
+        check("пачка: основной и уточнённый кадр",
+              "кадров: 2, провалов: 0" in text, text.strip()[-200:])
+    finally:
+        (pp.describe, pp.lm_models, pp.pick_model, pp.unload_all, pp.free_llm,
+         pp.comfy_free, pp.recheck, pp.resolve_comfy, pp.generate) = saved
+
+    rc, text = batch_main(folder, preset="моя")
+    check("--batch --preset отвергнут", rc == 1 and "--preset" in text, text.strip()[-200:])
+    check("отказ объяснён", "одинаковые кадры" in text, text.strip()[-200:])
+    rc, text = batch_main(folder, save_preset="моя")
+    check("--batch --save-preset отвергнут",
+          rc == 1 and "--save-preset" in text, text.strip()[-200:])
+    check("и это объяснено", "имя пресета одно" in text, text.strip()[-200:])
 
 
 def test_build_workflows_exit_codes():
@@ -379,7 +461,7 @@ def test_dry_run_does_not_touch_lm():
         folder = TMP / "dry_batch"
         make(folder / "x.png", (9, 9, 9))
         calls.clear()
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, dry_run=True), "07_photo_thepit"))
+        rc, text = batch_main(folder, dry_run=True)
         check("пакет без кэша -> код 1", rc == 1, str(rc))
         check("пакет LM Studio не тронул", calls == [], str(calls))
         check("пакет сказал, что показать нечего", "ни одного описания" in text, text.strip()[-160:])
@@ -387,15 +469,14 @@ def test_dry_run_does_not_touch_lm():
         pp.write_cache(str(folder / "x.png"),
                        {"subject": "adult woman, from cache", "negative_extra": ""})
         calls.clear()
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, dry_run=True), "07_photo_thepit"))
+        rc, text = batch_main(folder, dry_run=True)
         check("пакет с кэшем -> код 0", rc == 0, str(rc))
         check("пакет с кэшем без LM", calls == [], str(calls))
         check("пакет взял описание из кэша", "adult woman, from cache" in text, text.strip()[-160:])
 
         # полностью закэшированная пачка не должна требовать LM Studio вообще
         pp.lm_models = lambda strict=True: (_ for _ in ()).throw(RuntimeError("LM Studio не запущен"))
-        rc, text = capture(lambda: pp.run_batch(
-            batch_args(folder, dry_run=False, generate=False), "07_photo_thepit"))
+        rc, text = batch_main(folder, generate=False)
         check("закэшированная пачка живёт без LM Studio", rc == 0, str(rc))
     finally:
         (pp.lm_models, pp.pick_model, pp.describe, pp.unload_model,
@@ -639,7 +720,7 @@ def test_portable_paths():
 
     rc, out = check_install_run()
     check("полный набор -> код 0", rc == 0, out[-200:])
-    check("найдены все 22 модели сборок", "моделей в сборках: 22" in out, out[-200:])
+    check("найдены все 17 моделей сборок", "моделей в сборках: 17" in out, out[-200:])
 
     (models / "depth_anything_v2_vitl.pth").unlink()
     rc, out = check_install_run()
@@ -754,7 +835,7 @@ def test_partial_failure_visible():
     pp.resolve_comfy = lambda c: "http://x"
     try:
         pp.generate = good_generate
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, force=True), "07_photo_thepit"))
+        rc, text = batch_main(folder, force=True)
         check("пустое описание -> код 1", rc == 1, str(rc))
         check("пропуск назван в итоге", "без описания: 1 (bad.png)" in text, text.strip()[-200:])
         check("кадр по второму фото сделан", "кадров: 1" in text, text.strip()[-200:])
@@ -767,7 +848,7 @@ def test_partial_failure_visible():
 
         # ComfyUI назвал файл, которого нет в папке вывода
         pp.generate = lambda *a, **k: (True, "ghost.png")
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, force=True), "07_photo_thepit"))
+        rc, text = batch_main(folder, force=True)
         check("паспорт без кадра -> код 1", rc == 1, str(rc))
         check("сказано, что кадра нет", "кадра нет по пути" in text, text.strip()[-200:])
         runs = json.loads(own.read_text(encoding="utf-8"))["runs"]
@@ -904,8 +985,7 @@ def test_scene_failure_not_cached():
     pp.lm_models, pp.pick_model, pp.unload_all = lambda strict=True: {}, lambda r, w: "m", lambda r: []
     pp.resolve_comfy = lambda c: "http://x"
     try:
-        rc, text = capture(lambda: pp.run_batch(
-            batch_args(folder, scene="в горах", force=True), "07_photo_thepit"))
+        rc, text = batch_main(folder, scene="в горах", force=True)
         check("пачка со сбойной сценой -> код 1", rc == 1, str(rc))
         check("файл назван пропущенным", "без описания: 1 (a.png)" in text, text.strip()[-200:])
         check("пачка не пишет кэш под сценой",
@@ -972,14 +1052,12 @@ def test_batch_scene_cache_no_lm():
     try:
         pp.write_cache(str(img), {"subject": "adult woman, tree, в горах", "negative_extra": "",
                                   "notes": "", "scene": "в горах"}, "в горах")
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, scene="в горах", generate=False),
-                                                "07_photo_thepit"))
+        rc, text = batch_main(folder, scene="в горах", generate=False)
         check("кэш сцены: код 0", rc == 0, str(rc))
         check("кэш сцены: модель не тронута", calls == [], str(calls))
 
         calls.clear()
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, scene="в горах", dry_run=True, generate=False),
-                                                "07_photo_thepit"))
+        rc, text = batch_main(folder, scene="в горах", dry_run=True, generate=False)
         check("dry-run с кэшем сцены: код 0 и без модели", rc == 0 and calls == [],
               f"{rc} {calls}")
 
@@ -988,8 +1066,7 @@ def test_batch_scene_cache_no_lm():
         pp.write_cache(str(img), {"subject": "adult woman, tree", "negative_extra": "",
                                   "notes": ""})
         calls.clear()
-        rc, text = capture(lambda: pp.run_batch(batch_args(folder, scene="в горах", generate=False),
-                                                "07_photo_thepit"))
+        rc, text = batch_main(folder, scene="в горах", generate=False)
         check("базовый кэш: фото заново не описывают", "describe" not in calls, str(calls))
         check("базовый кэш: сцена переписана", "rewrite" in calls, str(calls))
         check("базовый кэш: сцена закэширована",
@@ -1003,7 +1080,7 @@ def test_batch_scene_cache_no_lm():
         check("старая запись без метки не читается", pp.read_cache(str(img), "в горах") is None)
 
         calls.clear()
-        capture(lambda: pp.run_batch(batch_args(folder, scene="в горах", generate=False), "07_photo_thepit"))
+        batch_main(folder, scene="в горах", generate=False)
         check("старую запись переписывают", "rewrite" in calls, str(calls))
         check("после перезаписи метка есть",
               bool((pp.read_cache(str(img), "в горах") or {}).get("scene_applied")))
@@ -1114,6 +1191,190 @@ def test_passport_records_generation_settings():
             pp.save_run, pp.generate, pp.resolve_comfy = saved_save, saved_gen, saved_resolve
         check("main передаёт настройки в паспорт",
               seen.get("cn_strength") == 0.3 and seen.get("style_weight") == 0.7, str(seen))
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved
+
+
+def test_passport_records_sampler_settings():
+    print("\n24) run.json: применённые шаги, cfg и сэмплер")
+    img = TMP / "sampler.png"
+    make(img, (14, 15, 16))
+    payload = pp.build_payload("07_photo_thepit", "adult woman", "", seed=1)
+    settings = payload.get("settings") or {}
+    check("build_payload отдаёт настройки сэмплера",
+          settings.get("steps") == 30 and settings.get("cfg") == 6.0
+          and settings.get("sampler") == "euler_ancestral"
+          and settings.get("scheduler") == "normal", str(settings))
+
+    saved = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT = TMP / "root_sampler"
+    pp.OUTPUT_DIR = TMP / "out_sampler"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        frame = "07_photo_thepit_00011_.png"
+        (pp.OUTPUT_DIR / frame).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "x", "negative_extra": ""}, 1, 0.75, frame,
+                        settings=settings)
+        folder = pp.ROOT / "out" / pp.image_tag(img)
+        run = json.loads((folder / "run.json").read_text(encoding="utf-8"))["runs"][0]
+        check("steps в паспорте", run.get("steps") == 30, str(run.get("steps")))
+        check("cfg в паспорте", run.get("cfg") == 6.0, str(run.get("cfg")))
+        check("сэмплер в паспорте", run.get("sampler") == "euler_ancestral",
+              str(run.get("sampler")))
+        check("scheduler в паспорте", run.get("scheduler") == "normal",
+              str(run.get("scheduler")))
+
+        # Без настроек паспорт не выдумывает нули: denoise: null остаётся null,
+        # а шаги — пустыми, а не 0 (0 шагов выглядит как настоящее значение).
+        frame2 = "07_photo_thepit_00012_.png"
+        (pp.OUTPUT_DIR / frame2).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "x", "negative_extra": ""}, 2, None, frame2)
+        runs = json.loads((folder / "run.json").read_text(encoding="utf-8"))["runs"]
+        check("denoise без настройки остался null", runs[1].get("denoise") is None,
+              str(runs[1].get("denoise")))
+        check("без настроек шаги не выдуманы",
+              runs[1].get("steps") is None and runs[1].get("cfg") is None,
+              str({k: runs[1].get(k) for k in ("steps", "cfg", "sampler")}))
+        check("запись с настройками читается вместе с новой",
+              runs[0]["steps"] == 30 and runs[0]["denoise"] == 0.75, str(runs[0])[:160])
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved
+
+
+def test_passport_records_passes():
+    print("\n24a) run.json: оба прохода, каждый со своими шагами")
+    payload = pp.build_payload("07_photo_thepit", "adult woman", "", denoise=0.75, seed=1)
+    passes = (payload.get("settings") or {}).get("passes")
+    check("два прохода 07 в порядке графа",
+          passes == [{"denoise": 0.75, "steps": 30}, {"denoise": 0.3, "steps": 15}],
+          str(passes))
+
+    # --denoise правит главный проход, а не оба: второй остаётся 0.3/15.
+    raised = pp.build_payload("07_photo_thepit", "adult woman", "", denoise=0.9, seed=1)
+    check("--denoise виден в своём проходе",
+          (raised.get("settings") or {}).get("passes")
+          == [{"denoise": 0.9, "steps": 30}, {"denoise": 0.3, "steps": 15}],
+          str((raised.get("settings") or {}).get("passes")))
+
+    # У 06 нет стилевого блока (это текст→картинка), поэтому проходы берём тем же
+    # сборщиком напрямую по её графу: у photo-сборок путь один и тот же.
+    api, _ = pp.load_workflow("06_scene_noct")
+    single = pp.sampler_settings([n for n in api.values() if n["class_type"] == "KSampler"])
+    check("у 06 один проход", single.get("passes") == [{"denoise": 1.0, "steps": 8}],
+          str(single))
+
+    img = TMP / "passes.png"
+    make(img, (17, 18, 19))
+    saved = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT = TMP / "root_passes"
+    pp.OUTPUT_DIR = TMP / "out_passes"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        frame = "07_photo_thepit_00021_.png"
+        (pp.OUTPUT_DIR / frame).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "x", "negative_extra": ""}, 1, 0.75, frame,
+                        settings=payload.get("settings"))
+        frame2 = "07_photo_thepit_00022_.png"
+        (pp.OUTPUT_DIR / frame2).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "x", "negative_extra": ""}, 2, None, frame2)
+        runs = json.loads((pp.ROOT / "out" / pp.image_tag(img) / "run.json")
+                          .read_text(encoding="utf-8"))["runs"]
+        check("проходы в паспорте кадра",
+              runs[0].get("passes") == [{"denoise": 0.75, "steps": 30},
+                                        {"denoise": 0.3, "steps": 15}],
+              str(runs[0].get("passes")))
+        check("без настроек проходы не выдуманы", runs[1].get("passes") is None,
+              str(runs[1].get("passes")))
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved
+
+
+def test_passport_records_outcome():
+    print("\n24b) run.json: метка исхода кадра")
+    img = TMP / "outcome.png"
+    make(img, (21, 22, 23))
+    saved = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT = TMP / "root_outcome"
+    pp.OUTPUT_DIR = TMP / "out_outcome"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        folder = pp.ROOT / "out" / pp.image_tag(img)
+        folder.mkdir(parents=True)
+        # старый паспорт: метки исхода в нём нет
+        (folder / "run.json").write_text(json.dumps({"runs": [
+            {"workflow": "07_photo_thepit", "seed": 1, "denoise": None,
+             "file": "07_photo_thepit_00030_.png", "subject": "x", "negative_extra": ""},
+        ]}), encoding="utf-8")
+
+        for name, kw in (("07_photo_thepit_00031_.png", {}),
+                         ("07_photo_thepit_00032_.png", {"outcome": "refined"})):
+            (pp.OUTPUT_DIR / name).write_bytes(b"png")
+            with contextlib.redirect_stdout(io.StringIO()):
+                pp.save_run(str(img), "07_photo_thepit",
+                            {"subject": "x", "negative_extra": ""}, 1, 0.75, name, **kw)
+        runs = json.loads((folder / "run.json").read_text(encoding="utf-8"))["runs"]
+        check("по умолчанию метка unknown", runs[1].get("outcome") == "unknown",
+              str(runs[1].get("outcome")))
+        check("явная метка сохраняется", runs[2].get("outcome") == "refined",
+              str(runs[2].get("outcome")))
+        check("старая запись читается и не переписана",
+              "outcome" not in runs[0] and runs[0]["denoise"] is None, str(runs[0]))
+
+        (pp.OUTPUT_DIR / "07_photo_thepit_00033_.png").write_bytes(b"png")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                pp.save_run(str(img), "07_photo_thepit",
+                            {"subject": "x", "negative_extra": ""}, 1, 0.75,
+                            "07_photo_thepit_00033_.png", outcome="почти принят")
+            check("метка не из списка — отказ", False, "запись прошла")
+        except pp.PipelineError as e:
+            check("метка не из списка — отказ", "unknown" in str(e), str(e))
+
+        # recheck: повторный кадр получает refined, основной остаётся unknown
+        saved2 = (pp.lm_models, pp.pick_model, pp.recheck, pp.free_llm, pp.comfy_free,
+                  pp.resolve_comfy, pp.generate)
+        seen = {"n": 0}
+
+        def fake_generate(*a, **k):
+            seen["n"] += 1
+            name = f"07_photo_thepit_0004{seen['n']}_.png"
+            (pp.OUTPUT_DIR / name).write_bytes(b"png")
+            report = k.get("report")
+            if isinstance(report, dict):
+                report.update({"positive": "adult woman, plain", "negative": "bad"})
+            return True, name
+
+        pp.lm_models = lambda strict=True: {}
+        pp.pick_model = lambda resp, wanted: "test-model"
+        pp.recheck = lambda desc, path, model: "silver bracelet"
+        pp.free_llm = lambda model, unload_all: []
+        pp.comfy_free = lambda: None
+        pp.resolve_comfy = lambda c=None: "http://stub"
+        pp.generate = fake_generate
+        try:
+            r = jobs.run_job(jobs.JobRequest(
+                image=str(img), workflow="07_photo_thepit", subject="adult woman, plain",
+                recheck=True, seed=7))
+        finally:
+            (pp.lm_models, pp.pick_model, pp.recheck, pp.free_llm, pp.comfy_free,
+             pp.resolve_comfy, pp.generate) = saved2
+        check("recheck сделал два кадра", r.ok and len(r.frames) == 2,
+              f"{r.ok} {len(r.frames)} {r.error}")
+        check("кадры задания размечены исходом",
+              [f.get("outcome") for f in r.frames] == ["unknown", "refined"],
+              str([f.get("outcome") for f in r.frames]))
+        book = json.loads((folder / "run.json").read_text(encoding="utf-8"))["runs"]
+        check("метки дошли до паспорта",
+              [x.get("outcome") for x in book[-2:]] == ["unknown", "refined"],
+              str([x.get("outcome") for x in book[-2:]]))
     finally:
         pp.ROOT, pp.OUTPUT_DIR = saved
 
@@ -1606,6 +1867,788 @@ def test_eye_colour_zoom():
         pp.post = saved
 
 
+def test_config_priority():
+    """34) Config: один снимок env -> comic_paths.json -> yaml -> раскладка рядом."""
+    print("\n34) конфиг ComicPit-V2")
+    from comic.config import Config
+
+    yaml = TMP / "cfg.yaml"
+    yaml.write_text("comic_shared:\n  base_path: Q:\\models\n", encoding="utf-8")
+    paths = TMP / "cfg_paths.json"
+    paths.write_text(json.dumps({"input": "R:\\in", "output": "R:\\out",
+                                 "lm_model": "pinned@iq3_m",
+                                 "lm_url": "http://127.0.0.1:8765"}), encoding="utf-8")
+    no_paths = TMP / "cfg-нет.json"
+
+    cfg = Config.load(env={}, yaml_path=yaml, paths_path=no_paths)
+    check("Config: base_path читается из yaml", str(cfg.models) == "Q:\\models", str(cfg.models))
+    check("Config: без файла input/output рядом с models",
+          cfg.input == cfg.models.parent / "input" and cfg.output == cfg.models.parent / "output",
+          f"{cfg.input} / {cfg.output}")
+    check("Config: адрес ComfyUI по умолчанию", cfg.comfy_url == "http://127.0.0.1:8199",
+          cfg.comfy_url)
+    check("Config: сервис описаний не задан — пусто",
+          cfg.lm_url == "" and cfg.lm_model is None, f"{cfg.lm_url} / {cfg.lm_model}")
+    check("Config: размышления по умолчанию выключены", cfg.thinking is False, str(cfg.thinking))
+
+    cfg = Config.load(env={}, yaml_path=yaml, paths_path=paths)
+    check("Config: comic_paths.json задаёт input/output",
+          str(cfg.input) == "R:\\in" and str(cfg.output) == "R:\\out",
+          f"{cfg.input} / {cfg.output}")
+    check("Config: comic_paths.json задаёт модель и адрес описания",
+          cfg.lm_model == "pinned@iq3_m" and cfg.lm_url == "http://127.0.0.1:8765",
+          f"{cfg.lm_model} / {cfg.lm_url}")
+
+    cfg = Config.load(env={"COMFY_MODELS": str(TMP / "env_models"),
+                           "COMFY_SHARED": str(TMP / "env_shared"),
+                           "COMFY_INPUT": str(TMP / "env_in"),
+                           "LM_MODEL": "env@q8", "LM_URL": "http://127.0.0.1:9999",
+                           "COMFY_URL": "http://127.0.0.1:1", "LM_THINKING": "on"},
+                      yaml_path=yaml, paths_path=paths)
+    check("Config: env важнее yaml и comic_paths.json",
+          cfg.models == TMP / "env_models" and cfg.input == TMP / "env_in"
+          and cfg.lm_model == "env@q8" and cfg.lm_url == "http://127.0.0.1:9999"
+          and cfg.comfy_url == "http://127.0.0.1:1" and cfg.thinking is True, str(cfg))
+    check("Config: COMFY_SHARED важнее comic_paths.json",
+          Config.load(env={"COMFY_SHARED": str(TMP / "sh")}, yaml_path=yaml,
+                      paths_path=paths).input == TMP / "sh" / "input")
+
+    root = TMP / "cfg_root"
+    cfg = Config.load(root=root, env={}, yaml_path=TMP / "cfg-нет.yaml")
+    check("Config: без yaml — раскладка в корне", cfg.models == root / "models", str(cfg.models))
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "extra_model_paths.yaml").write_text("base_path: S:\\models\n", encoding="utf-8")
+    (root / "comic_paths.json").write_text(json.dumps({"input": "S:\\in"}), encoding="utf-8")
+    cfg = Config.load(root=root, env={})
+    check("Config: yaml и comic_paths.json ищутся в корне, а не в cwd",
+          str(cfg.models) == "S:\\models" and str(cfg.input) == "S:\\in",
+          f"{cfg.models} / {cfg.input}")
+
+    env = {"COMFY_URL": "http://127.0.0.1:7000"}
+    cfg = Config.load(env=env, yaml_path=yaml, paths_path=no_paths)
+    env["COMFY_URL"] = "http://127.0.0.1:7001"
+    check("Config: снимок, а не живое окружение", cfg.comfy_url == "http://127.0.0.1:7000",
+          cfg.comfy_url)
+
+
+def test_settings_adapter():
+    """35) settings — тонкий адаптер над Config: прежние имена на месте."""
+    print("\n35) settings поверх Config")
+    from comic.config import Config
+
+    cfg = getattr(st, "CONFIG", None)
+    check("settings.CONFIG — снимок Config", isinstance(cfg, Config), type(cfg).__name__)
+    if cfg is None:
+        return
+    check("пути берутся из снимка",
+          st.MODELS_DIR == cfg.models and st.INPUT_DIR == cfg.input
+          and st.OUTPUT_ROOT == cfg.output and st.SHARED_DIR == cfg.shared,
+          f"{st.MODELS_DIR} {st.INPUT_DIR} {st.OUTPUT_ROOT} {st.SHARED_DIR}")
+    check("OUTPUT_DIR и WF_DIR выведены из снимка",
+          st.OUTPUT_DIR == cfg.output / "comic" and st.WF_DIR == cfg.root / "workflows",
+          f"{st.OUTPUT_DIR} {st.WF_DIR}")
+    check("ROOT, COMFY_URL, LM_URL, LM_MODEL из снимка",
+          st.ROOT == cfg.root and st.COMFY_URL == cfg.comfy_url
+          and st.LM_URL == cfg.lm_url and st.LM_MODEL == (cfg.lm_model or ""),
+          f"{st.ROOT} {st.COMFY_URL} {st.LM_URL} {st.LM_MODEL}")
+    check("_PATH — прежний словарь resolve()",
+          sorted(st._PATH) == ["input", "lm", "lm_model", "models", "output", "root",
+                               "shared", "url"],
+          str(sorted(st._PATH)))
+
+    yaml = TMP / "adapter.yaml"
+    yaml.write_text("comic_shared:\n  base_path: Q:\\models\n", encoding="utf-8")
+    paths = TMP / "adapter_paths.json"
+    paths.write_text(json.dumps({"input": "R:\\in", "output": "R:\\out",
+                                 "lm_model": "pinned@iq3_m",
+                                 "lm_url": "http://127.0.0.1:8765"}), encoding="utf-8")
+    got = st.resolve(env={}, yaml_path=yaml, paths_path=paths)
+    want = Config.load(env={}, yaml_path=yaml, paths_path=paths)
+    check("resolve() считает то же, что Config.load()",
+          got["models"] == want.models and got["input"] == want.input
+          and got["output"] == want.output and got["url"] == want.comfy_url
+          and got["lm"] == want.lm_url and got["lm_model"] == (want.lm_model or ""),
+          str(got))
+    check("utf8_streams и read_paths на месте",
+          callable(st.utf8_streams) and st.read_paths(paths).get("input") == "R:\\in")
+
+
+def test_cache_schema():
+    """36) кэш с версией схемы: старые записи читаются, новые помечены."""
+    from comic import cache as cc
+
+    folder = TMP / "cache_schema"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    # Запись, как её писала прежняя версия: без schema и без scene_applied.
+    old = folder / "old.prompt.json"
+    old.write_text(json.dumps({
+        "subject": "adult woman, red dress", "negative_extra": "missing glasses",
+        "notes": "старое описание", "raw": "{\"subject\": \"...\"}", "sha1": "0123456789ab",
+        "source": "old.png", "scene": "в горах", "describe": 2,
+        "addons": "swin+eva/1", "addon_tags": ["red dress"],
+        "addon_replaced": ["dress"], "addon_size": "large",
+    }, ensure_ascii=False), encoding="utf-8")
+    rec = cc.read(old)
+    check("старый кэш без schema читается", rec is not None)
+    check("старая запись получает schema=1",
+          rec is not None and rec.schema == cc.LEGACY_SCHEMA, str(rec and rec.schema))
+    check("scene_applied не выдумывается", rec is not None and rec.scene_applied is False)
+    check("сцена сравнивается по значению, а не по slug",
+          rec is not None and rec.scene == "в горах", str(rec and rec.scene))
+    check("addons переживают миграцию",
+          rec is not None and rec.addons == "swin+eva/1" and rec.addon_tags == ["red dress"]
+          and rec.addon_replaced == ["dress"] and rec.addon_size == "large", str(rec))
+    check("raw сохранён, но не толкуется", rec is not None and rec.raw == "{\"subject\": \"...\"}",
+          str(rec and rec.raw))
+    check("старый describe стал версией схемы описания",
+          rec is not None and rec.describe_version == 2, str(rec and rec.describe_version))
+    check("заметка на месте", rec is not None and rec.note == "старое описание")
+
+    # Новая запись: schema=2 на диске и после чтения, ключи прежние.
+    new = folder / "new.prompt.json"
+    cc.write(new, cc.from_desc({"subject": "adult woman, blue", "negative_extra": ""},
+                               sha1="abcdefabcdef", source="new.png"))
+    disk = json.loads(new.read_text(encoding="utf-8"))
+    check("новая запись помечена schema=2", disk.get("schema") == cc.SCHEMA, str(disk.get("schema")))
+    check("ключи на диске прежние: notes и describe",
+          "notes" in disk and "describe" in disk and "note" not in disk, str(sorted(disk)))
+    back = cc.read(new)
+    check("новая запись читается как новая",
+          back is not None and back.schema == cc.SCHEMA
+          and back.subject == "adult woman, blue", str(back))
+
+    # Перезапись старой записи поднимает схему до текущей.
+    cc.write(old, cc.from_desc(cc.read(old)))
+    check("перезапись поднимает схему",
+          json.loads(old.read_text(encoding="utf-8")).get("schema") == cc.SCHEMA)
+    again = cc.read(old)
+    check("круг миграции без потерь",
+          again is not None and again.subject == "adult woman, red dress"
+          and again.addon_tags == ["red dress"] and again.scene == "", str(again))
+
+    # Незнакомое поле не теряется: будущая версия может писать своё.
+    extra = folder / "extra.prompt.json"
+    cc.write(extra, cc.migrate({"subject": "adult woman", "future_field": {"a": 1}}))
+    check("незнакомое поле переживает запись",
+          json.loads(extra.read_text(encoding="utf-8")).get("future_field") == {"a": 1})
+
+    check("нет файла — нет записи", cc.read(folder / "nope.json") is None)
+    bad = folder / "bad.prompt.json"
+    bad.write_text("{не json", encoding="utf-8")
+    check("битый файл — нет записи", cc.read(bad) is None)
+
+    # Запись атомарна: обрыв fsync не оставляет ни половины, ни .tmp.
+    saved_fsync = os.fsync
+    cc.os.fsync = lambda fd: (_ for _ in ()).throw(OSError("диск отвалился"))
+    try:
+        try:
+            cc.write(new, cc.from_desc({"subject": "adult woman, broken"}))
+            check("обрыв записи кэша виден", False)
+        except OSError:
+            check("обрыв записи кэша виден", True)
+    finally:
+        cc.os.fsync = saved_fsync
+    check("прежняя запись цела",
+          (cc.read(new) or cc.migrate({})).subject == "adult woman, blue")
+    check("временных файлов не осталось", not list(folder.glob("*.tmp")),
+          str(list(folder.glob("*.tmp"))))
+
+
+def test_cache_wrapper_keys():
+    """37) обёртки photo_prompt: прежние ключи, addons и сцена целы."""
+    img = TMP / "wrapper.png"
+    make(img, (9, 9, 9))
+    desc = {"subject": "adult woman, green", "negative_extra": "missing hat",
+            "notes": "заметка", "raw": "сырой ответ"}
+    path = pp.write_cache(str(img), desc)
+    got = pp.read_cache(str(img))
+    old_keys = {"subject", "negative_extra", "notes", "raw", "sha1", "source",
+                "scene", "scene_applied", "describe"}
+    check("write_cache вернул путь кэша", Path(path) == pp.cache_path(str(img)), str(path))
+    check("read_cache отдаёт прежние ключи", old_keys <= set(got or {}),
+          str(sorted(old_keys - set(got or {}))))
+    from comic import cache as cc
+    check("read_cache читает через comic.cache (схема 2)",
+          (got or {}).get("schema") == cc.SCHEMA, str((got or {}).get("schema")))
+    check("read_cache отдаёт прежние значения",
+          bool(got) and got["subject"] == desc["subject"] and got["notes"] == "заметка"
+          and got["raw"] == "сырой ответ" and got["negative_extra"] == "missing hat"
+          and got["describe"] == pp.DESCRIBE_VERSION
+          and got["sha1"] == pp.fingerprint(str(img))
+          and got["source"] == str(img) and got["scene"] == ""
+          and got["scene_applied"] is True, str(got))
+
+    # addons из кэша: --no-tags снимает ровно добавки и возвращает вытесненные.
+    tagged = {"subject": "adult woman, green, red dress", "negative_extra": "",
+              "notes": "", "addons": "swin+eva/1", "addon_tags": ["red dress"],
+              "addon_replaced": ["dress"], "addon_size": "large"}
+    pp.write_cache(str(img), tagged)
+    got = pp.read_cache(str(img))
+    check("addons переживают кэш", bool(got) and got.get("addons") == "swin+eva/1"
+          and got.get("addon_tags") == ["red dress"]
+          and got.get("addon_replaced") == ["dress"]
+          and got.get("addon_size") == "large", str(got))
+    stripped = pp.apply_tags(dict(got or {}), str(img), no_tags=True)
+    check("--no-tags снимает добавки и возвращает вытесненные",
+          "red dress" not in stripped and "dress" in stripped, stripped)
+
+    # Сцена сравнивается по значению, slug — только имя файла.
+    pp.write_cache(str(img), {"subject": "adult woman, beach"}, "beach at sunset")
+    check("сценическая запись читается со сценой",
+          (pp.read_cache(str(img), "beach at sunset") or {}).get("scene") == "beach at sunset",
+          str(pp.read_cache(str(img), "beach at sunset")))
+    check("сценический slug прежний", "__beach-at-sunset-" in pp.cache_path(
+        str(img), "beach at sunset").name)
+    check("пустая сцена — без slug", pp.scene_slug("") == "")
+
+
+def test_run_record():
+    """41) паспорт прогона: запись схемы 2 и настоящий baseline.
+
+    `out\\v2-baseline\\run.json` — паспорт, снятый на P0: его читаем и пишем
+    обратно, и файл не должен ни измениться, ни получить выдуманных полей.
+    Схема 2 — про формат чтения; старая запись на диске остаётся как была,
+    иначе паспорт начал бы утверждать то, чего не знает (AGENTS 0.15).
+    """
+    from comic import run as cr
+
+    repo = Path(__file__).resolve().parent.parent
+    base = repo / "out" / "v2-baseline"
+    records = cr.read(base)
+    check("baseline: 10 кадров прочитаны", len(records) == 10, str(len(records)))
+    check("baseline: все записи схемы 2",
+          all(r.schema == cr.SCHEMA for r in records), str([r.schema for r in records]))
+    first = records[0]
+    check("baseline: проходы сохранены как есть",
+          [(p.denoise, p.steps) for p in first.passes or []] == [(0.75, 30), (0.3, 15)],
+          str(first.passes))
+    check("baseline: denoise null остаётся null, а не 0.0",
+          first.denoise is None, str(first.denoise))
+    check("baseline: метка исхода из файла", first.outcome == "unknown", first.outcome)
+    check("baseline: проходы не объявлены восстановленными",
+          first.estimated is False, str(first.estimated))
+
+    # Круг чтения-записи: ни одного нового ключа и ни одного потерянного.
+    copy = TMP / "run_roundtrip"
+    copy.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(base / "run.json", copy / "run.json")
+    before = json.loads((copy / "run.json").read_text(encoding="utf-8"))
+    cr.write(copy, cr.read(copy))
+    after = json.loads((copy / "run.json").read_text(encoding="utf-8"))
+    check("круг паспорта без изменений", after == before,
+          first_diff(json.dumps(after, ensure_ascii=False, sort_keys=True),
+                     json.dumps(before, ensure_ascii=False, sort_keys=True))[:200])
+    check("schema не дописан задним числом", "schema" not in after["runs"][0],
+          str(sorted(after["runs"][0])))
+
+    # Проход несёт только то, что в нём было: cfg и сэмплер не появляются сами.
+    rich = cr.migrate({"file": "x.png", "passes": [
+        {"denoise": 0.6, "steps": 20, "cfg": 5.5, "sampler": "dpmpp_2m"}]})
+    check("проход помнит cfg и сэмплер",
+          cr.to_dict(rich)["passes"] == [{"denoise": 0.6, "steps": 20,
+                                          "cfg": 5.5, "sampler": "dpmpp_2m"}],
+          str(cr.to_dict(rich)["passes"]))
+    plain = cr.migrate({"file": "x.png", "passes": [{"denoise": 0.3, "steps": 15}]})
+    check("проход без cfg не получает cfg: null",
+          cr.to_dict(plain)["passes"] == [{"denoise": 0.3, "steps": 15}],
+          str(cr.to_dict(plain)["passes"]))
+
+    # Новый кадр: паспорт пишется через запись и помечен схемой 2.
+    img = TMP / "record.png"
+    make(img, (40, 41, 42))
+    saved = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT, pp.OUTPUT_DIR = TMP / "root_record", TMP / "out_record"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        frame = "07_photo_thepit_00050_.png"
+        (pp.OUTPUT_DIR / frame).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "x", "negative_extra": ""}, 5, 0.8, frame,
+                        settings={"steps": 30, "cfg": 6.0, "sampler": "euler_ancestral",
+                                  "scheduler": "normal",
+                                  "passes": [{"denoise": 0.8, "steps": 30},
+                                             {"denoise": 0.3, "steps": 15}]})
+        folder = pp.ROOT / "out" / pp.image_tag(img)
+        rec = json.loads((folder / "run.json").read_text(encoding="utf-8"))["runs"][0]
+        check("новый кадр помечен схемой 2", rec.get("schema") == cr.SCHEMA,
+              str(rec.get("schema")))
+        check("новый кадр помнит оба прохода",
+              rec.get("passes") == [{"denoise": 0.8, "steps": 30},
+                                    {"denoise": 0.3, "steps": 15}],
+              str(rec.get("passes")))
+        check("служебная метка estimated на диск не идёт", "estimated" not in rec,
+              str(sorted(rec)))
+        back = cr.read(folder)
+        check("свой же паспорт читается записью",
+              len(back) == 1 and bool(back[0].passes)
+              and back[0].passes[0].denoise == 0.8 and back[0].estimated is False,
+              str(back))
+        check("новый кадр не выдаёт себя за старый",
+              back[0].raw is not None and back[0].raw.get("schema") == cr.SCHEMA,
+              str(back[0].raw))
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved
+
+    # Битый паспорт — отказ, а не пустая история: пустой паспорт теряет кадры.
+    broken = TMP / "run_broken"
+    broken.mkdir(parents=True, exist_ok=True)
+    (broken / "run.json").write_text("{не json", encoding="utf-8")
+    try:
+        cr.read(broken)
+        check("битый паспорт — отказ, а не пустая история", False, "прочитался")
+    except cr.RunError as e:
+        check("битый паспорт — отказ, а не пустая история", "не читается" in str(e), str(e))
+    check("нет файла — пустая история", cr.read(TMP / "run_empty") == [])
+
+    # Метка исхода вне OUTCOMES не пишется: набор закрытый.
+    try:
+        cr.write(copy, [cr.RunRecord(outcome="принят")])
+        check("метка вне OUTCOMES не пишется", False, "запись прошла")
+    except ValueError as e:
+        check("метка вне OUTCOMES не пишется", "unknown" in str(e), str(e))
+
+
+def test_run_migration():
+    """42) старый паспорт: проходы из своей сборки, а не из константы 0.3.
+
+    Запись, созданная до P0, не знает ни шагов, ни второго прохода. Взять их из
+    сборки кадра можно, но это восстановление, а не факт: `estimated=True`, и на
+    диск восстановленное не пишется — иначе паспорт начал бы утверждать числа,
+    которых не видел.
+    """
+    from comic import run as cr
+
+    img = TMP / "migrate.png"
+    make(img, (50, 51, 52))
+    saved = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT, pp.OUTPUT_DIR = TMP / "root_migrate", TMP / "out_migrate"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        folder = pp.ROOT / "out" / pp.image_tag(img)
+        folder.mkdir(parents=True)
+        old = [
+            # как писал прежний код: сборка, seed, denoise и файл
+            {"workflow": "07_photo_thepit", "seed": 1, "denoise": None,
+             "file": "07_photo_thepit_00001_.png", "subject": "x"},
+            {"workflow": "06_scene_noct", "seed": 2, "denoise": None,
+             "file": "06_scene_noct_00002_.png", "subject": "x"},
+            {"workflow": "07_photo_bimbo", "seed": 3, "denoise": 0.9,
+             "file": "07_photo_bimbo_00003_.png", "subject": "x"},
+            # сборки нет: восстановить нечего
+            {"workflow": "99_nope", "seed": 4, "denoise": None,
+             "file": "99_nope_00004_.png", "subject": "x"},
+            # сборка не названа вовсе — ищется по имени кадра
+            {"seed": 5, "denoise": None, "file": "08_photo_gta_00005_.png"},
+            # новый код уже сказал «не знаю»: null — это не «поля нет»
+            {"workflow": "07_photo_thepit", "seed": 6, "denoise": None,
+             "file": "07_photo_thepit_00006_.png", "passes": None, "outcome": "unknown"},
+        ]
+        (folder / "run.json").write_text(json.dumps({"runs": old}, ensure_ascii=False),
+                                        encoding="utf-8")
+        got = cr.read(folder)
+
+        def passes(i):
+            return [(p.denoise, p.steps) for p in got[i].passes or []]
+
+        check("07: оба прохода из сборки",
+              passes(0) == [(0.75, 30), (0.3, 15)], str(got[0].passes))
+        check("07: проходы помечены восстановленными", got[0].estimated is True)
+        check("06: один проход, как в её графе",
+              passes(1) == [(1.0, 8)], str(got[1].passes))
+        check("bimbo: главный проход свой, а не 0.75",
+              passes(2) == [(0.7, 30), (0.3, 15)], str(got[2].passes))
+        check("сборка по имени кадра: 08",
+              got[4].workflow == "08_photo_gta", str(got[4].workflow))
+        check("08: проходы из её сборки, а не константа 0.3",
+              passes(4) == [(0.85, 32), (0.3, 16)], str(got[4].passes))
+        check("сборки нет — проходы не выдуманы",
+              got[3].passes is None and got[3].estimated is True, str(got[3]))
+        check("passes: null — писатель сам сказал «не знаю»",
+              got[5].passes is None and got[5].estimated is False, str(got[5]))
+        check("denoise null остался null, а не 0.0",
+              all(r.denoise is None for r in got[:2]), str([r.denoise for r in got[:2]]))
+        check("шаги, cfg и сэмплер не выдуманы",
+              all(r.steps is None and r.cfg is None and r.sampler == "" for r in got),
+              str([(r.steps, r.cfg, r.sampler) for r in got]))
+
+        # Новый кадр рядом: восстановленное на диск не попадает.
+        frame = "07_photo_thepit_00010_.png"
+        (pp.OUTPUT_DIR / frame).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "x", "negative_extra": ""}, 7, None, frame)
+        book = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+        after = book["runs"][:len(old)]
+        check("восстановленные проходы на диск не попали",
+              all("passes" not in r for r in after[:5]), str([sorted(r) for r in after]))
+        check("явный passes: null остался null",
+              after[5].get("passes") is None and "passes" in after[5], str(after[5]))
+        check("старые записи не получили schema",
+              all("schema" not in r for r in after), str([sorted(r) for r in after]))
+        check("denoise на диске тот же, что был",
+              all(r.get("denoise") == o.get("denoise") for r, o in zip(after, old)),
+              str([(r.get("denoise"), o.get("denoise")) for r, o in zip(after, old)]))
+        check("найденная сборка записана",
+              after[4].get("workflow") == "08_photo_gta", str(after[4]))
+        check("остальные записи не переписаны",
+              after[0] == old[0] and after[3] == old[3],
+              str([(a, b) for a, b in zip(after, old) if a != b])[:200])
+        check("новый кадр последний и схемы 2",
+              len(book["runs"]) == len(old) + 1
+              and book["runs"][-1].get("schema") == cr.SCHEMA,
+              str(book["runs"][-1].get("schema")))
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved
+
+
+def meta_hash(value):
+    """sha256 канонического JSON: ключи отсортированы, пробелы убраны.
+
+    Сравнивать хеш, а не сам meta: в `fields` и `loras` десятки полей, и diff
+    такого словаря не читается. Хеш говорит «изменилось», а имя сборки и поля —
+    что именно.
+    """
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def test_golden_meta():
+    """43) meta всех 12 сборок заморожена перед интерфейсом.
+
+    P3 перегенерирует сборки декларативно, и тогда легко незаметно поменять
+    контракт формы: привязки полей, слоты LoRA, стилевой шаблон и негатив. Здесь
+    лежит хеш каждой части meta; изменилась хотя бы одна — проверка падает и
+    называет сборку с полями.
+    """
+    repo = Path(__file__).resolve().parent.parent
+    golden = json.loads((repo / "tools" / "golden" / "meta.json").read_text(encoding="utf-8"))
+    keys = golden["keys"]
+    builds = sorted(p.name[:-len(".api.json")]
+                    for p in (repo / "workflows").glob("*.api.json"))
+    check("эталон сравнивает нужные части meta",
+          keys == ["fields", "loras", "style_lora", "style_weight",
+                   "positive_template", "negative", "samplers"], str(keys))
+    check("в эталоне 12 сборок", len(golden["builds"]) == 12, str(len(golden["builds"])))
+    check("сборки на диске и в эталоне совпадают", builds == sorted(golden["builds"]),
+          str(sorted(set(builds) ^ set(golden["builds"]))))
+    for name in builds:
+        meta = json.loads((repo / "workflows" / (name + ".api.json"))
+                          .read_text(encoding="utf-8")).get("meta")
+        want = golden["builds"].get(name)
+        if want is None:
+            # Сборка без meta — тоже контракт: появившийся meta меняет её поведение.
+            check(f"{name}: meta нет, как и в эталоне", meta is None, str(meta)[:80])
+            continue
+        diff = [key for key in keys if meta_hash((meta or {}).get(key)) != want.get(key)]
+        check(f"{name}: meta совпадает с эталоном", meta is not None and not diff,
+              "meta пропал" if meta is None else "изменилось: " + ", ".join(diff))
+
+
+def test_builds_structural():
+    """44) 12 сборок собираются из данных в те же файлы, что лежат в workflows/.
+
+    P3 описывает сборки таблицей (`comic/builds.py`), а граф собирает
+    `comic/workflow.py`. Эталон — сами файлы `workflows/`: они прошли ревью, их
+    читают `check_install` и страница. Разошлись данные и артефакты — значит
+    правили одно без другого, и панель ComfyUI увидит не то, что в таблице.
+
+    Отдельно проверяется то, ради чего переезд: стиль находится по роли, а не
+    по весу 0.9. Раньше второй ненулевой LoRA (тело, персонаж) ломал поиск, и
+    `meta.style_lora` становился пустым.
+    """
+    from comic import workflow as wf
+    from comic.builds import BUILDS, WORKFLOWS
+
+    repo = Path(__file__).resolve().parent.parent
+    check("сборок в таблице 12", len(BUILDS) == 12, str(len(BUILDS)))
+    check("описания собраны из той же таблицы", sorted(WORKFLOWS) == sorted(BUILDS),
+          str(sorted(set(WORKFLOWS) ^ set(BUILDS))))
+    for name in sorted(BUILDS):
+        graph, api = wf.build(name, WORKFLOWS[name])
+        want = json.loads((repo / "workflows" / (name + ".json")).read_text(encoding="utf-8"))
+        check(f"{name}: граф структурно равен workflows/",
+              json.dumps(graph, sort_keys=True) == json.dumps(want, sort_keys=True),
+              "разошлись узлы/связи/linearData")
+        payload = json.loads((repo / "workflows" / (name + ".api.json")).read_text(encoding="utf-8"))
+        check(f"{name}: prompt структурно равен workflows/",
+              json.dumps(api, sort_keys=True) == json.dumps(payload["prompt"], sort_keys=True))
+        check(f"{name}: meta пересобирается тем же",
+              json.dumps(wf.meta(WORKFLOWS[name], api), sort_keys=True, ensure_ascii=False)
+              == json.dumps(payload.get("meta"), sort_keys=True, ensure_ascii=False))
+
+    # Стиль по роли: тело с весом 0.4 не должен отбирать роль у стилевой LoRA.
+    spec = json.loads(json.dumps(WORKFLOWS["07_photo_thepit"]))
+    for node in spec["nodes"]:
+        if node["id"] == 3:
+            node["w"]["strength_model"] = 0.4
+    graph, api = wf.build("07_photo_thepit", spec)
+    meta = wf.meta(spec, api)
+    check("второй ненулевой LoRA не отбирает стиль",
+          meta["style_lora"] == "thepit2_1768210.safetensors", str(meta["style_lora"]))
+    check("вес стиля — из строки стиля, а не из поиска по 0.9",
+          meta["style_weight"] == 0.9, str(meta["style_weight"]))
+    roles = {slot["node"]: slot["role"] for slot in meta["loras"]}
+    check("роль style у стилевой LoRA, body — у тела",
+          roles.get("2") == "style" and roles.get("3") == "body", str(roles))
+
+
+def test_prompt_builder():
+    """38) PromptBuilder: промпт кадра собирается побайтно, как в эталоне P0.
+
+    Эталон — out\\v2-baseline\\run.json (кадры, снятые старым кодом до фикса
+    шаблонов). Гейт Task 1: 07_photo_thepit и 08_photo_gta совпадают до байта,
+    иначе сборка промпта «улучшила» то, о чём не просили.
+    """
+    from comic import prompt as cp
+
+    repo = Path(__file__).resolve().parent.parent
+    base = json.loads((repo / "out" / "v2-baseline" / "run.json").read_text(encoding="utf-8"))
+    runs = [r for r in base["runs"] if r["workflow"] in ("07_photo_thepit", "08_photo_gta")]
+    check("эталон: по два кадра в двух сборках", len(runs) == 4, str(len(runs)))
+
+    metas, built = {}, {}
+    for r in runs:
+        wf = r["workflow"]
+        if wf not in metas:
+            data = json.loads((repo / "workflows" / (wf + ".api.json")).read_text(encoding="utf-8"))
+            metas[wf] = data["meta"]
+        got = cp.PromptBuilder(metas[wf], metas[wf].get("fields")).build(
+            r["subject"], r["negative_extra"])
+        built[wf] = got
+        check(f"{wf} сид {r['seed']}: positive побайтно", got.positive == r["positive"],
+              first_diff(got.positive, r["positive"]))
+        check(f"{wf} сид {r['seed']}: negative побайтно", got.negative == r["negative"],
+              first_diff(got.negative, r["negative"]))
+
+    # Рамка возраста: её слова — последнее, что попадает в негатив. `join_tags`
+    # выкидывает уже сказанное, поэтому в хвосте остаётся «underage», а не весь блок.
+    guard = [t.strip() for t in cp.NEG_GUARD.split(",")]
+    for wf, got in built.items():
+        tags = [t.strip() for t in got.negative.split(",")]
+        check(f"{wf}: слова рамки в негативе", all(t in tags for t in guard), got.negative[-120:])
+        check(f"{wf}: рамка замыкает негатив", tags[-1] == guard[-1], tags[-3:])
+
+    # applied — то, что реально применено, и входы, от которых зависит кадр:
+    # предпросмотр обязан передать те же landscape и имя файла, что и генерация.
+    got = cp.PromptBuilder(metas["07_photo_thepit"]).build(
+        "adult woman", "", landscape=True, image_name="photo_ab12.png")
+    check("applied: шаблон из графа",
+          got.applied.get("template") == "meta.positive_template", str(got.applied))
+    check("applied: горизонталь записана", got.applied.get("landscape") is True, str(got.applied))
+    check("applied: имя файла записано",
+          got.applied.get("image_name") == "photo_ab12.png", str(got.applied))
+    check("landscape не меняет текст промпта",
+          got.positive == cp.PromptBuilder(metas["07_photo_thepit"]).positive("adult woman"),
+          first_diff(got.positive, built["07_photo_thepit"].positive))
+
+    # Рамку возраста ставит with_adult до сборки: builder только склеивает.
+    young = cp.PromptBuilder(metas["07_photo_thepit"]).build("girl, short hair")
+    check("builder не подменяет subject: возраст — дело with_adult",
+          "girl" in young.positive and "adult woman" not in young.positive, young.positive[:160])
+
+    # Нет шаблона — отказ, а не догадка: style берётся из графа (аудит, риск 3).
+    empty = cp.PromptBuilder({})
+    check("без meta — причина отказа", bool(empty.refuse_reason()), str(empty.refuse_reason()))
+    try:
+        empty.build("adult woman")
+        check("без meta build отказывает", False)
+    except cp.PromptError as e:
+        check("без meta build отказывает", "positive_template" in str(e), str(e))
+    no_slot = cp.PromptBuilder({"positive_template": "comic book illustration, flat colors"})
+    check("шаблон без {{subject}} — причина отказа",
+          "{{subject}}" in str(no_slot.refuse_reason()), str(no_slot.refuse_reason()))
+    check("годный шаблон — без причины отказа",
+          cp.PromptBuilder(metas["07_photo_gta"] if "07_photo_gta" in metas
+                           else metas["08_photo_gta"]).refuse_reason() is None)
+
+    # Обёртки photo_prompt — тот же builder, чтобы старый код не разошёлся с новым.
+    meta = metas["07_photo_thepit"]
+    subject = runs[0]["subject"]
+    extra = runs[0]["negative_extra"]
+    check("compose_positive идёт через builder",
+          pp.compose_positive(meta, subject) == built["07_photo_thepit"].positive)
+    check("compose_negative идёт через builder",
+          pp.compose_negative(extra, meta) == built["07_photo_thepit"].negative)
+    check("join_tags без дублей", pp.join_tags("a, B", "b, c") == "a, B, c", pp.join_tags("a, B", "b, c"))
+
+    # Старый .api.json без meta: запасной путь по STYLE_PREFIX остаётся.
+    legacy = pp.compose_positive({}, "adult woman, short hair", "07_photo_thepit")
+    check("граф без meta: STYLE_PREFIX на месте", legacy.startswith("comic book illustration"),
+          legacy[:100])
+    check("граф без meta: субъект подставлен", "adult woman, short hair" in legacy, legacy[:160])
+
+
+def test_prompt_golden():
+    """39) разрешённый фикс шаблонов: чужой стиль убран, остальное — побайтно.
+
+    Единственное разрешённое расхождение с эталоном P0 — строка
+    `theofficialpit style` в comic/jp/bimbo (там своя LoRA и свой триггер).
+    thepit и GTA обязаны совпасть с baseline до байта, а у трёх остальных
+    positive отличается ровно на эту подстроку, негатив — ни на байт.
+    """
+    from comic import prompt as cp
+
+    repo = Path(__file__).resolve().parent.parent
+    golden = json.loads((repo / "tools" / "golden" / "prompts.json").read_text(encoding="utf-8"))
+    base = json.loads((repo / "out" / "v2-baseline" / "run.json").read_text(encoding="utf-8"))
+    fixed = ("07_photo_comic", "07_photo_jp", "07_photo_bimbo")
+
+    def meta_of(name):
+        data = json.loads((repo / "workflows" / (name + ".api.json")).read_text(encoding="utf-8"))
+        return data["meta"]
+
+    def positive_text(name):
+        """Positive из самого графа: у 01_* блока meta нет, а промпт есть."""
+        data = json.loads((repo / "workflows" / (name + ".api.json")).read_text(encoding="utf-8"))
+        texts = [n["inputs"].get("text", "") for n in data["prompt"].values()
+                 if n["class_type"] == "CLIPTextEncode"]
+        return next(t for t in texts if not t.startswith("photo, photorealistic"))
+
+    # Шаблон в графе: чужого стиля нет только там, где LoRA своя.
+    for name in fixed:
+        check(f"{name}: в шаблоне нет theofficialpit style",
+              "theofficialpit style" not in meta_of(name)["positive_template"],
+              meta_of(name)["positive_template"][:120])
+        check(f"{name}: в промпте графа нет theofficialpit style",
+              "theofficialpit style" not in positive_text(name), positive_text(name)[:120])
+    for name in ("07_photo_thepit",):
+        check(f"{name}: свой стиль остался",
+              "theofficialpit style" in meta_of(name)["positive_template"],
+              meta_of(name)["positive_template"][:120])
+    for name in ("01_scene_comic", "01_scene_jp"):
+        check(f"{name}: тот же фикс в txt2img",
+              "theofficialpit style" not in positive_text(name), positive_text(name)[:120])
+    check("01_scene_thepit: свой стиль остался",
+          "theofficialpit style" in positive_text("01_scene_thepit"),
+          positive_text("01_scene_thepit")[:120])
+
+    # Эталон: builder выдаёт ровно записанные байты.
+    for name, want in golden["prompts"].items():
+        built = cp.PromptBuilder(meta_of(name)).build(golden["subject"], golden["negative_extra"])
+        check(f"{name}: positive по эталону", built.positive == want["positive"],
+              first_diff(built.positive, want["positive"]))
+        check(f"{name}: negative по эталону", built.negative == want["negative"],
+              first_diff(built.negative, want["negative"]))
+
+    # Diff от baseline: два кадра не изменились вовсе, три — только на подстроку.
+    was = {r["workflow"]: r for r in base["runs"]}
+    for name, want in golden["prompts"].items():
+        before = was[name]
+        check(f"{name}: негатив не изменился ни на байт", want["negative"] == before["negative"],
+              first_diff(want["negative"], before["negative"]))
+        if name in fixed:
+            expected = before["positive"].replace("theofficialpit style, ", "", 1)
+            check(f"{name}: positive отличается только на theofficialpit style",
+                  want["positive"] == expected, first_diff(want["positive"], expected))
+        else:
+            check(f"{name}: positive совпадает с baseline побайтно",
+                  want["positive"] == before["positive"],
+                  first_diff(want["positive"], before["positive"]))
+
+    # Рамка возраста: фикс шаблона её не тронул.
+    for name in golden["prompts"]:
+        tags = [t.strip() for t in golden["prompts"][name]["negative"].split(",")]
+        check(f"{name}: рамка по-прежнему замыкает негатив", tags[-1] == "underage", tags[-3:])
+
+
+def test_guard_overrides():
+    """40) возрастная рамка действует и на переопределения промпта.
+
+    Переопределение — явная замена текста, но не отмена правил проекта 18+:
+    positive проходит тот же санитайзер, что описание VLM, а negative замыкается
+    NEG_GUARD, не переставляя уже написанное.
+    """
+    from comic import guard as cg
+
+    p = pp.build_payload("07_photo_thepit", "adult woman", "",
+                         positive="adult woman, loli, young schoolgirl, red dress",
+                         negative="MY OWN NEGATIVE")
+    low = p["positive"].lower()
+    check("override positive: возрастные слова вырезаны",
+          all(w not in low for w in ("loli", "young", "schoolgirl")), p["positive"][:160])
+    check("override positive: взрослый первым тегом",
+          p["positive"].startswith("adult woman"), p["positive"][:80])
+    check("override positive: остальной текст сохранён", "red dress" in p["positive"])
+    check("override negative: рамка дописана в конец",
+          p["negative"] == "MY OWN NEGATIVE, " + cg.NEG_GUARD, p["negative"])
+    check("override negative: текст не переставлен",
+          p["negative"].startswith("MY OWN NEGATIVE"), p["negative"])
+    check("ensure_guard идемпотентен",
+          cg.ensure_guard(p["negative"]) == p["negative"], p["negative"])
+
+    once = pp.build_payload("07_photo_thepit", "adult woman", "",
+                            negative="bad hands, underage")
+    check("рамка не дублируется: уже сказанное остаётся на месте",
+          once["negative"] == "bad hands, underage, child, loli, shota",
+          once["negative"])
+    plain = pp.build_payload("07_photo_thepit", "adult woman", "")
+    check("обычный путь: рамка по-прежнему последняя",
+          plain["negative"].endswith(cg.NEG_GUARD.split(",")[-1].strip()),
+          plain["negative"][-80:])
+    check("санитайзер не трогает обычное описание",
+          cg.sanitize_subject("adult woman, long hair") == "adult woman, long hair")
+    check("with_adult — та же функция, что санитайзер",
+          pp.with_adult("young girl, red dress") == "adult woman, red dress",
+          pp.with_adult("young girl, red dress"))
+
+
+def test_panel_sync():
+    """45) панель ComfyUI синхронизируется из репозитория в одну сторону.
+
+    Копию для панели раньше обновляли руками, и она разошлась с репозиторием.
+    Здесь проверяется сам скрипт: копирует все графы, не пишет обратно, убирает
+    снятые сборки и не трогает чужие файлы панели.
+    """
+    print("\n45) копия графов для панели: в одну сторону")
+    import sync_panel
+
+    repo = Path(__file__).resolve().parent.parent
+    graphs = sorted(p.name for p in (repo / "workflows").glob("*.json")
+                    if not p.name.endswith(".api.json"))
+    check("снятые графы 03 убраны из репозитория",
+          not [n for n in graphs if n.startswith("03_")], str(graphs))
+    check("в репозитории 12 графов", len(graphs) == 12, str(len(graphs)))
+
+    source = TMP / "panel_src"
+    panel = TMP / "panel_dst"
+    source.mkdir(parents=True, exist_ok=True)
+    panel.mkdir(parents=True, exist_ok=True)
+    for name in ("01_scene_thepit.json", "07_photo_thepit.json"):
+        (source / name).write_text('{"name": "%s"}' % name, encoding="utf-8")
+    (source / "07_photo_thepit.api.json").write_text("{}", encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in source.iterdir()}
+    # панель: устаревшая копия, снятая сборка и чужой файл
+    (panel / "01_scene_thepit.json").write_text("старое", encoding="utf-8")
+    (panel / "99_gone.json").write_text("{}", encoding="utf-8")
+    (panel / "utility_seedvr2_upscale.json").write_text("{}", encoding="utf-8")
+
+    rows = sync_panel.sync(source, panel)
+    actions = {name: action for name, action in rows}
+    check("новый граф скопирован", actions.get("07_photo_thepit.json") == "new", str(actions))
+    check("устаревший обновлён", actions.get("01_scene_thepit.json") == "update", str(actions))
+    check("снятая сборка убрана из панели", actions.get("99_gone.json") == "stale", str(actions))
+    check("чужой файл панели не тронут",
+          (panel / "utility_seedvr2_upscale.json").exists(), str(sorted(actions)))
+    check("api.json в панель не копируется",
+          not (panel / "07_photo_thepit.api.json").exists())
+    check("панель совпала с репозиторием",
+          all(a == "same" for _, a in sync_panel.diff(source, panel)), str(sync_panel.diff(source, panel)))
+    check("обратной записи нет",
+          {p.name: p.read_bytes() for p in source.iterdir()} == before,
+          str(sorted(p.name for p in source.iterdir())))
+
+    (panel / "01_scene_thepit.json").write_text("разошлось", encoding="utf-8")
+    rc, _ = capture(lambda: sync_panel.main(
+        ["--check", "--source", str(source), "--panel", str(panel)]))
+    check("--check называет расхождение и даёт код 1", rc == 1, str(rc))
+    sync_panel.sync(source, panel)
+    rc, _ = capture(lambda: sync_panel.main(
+        ["--check", "--source", str(source), "--panel", str(panel)]))
+    check("после копирования --check молчит", rc == 0, str(rc))
+
+
 def main():
     patch_roots()
     try:
@@ -1617,6 +2660,7 @@ def main():
         test_scene_not_ignored_on_cache_hit()
         test_generate_requires_image()
         test_batch_reports_failure()
+        test_batch_recheck_and_refusals()
         test_build_workflows_exit_codes()
         test_dry_run_does_not_touch_lm()
         test_unload_only_own_model()
@@ -1632,6 +2676,9 @@ def main():
         test_batch_scene_cache_no_lm()
         test_controlnet_strength_flag()
         test_passport_records_generation_settings()
+        test_passport_records_sampler_settings()
+        test_passport_records_passes()
+        test_passport_records_outcome()
         test_atomic_json()
         test_utf8_streams()
         test_passport_not_lost()
@@ -1641,6 +2688,18 @@ def main():
         test_tagger_does_not_pollute_cache()
         test_openai_provider()
         test_eye_colour_zoom()
+        test_config_priority()
+        test_settings_adapter()
+        test_cache_schema()
+        test_cache_wrapper_keys()
+        test_run_record()
+        test_run_migration()
+        test_prompt_builder()
+        test_prompt_golden()
+        test_golden_meta()
+        test_builds_structural()
+        test_guard_overrides()
+        test_panel_sync()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

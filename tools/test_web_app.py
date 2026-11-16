@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import sys
@@ -23,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Корень репозитория добавит settings при импорте ниже: это единственный такой insert.
 
 import comfy_launch as cl
 import jobs
@@ -31,9 +32,15 @@ import photo_prompt as pp
 import build_workflows as bw
 import settings as st
 from PIL import Image
-from webapp import catalog
+from webapp import catalog, labels, push, theme
+from webapp import state as web_state
+from webapp import ui as web_ui
+from webapp.collect import collect_form
+from webapp.components import advanced_dialog, history_panel, params_panel
+from comic import run as comic_run
 from webapp.service import JobService, PNG_SIGNATURE, UploadError
 from webapp.state import fmt_setting, missing_job_text, pass_steps
+
 
 # Теггер в проверках не нужен: его логика проверяется в test_photo_prompt.py,
 # а 1.7 ГБ моделей и лишние секунды на кадр здесь ни к чему.
@@ -137,7 +144,8 @@ class LMHandler(_Handler):
 
 class ComfyHandler(_Handler):
     WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-    CONTROL_KEYS = ("ws_disabled", "delay", "make_files", "empty_outputs", "prompt_fail")
+    CONTROL_KEYS = ("ws_disabled", "delay", "make_files", "empty_outputs", "prompt_fail",
+                    "interrupt_keeps")
 
     def _ws_frame(self, obj):
         data = json.dumps(obj, ensure_ascii=False).encode()
@@ -193,6 +201,13 @@ class ComfyHandler(_Handler):
         if self.path.startswith("/history/"):
             pid = self.path.rsplit("/", 1)[-1]
             st.polls[pid] = st.polls.get(pid, 0) + 1
+            if pid in st.interrupted and not st.interrupt_keeps:
+                # Прерванный промпт: кадра нет, история говорит «error» с
+                # execution_interrupted — ровно как у настоящего ComfyUI.
+                self._json({pid: {"status": {"status_str": "error", "messages": [
+                    ["execution_interrupted", {"node_type": "KSampler"}]]},
+                    "outputs": {}}})
+                return
             if st.polls[pid] < st.delay:
                 self._json({})
                 return
@@ -239,6 +254,12 @@ class ComfyHandler(_Handler):
         if self.path == "/free":
             self._json({})
             return
+        if self.path == "/interrupt":
+            st.interrupts.append(self.path)
+            if st.pending:
+                st.interrupted.add(st.pending[-1])
+            self._json({})
+            return
         self._json({}, 404)
 
 
@@ -268,9 +289,11 @@ def comfy_stub():
     s = stub.state
     s.gets, s.posts, s.prompts, s.pending = [], [], [], []
     s.polls, s.frames = {}, {}
+    s.interrupts, s.interrupted = [], set()
     s.delay = 1
     s.make_files = True
     s.prompt_fail = s.history_error = s.empty_outputs = False
+    s.interrupt_keeps = False
     s.ws_disabled = False
 
     def ws_script(pid):
@@ -352,6 +375,10 @@ def test_catalog_fields():
     check("в списке только фото-сборки",
           names == ["07_photo_bimbo", "07_photo_comic", "07_photo_jp",
                     "07_photo_thepit", "08_photo_gta"], str(names))
+    check("снятые графы 03 форма не предлагает",
+          not [n for n in names if n.startswith("03_")], str(names))
+    check("снятых графов 03 нет и в папке",
+          not list(pp.WF_DIR.glob("03_*")), str(list(pp.WF_DIR.glob("03_*"))))
     thepit = next(s for s in styles if s["workflow"] == "07_photo_thepit")
     meta = thepit["meta"]
     check("есть русская подпись из сборки", "ThePit" in meta.get("label", ""), meta.get("label"))
@@ -613,6 +640,78 @@ def test_settings_in_passport():
             pair = book_for(img)["runs"][-2:]
             check("повторный проход без заданного seed берёт seed первого кадра",
                   pair[0]["seed"] == pair[1]["seed"], str([r["seed"] for r in pair]))
+    finally:
+        lm.stop()
+        comfy.stop()
+
+
+def test_passport_sampler_settings():
+    print("\n5a) паспорт кадра помнит шаги, cfg и сэмплер — и в снимке задания")
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy) as root:
+            img = TMP / "sampler_pass.png"
+            make(img, (30, 60, 90))
+            new_frame(comfy, "p1")
+            svc = JobService(jobs_root=root / "out" / "jobs")
+            job = svc.submit(jobs.JobRequest(
+                image="", workflow="07_photo_thepit", subject="adult woman, sampler",
+                seed=3), source_path=str(img))
+            snap = svc.wait(job.id, timeout=60)
+            run = book_for(img)["runs"][0]
+            check("steps в паспорте веб-пути", run.get("steps") == 30, str(run.get("steps")))
+            check("cfg в паспорте веб-пути", run.get("cfg") == 6.0, str(run.get("cfg")))
+            check("сэмплер в паспорте веб-пути", run.get("sampler") == "euler_ancestral",
+                  str(run.get("sampler")))
+            check("оба прохода в паспорте веб-пути",
+                  run.get("passes") == [{"denoise": 0.75, "steps": 30},
+                                        {"denoise": 0.3, "steps": 15}],
+                  str(run.get("passes")))
+            check("обычный кадр не объявлен принятым", run.get("outcome") == "unknown",
+                  str(run.get("outcome")))
+            frame = (snap["frames"] or [{}])[0]
+            check("снимок задания отдаёт настройки кадра",
+                  frame.get("steps") == 30 and frame.get("cfg") == 6.0
+                  and frame.get("sampler") == "euler_ancestral", str(frame))
+            check("планировщик в снимке", frame.get("scheduler") == "normal", str(frame))
+            check("снимок задания отдаёт оба прохода",
+                  frame.get("passes") == [{"denoise": 0.75, "steps": 30},
+                                          {"denoise": 0.3, "steps": 15}],
+                  str(frame.get("passes")))
+            check("снимок задания отдаёт метку исхода", frame.get("outcome") == "unknown",
+                  str(frame.get("outcome")))
+    finally:
+        lm.stop()
+        comfy.stop()
+
+
+def test_snapshot_frame_keys():
+    """5b) снимок задания: проходы и исход есть, и ни один ключ кадра не пропал.
+
+    `passes` и `outcome` попали в белый список вместе с паспортом схемы 2.
+    Проверка сторожит весь набор: интерфейс читает 13 ключей из 17, и новый
+    ключ не должен вытеснить старый.
+    """
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy) as root:
+            img = TMP / "frame_keys.png"
+            make(img, (33, 44, 55))
+            new_frame(comfy, "p1")
+            svc = JobService(jobs_root=root / "out" / "jobs")
+            job = svc.submit(jobs.JobRequest(
+                image="", workflow="07_photo_thepit", subject="adult woman, keys",
+                seed=4), source_path=str(img))
+            snap = svc.wait(job.id, timeout=60)
+            frame = (snap["frames"] or [{}])[0]
+            want = {"file", "folder", "seed", "workflow", "cn_strength", "style_weight",
+                    "denoise", "refined", "subject", "positive", "negative", "steps",
+                    "cfg", "sampler", "scheduler", "passes", "outcome"}
+            check("снимок отдаёт все ключи кадра", set(frame) == want,
+                  str(sorted(want ^ set(frame))))
+            check("проходы и исход в снимке на месте",
+                  bool(frame.get("passes")) and frame.get("outcome") == "unknown",
+                  str((frame.get("passes"), frame.get("outcome"))))
     finally:
         lm.stop()
         comfy.stop()
@@ -1011,10 +1110,13 @@ def test_overrides():
                   and sent["4"]["inputs"]["strength_model"] == 0.4, str(sent["4"]["inputs"]))
             texts = {n["inputs"].get("text") for n in sent.values()
                      if n["class_type"] == "CLIPTextEncode"}
-            check("полный positive ушёл как есть", "MY OWN POSITIVE, adult woman" in texts,
-                  str(texts)[:200])
-            check("полный negative ушёл как есть", "MY OWN NEGATIVE" in texts,
-                  str(texts)[:200])
+            check("полный positive сохранён и санитизирован",
+                  any(str(t).startswith("adult woman") and "MY OWN POSITIVE" in str(t)
+                      for t in texts), str(texts)[:200])
+            check("полный negative сохранён и замкнут рамкой",
+                  any(str(t).startswith("MY OWN NEGATIVE")
+                      and str(t).endswith("child, loli, shota, underage")
+                      for t in texts), str(texts)[:200])
             check("шаблон стиля не подмешан к переопределению",
                   not any("theofficialpit" in str(t) for t in texts), str(texts)[:200])
             record = book_for(img)["runs"][-1]
@@ -1090,6 +1192,9 @@ def test_recheck_frames():
             check("в run.json оба кадра с меткой",
                   [x.get("refined") for x in book["runs"]] == [False, True],
                   str([x.get("refined") for x in book["runs"]]))
+            check("исход кадров размечен",
+                  [x.get("outcome") for x in book["runs"]] == ["unknown", "refined"],
+                  str([x.get("outcome") for x in book["runs"]]))
             check("промпт уточнённого кадра содержит добавку",
                   "silver bracelet" in book["runs"][-1]["subject"],
                   book["runs"][-1]["subject"][:100])
@@ -1102,6 +1207,9 @@ def test_recheck_frames():
             check("снимок задания отдаёт оба кадра",
                   len(snap["frames"]) == 2
                   and snap["frames"][-1].get("refined") is True, str(snap["frames"])[:200])
+            check("снимок задания отдаёт метки исходов",
+                  [f.get("outcome") for f in snap["frames"]] == ["unknown", "refined"],
+                  str([f.get("outcome") for f in snap["frames"]]))
             check("download-имена привязаны к заданию",
                   all(Path(f["file"]).name for f in snap["frames"]), str(snap["frames"]))
     finally:
@@ -1227,14 +1335,14 @@ def test_recheck_with_override():
                           and "MY POSITIVE" in str(n["inputs"]["text"]))
                      for p in comfy.state.prompts]
             check("повтор ушёл с изменённым переопределением",
-                  texts[0] == "MY POSITIVE, adult woman"
+                  texts[0] == "adult woman, MY POSITIVE"
                   and "silver bracelet" in texts[1] and texts[1] != texts[0],
                   str(texts))
             check("фактический positive уточнённого кадра в галерее",
                   "silver bracelet" in (r.frames[-1].get("positive") or ""),
                   str(r.frames[-1].get("positive"))[:100])
             check("основной кадр хранит своё переопределение",
-                  r.frames[0]["positive"] == "MY POSITIVE, adult woman",
+                  r.frames[0]["positive"] == "adult woman, MY POSITIVE",
                   r.frames[0]["positive"])
     finally:
         lm.stop()
@@ -1272,6 +1380,48 @@ def test_frame_prompt_passport():
                   "theofficialpit" in pos and "exact text" in pos, pos[:100])
     finally:
         lm.stop()
+        comfy.stop()
+
+
+def test_preview_matches_frame():
+    print("\n18.1) предпросмотр собирает тот же промпт, что кадр")
+    comfy = comfy_stub()
+    try:
+        with stand(lm=None, comfy=comfy):
+            for workflow in ("07_photo_thepit", "08_photo_gta"):
+                for size, kind in (((180, 240), "портрет"), ((260, 120), "горизонталь")):
+                    img = TMP / f"preview_{workflow}_{kind}.png"
+                    make(img, (21, 47, 83), size)
+                    frame_events, dry_events = [], []
+                    r = jobs.run_job(jobs.JobRequest(
+                        image=str(img), workflow=workflow, seed=5, tags=False,
+                        subject="adult woman, red dress, standing"),
+                        emit=frame_events.append)
+                    dry = jobs.run_job(jobs.JobRequest(
+                        image=str(img), workflow=workflow, seed=5, tags=False,
+                        subject="adult woman, red dress, standing", dry_run=True),
+                        emit=dry_events.append)
+                    label = f"{workflow}, {kind}"
+                    sent = comfy.state.prompts[-1]["prompt"]
+                    load = next(n["inputs"]["image"] for n in sent.values()
+                                if n["class_type"] == "LoadImage")
+                    frame = next(e for e in frame_events if e["stage"] == "prompt")["data"]
+                    preview = next(e for e in dry_events if e["stage"] == "prompt")["data"]
+                    check(f"{label}: positive предпросмотра = кадр",
+                          r.ok and dry.ok and dry.positive == frame["positive"]
+                          == r.frames[0]["positive"],
+                          f"{dry.positive[:80]} | {frame['positive'][:80]}")
+                    check(f"{label}: negative предпросмотра = кадр",
+                          dry.negative == frame["negative"] == r.frames[0]["negative"],
+                          f"{dry.negative[:80]} | {frame['negative'][:80]}")
+                    check(f"{label}: предпросмотр знает имя input-файла кадра",
+                          preview["applied"].get("image_name") == load,
+                          f"{preview['applied'].get('image_name')!r} != {load!r}")
+                    check(f"{label}: предпросмотр знает ориентацию кадра",
+                          preview["applied"].get("landscape")
+                          == pp.image_is_landscape(str(img)),
+                          str(preview["applied"]))
+    finally:
         comfy.stop()
 
 
@@ -1436,6 +1586,695 @@ def test_openai_service_health():
           dead["ok"] is False and dead["models"] == [] and not dead["provider"], str(dead))
 
 
+# --------------------------------------------------------------- V2
+V2 = Path(__file__).resolve().parent.parent / "webapp"
+TOKENS = ("--bg", "--surface", "--surface-2", "--ink", "--ink-2", "--line",
+          "--accent", "--accent-fill", "--accent-on", "--ok", "--warn", "--err")
+HEX = re.compile(r"#[0-9a-fA-F]{3,8}\b")
+
+
+def _css_rules(css):
+    """Селектор → тело правила. Вложенность `@layer` и `@media` разбору не мешает."""
+    rules = []
+    for chunk in css.split("}"):
+        if "{" not in chunk:
+            continue
+        selector, body = chunk.rsplit("{", 1)
+        selector = selector.split("}")[-1].strip().splitlines()[-1].strip()
+        rules.append((selector, body))
+    return rules
+
+
+def _v2_sources():
+    """Только модули с разметкой: __init__.py — докстринг пакета, не компонент."""
+    files = [p for p in sorted((V2 / "components").glob("*.py")) if p.name != "__init__.py"]
+    files.append(V2 / "v2.py")
+    return {p.name: p.read_text(encoding="utf-8") for p in files if p.exists()}
+
+
+def test_theme_tokens():
+    print("\n27) токены и классы V2 в одном месте")
+    css = theme.css()
+    check("обе темы объявляют все 12 токенов",
+          set(theme.LIGHT) == set(TOKENS) == set(theme.DARK),
+          str(sorted(set(theme.LIGHT) ^ set(TOKENS))))
+    check("акцент: #7c3aed заливкой, #a78bfa текстом в тёмной",
+          theme.LIGHT["--accent-fill"] == "#7c3aed"
+          and theme.DARK["--accent-fill"] == "#7c3aed"
+          and theme.LIGHT["--accent"] == "#7c3aed"
+          and theme.DARK["--accent"] == "#a78bfa",
+          f'{theme.LIGHT["--accent"]} / {theme.DARK["--accent"]}')
+    check("пять ступеней типа и шесть отступов",
+          [theme.SIZES[k] for k in ("--cp-fs-1", "--cp-fs-5")]
+          == ["0.75rem", "1.5rem"]
+          and sorted(theme.SIZES[f"--cp-sp-{n}"] for n in (1, 2, 3, 4, 6, 8))
+          == ["12px", "16px", "24px", "32px", "4px", "8px"],
+          str([theme.SIZES[k] for k in theme.SIZES if k.startswith("--cp-sp")]))
+    check("числа раскладки из спецификации",
+          theme.SIZES["--cp-topbar"] == "56px" and theme.SIZES["--cp-rail"] == "400px"
+          and theme.SIZES["--cp-gutter"] == "16px"
+          and theme.SIZES["--cp-card-pad"] == "16px"
+          and theme.SIZES["--cp-frame"] == "min(62vh, 720px)"
+          and theme.SIZES["--cp-strip"] == "56px"
+          and theme.SIZES["--cp-tabs"] == "32px",
+          str(theme.SIZES))
+    check("инспектора нет ни токеном, ни колонкой",
+          "--cp-inspector" not in theme.SIZES and "inspector" not in css
+          and "grid-template-columns: var(--cp-rail) minmax(0, 1fr)" in css,
+          str([k for k in theme.SIZES if "inspect" in k]))
+    check("рельс подобран по высоте окна 900",
+          theme.SIZES["--cp-photo"] == "160px" and theme.SIZES["--cp-drop"] == "160px"
+          and theme.SIZES["--cp-row"] == "32px", str(theme.SIZES))
+    coloured = {sel for sel, body in _css_rules(css) if HEX.search(body)}
+    check("литеральные цвета только в :root и body.body--dark",
+          coloured == {":root", "body.body--dark"}, str(coloured))
+    check("классы объявлены в @layer components",
+          "@layer components {" in css
+          and sum(1 for name in theme.CLASSES.values() if f".{name}" in css)
+          >= len(theme.CLASSES) - 4,
+          str([n for n in theme.CLASSES.values() if f".{n}" not in css]))
+    check("акцент Quasar — внутри .cp-app, а не на :root",
+          ".cp-app {" in css and "--q-primary: var(--accent-fill)" in css
+          and ":root {\n  --q-primary" not in css)
+    check("на широком экране рельс 420 px, и правило вне слоёв",
+          "@media (min-width: 1600px)" in css
+          and css.index("min-width: 1600px") < css.index("@layer components"),
+          "правило внутри слоя проиграло бы базовым 400 px")
+    check("тёмная тема — токены на body.body--dark", "body.body--dark {" in css)
+
+    sources = _v2_sources()
+    bad = [f"{name}: .{what}" for name, src in sources.items()
+           for what in ("classes(", "style(") if f".{what}" in src]
+    check("в компонентах нет литеральных .classes()/.style()", not bad, str(bad))
+    bad = [f"{name}: {m}" for name, src in sources.items() for m in HEX.findall(src)]
+    check("в компонентах нет литеральных цветов", not bad, str(bad))
+    check("в компонентах нет ui.colors (он перекрасил бы и старую страницу)",
+          not [name for name, src in sources.items() if "ui.colors(" in src])
+
+    saved = os.environ.get("COMIC_THEME_FILE")
+    file = TMP / "theme_v2.json"
+    os.environ["COMIC_THEME_FILE"] = str(file)
+    try:
+        check("тема по умолчанию тёмная", theme.read() is True, str(theme.path()))
+        theme.save(False)
+        check("выбор темы пишется в файл из COMIC_THEME_FILE",
+              theme.read() is False and file.exists(), str(file))
+        theme.save(True)
+        check("и читается обратно", theme.read() is True)
+    finally:
+        if saved is None:
+            os.environ.pop("COMIC_THEME_FILE", None)
+        else:
+            os.environ["COMIC_THEME_FILE"] = saved
+
+
+def test_collect_form():
+    print("\n28) collect_form собирает JobRequest без NiceGUI")
+    meta = catalog.load_meta("07_photo_thepit")
+    request, why = collect_form({}, meta)
+    check("пустое фото — отказ с причиной",
+          request is None and "фото" in why, why)
+    request, why = collect_form({"image": "abc", "workflow": "07_photo_thepit"}, meta)
+    check("нормальная форма — JobRequest", isinstance(request, jobs.JobRequest) and why == "",
+          why)
+    check("стиль, сцена и варианты доехали",
+          request.workflow == "07_photo_thepit" and request.variants == 1,
+          str(request))
+    check("описание и память: как в старой странице",
+          request.subject is None and request.generate is True
+          and request.write_cache is True and request.start_comfy is True
+          and bool(request.client_id), str(request))
+
+    values = {"image": "abc", "workflow": "07_photo_thepit", "scene": " на пляже ",
+              "variants": 3, "denoise": 0.75, "cn_strength": 0.9, "seed": 7,
+              "negative_extra": " rain ", "negative_drop": " text ",
+              "fields": {"denoise": 0.75, "cn_strength": 0.9, "steps": 20},
+              "loras": {"20": {"weight": 0.4}}, "recheck": True}
+    request, why = collect_form(values, meta)
+    check("denoise как в сборке не становится переопределением",
+          request is not None and "denoise" not in request.overrides.get("fields", {}),
+          str(request and request.overrides))
+    check("переопределения и LoRA уходят в overrides",
+          request.overrides.get("fields") == {"steps": 20}
+          and request.overrides.get("loras", {}).get("hands", {}).get("weight") == 0.4,
+          str(request.overrides))
+    check("denoise и сила ControlNet — поля задания, а не overrides",
+          request.denoise == 0.75 and request.cn_strength == 0.9
+          and "denoise" not in request.overrides.get("fields", {}),
+          str((request.denoise, request.cn_strength, request.overrides)))
+    check("сцена, seed и негатив на месте",
+          request.scene == "на пляже" and request.seed == 7
+          and request.negative_extra == "rain" and request.negative_drop == "text"
+          and request.variants == 3 and request.recheck is True, str(request))
+
+    request, why = collect_form({"image": "abc", "workflow": "07_photo_thepit",
+                                 "manual": True}, meta)
+    check("ручной режим без описания — отказ",
+          request is None and "описание" in why, why)
+    request, _ = collect_form({"image": "abc", "workflow": "07_photo_thepit",
+                               "manual": True, "subject": "adult woman"}, meta)
+    check("ручной режим не пишет кэш и не генерит описание",
+          request.subject == "adult woman" and request.write_cache is False,
+          str(request))
+    request, why = collect_form({"image": "abc", "workflow": "07_photo_thepit",
+                                 "positive_override": "  "}, meta)
+    check("пустое переопределение positive — отказ", request is None, why)
+    request, why = collect_form({"image": "abc", "workflow": "нет_такой"}, meta)
+    check("неизвестная сборка — отказ", request is None and why, why)
+
+    src = (V2 / "collect.py").read_text(encoding="utf-8")
+    check("collect.py без NiceGUI", "nicegui" not in src)
+
+
+def test_labels_same_as_old_page():
+    print("\n29) подписи V2 совпадают со старой страницей")
+    check("этапы совпадают", labels.STAGE_LABEL == web_ui.STAGE_LABEL,
+          str(set(labels.STAGE_LABEL.items()) ^ set(web_ui.STAGE_LABEL.items())))
+    check("роли LoRA совпадают", labels.ROLE_LABEL == web_ui.ROLE_LABEL)
+    check("очередь ComfyUI не подписана «в очереди»",
+          labels.STAGE_LABEL["comfy_queue"] != labels.STAGE_LABEL["queued"],
+          labels.STAGE_LABEL["comfy_queue"])
+    check("состояния страницы покрывают спецификацию",
+          set(labels.STATUS_LABEL) >= {"empty", "queued", "running", "described",
+                                       "done", "partial", "failed", "expired",
+                                       "blocked"},
+          str(sorted(labels.STATUS_LABEL)))
+
+
+def test_push_from_job():
+    print("\n30) задание будит страницу, а не страница опрашивает задание")
+    seen = []
+    saved = jobs.run_job
+
+    def listener(rev, job_id):
+        seen.append((rev, job_id))
+
+    def fake(req, emit=None, cancel=None):
+        emit({"seq": 1, "t": 0.1, "stage": "start", "message": "", "data": {}})
+        emit({"seq": 2, "t": 0.2, "stage": "done", "message": "", "data": {}})
+        return jobs.JobResult(ok=True, code=0, stage="done")
+
+    svc = JobService(jobs_root=TMP / "push_jobs")
+    try:
+        check("повторный watch не оборачивает пул дважды",
+              push.watch(svc) is svc and push.watch(svc) is svc
+              and isinstance(svc._pool, push._Pool), str(type(svc._pool)))
+        jobs.run_job = fake
+        push.hub.subscribe(listener)
+        uid, _ = svc.save_upload("photo.png", _png_bytes())
+        job = svc.submit(jobs.JobRequest(image="", workflow="07_photo_thepit",
+                                         subject="adult woman"), upload_id=uid)
+        svc.wait(job.id, timeout=20)
+        check("оба шага дошли подписчику",
+              [rev for rev, _ in seen] == [1, 2], str(seen))
+        check("id задания в патче тот же", {jid for _, jid in seen} == {job.id},
+              str(seen))
+        check("снапшот сервиса не пострадал от обёртки",
+              len(svc.snapshot(job.id)["events"]) == 2, str(svc.snapshot(job.id)["events"]))
+    finally:
+        jobs.run_job = saved
+        push.hub.unsubscribe(listener)
+        svc.shutdown()
+
+
+# --------------------------------------------------------------- сцена V2
+def _event(stage, **data):
+    """Событие задания: как его пишет `jobs.Emitter` (этап, данные, время)."""
+    return {"seq": 0, "t": 0.0, "stage": stage, "message": "", "data": data}
+
+
+def test_phases_and_step():
+    print("\n31) фазы задания и шаг текущего прохода")
+    check("четыре фазы в порядке спецификации",
+          [name for name, _ in web_state.PHASES]
+          == ["describe", "prompt", "generate", "frame"],
+          str([name for name, _ in web_state.PHASES]))
+    check("в очереди все фазы ждут",
+          web_state.phase_states([], "queued") == ["pending"] * 4,
+          str(web_state.phase_states([], "queued")))
+
+    events = [_event("start"), _event("describe"), _event("unload"),
+              _event("subject"), _event("prompt"), _event("comfy"),
+              _event("generate"), _event("variant")]
+    states = web_state.phase_states(events, "running")
+    check("идёт генерация: описание и промпт пройдены",
+          states == ["done", "done", "on", "pending"], str(states))
+    check("готовое задание закрывает все четыре фазы",
+          web_state.phase_states(events + [_event("save"), _event("done")], "done")
+          == ["done"] * 4,
+          str(web_state.phase_states(events + [_event("done")], "done")))
+    check("описание без генерации не закрывает генерацию",
+          web_state.phase_states([_event("describe"), _event("prompt"),
+                                  _event("described")], "described")
+          == ["done", "done", "pending", "pending"],
+          str(web_state.phase_states([_event("described")], "described")))
+    check("ошибка красит фазу, где упало, и не идёт дальше",
+          web_state.phase_states([_event("describe"), _event("prompt"),
+                                  _event("comfy")], "failed")
+          == ["done", "done", "err", "pending"],
+          str(web_state.phase_states([_event("comfy")], "failed")))
+    check("частичный сбой — предупреждение на фазе кадра",
+          web_state.phase_states([_event("sampling"), _event("save")], "partial")
+          == ["done", "done", "done", "warn"],
+          str(web_state.phase_states([_event("save")], "partial")))
+
+    samplers = ["13", "17"]
+    pre = _event("sampling", node="3", value=0, max=1)
+    first = _event("sampling", node="13", value=7, max=30)
+    second = _event("sampling", node="17", value=3, max=15)
+    check("шаг препроцессора (max=1) не считается шагом прохода",
+          pass_steps([first, pre], samplers) is first
+          and pass_steps([pre], samplers) is None
+          and pass_steps([pre], ()) is None,
+          str(pass_steps([first, pre], samplers)))
+    check("подпись шага: шаг и проход из meta.samplers",
+          web_state.step_text(first, samplers) == "Шаг 7/30 · проход 1/2",
+          web_state.step_text(first, samplers))
+    check("второй сэмплер — проход 2/2",
+          web_state.step_text(second, samplers) == "Шаг 3/15 · проход 2/2",
+          web_state.step_text(second, samplers))
+    check("без meta.samplers прохода нет",
+          web_state.step_text(first, ()) == "Шаг 7/30",
+          web_state.step_text(first, ()))
+    check("узел вне meta.samplers прохода не получает",
+          "проход" not in web_state.step_text(
+              _event("sampling", node="99", value=1, max=20), samplers),
+          web_state.step_text(_event("sampling", node="99", value=1, max=20), samplers))
+    check("новый вариант сбрасывает шаг прошлого прохода",
+          pass_steps([first, _event("variant")], samplers) is None,
+          str(pass_steps([first, _event("variant")], samplers)))
+    check("доля шага для полоски",
+          abs(web_state.step_fraction(first) - 7 / 30) < 1e-9
+          and web_state.step_fraction(None) is None,
+          str(web_state.step_fraction(first)))
+    check("шага нет — пустая подпись", web_state.step_text(None, samplers) == "")
+
+
+def test_stage_panels():
+    print("\n32) сцена V2: кадр, параметры, промпт, история, ошибка")
+    frame = {
+        "file": "out\\photo_ab\\07_photo_thepit_00001_.png", "folder": "out\\photo_ab",
+        "seed": 12345, "workflow": "07_photo_thepit", "denoise": 0.75,
+        "cn_strength": 0.6, "style_weight": 0.9, "refined": False,
+        "positive": "comic book illustration, theofficialpit style, adult woman",
+        "negative": "photo, photorealistic, child, loli, shota, young, underage",
+        "cfg": 6.0, "sampler": "euler_ancestral", "scheduler": "normal",
+        "passes": [{"denoise": 0.75, "steps": 30}, {"denoise": 0.3, "steps": 15}],
+        "outcome": "unknown", "subject": "adult woman",
+    }
+    values = params_panel.values_of(frame, {})
+    check("параметры — из кадра, а не из формы",
+          values["seed"] == "12345" and values["cfg"] == "6" and values["denoise"] == "0.75"
+          and values["sampler"] == "euler_ancestral"
+          and values["workflow"] == "07_photo_thepit", str(values))
+    check("оба прохода кадра в одной строке",
+          values["passes"] == "0.75/30 → 0.3/15", values["passes"])
+    request_only = params_panel.values_of(None, {"workflow": "08_photo_gta",
+                                                 "seed": 5, "denoise": None,
+                                                 "overrides": {"fields": {"steps": 20}}})
+    check("пока кадра нет — значения из запроса",
+          request_only["workflow"] == "08_photo_gta" and request_only["seed"] == "5"
+          and request_only["denoise"] == "по умолчанию"
+          and "steps=20" in request_only["overrides"], str(request_only))
+    check("null не превращается в ноль", request_only["denoise"] == "по умолчанию")
+
+    records = [
+        comic_run.migrate({"file": "07_photo_thepit_00001_.png", "seed": 1,
+                           "denoise": 0.75, "workflow": "07_photo_thepit",
+                           "passes": [{"denoise": 0.75, "steps": 30}],
+                           "outcome": "accepted"}),
+        comic_run.migrate({"file": "07_photo_thepit_00002_.png", "seed": 2,
+                           "workflow": "07_photo_thepit", "refined": True}),
+    ]
+    rows = history_panel.rows_of(records)
+    check("история — строки паспорта, имя кадра в ключе",
+          [r["file"] for r in rows]
+          == ["07_photo_thepit_00001_.png", "07_photo_thepit_00002_.png"]
+          and rows[0]["seed"] == 1 and rows[0]["outcome"].startswith("07_photo_thepit"),
+          str(rows))
+    check("уточнённый кадр и проходы видны в исходе",
+          "уточнённый" in rows[1]["outcome"] and "0.75/30" in rows[0]["outcome"],
+          str([r["outcome"] for r in rows]))
+
+    sources = _v2_sources()
+    check("промпт кадра не собирается заново",
+          "build_payload" not in sources["prompt_panel.py"]
+          and "PromptBuilder" not in sources["prompt_panel.py"]
+          and '.get("positive")' in sources["prompt_panel.py"]
+          and '.get("negative")' in sources["prompt_panel.py"],
+          "prompt_panel.py собирает промпт сам")
+    check("история читает run.json через comic.run",
+          "from comic import run" in sources["history_panel.py"]
+          and "comic_run.read(" in sources["history_panel.py"]
+          and "snap" not in sources["history_panel.py"],
+          "history_panel.py смотрит в память страницы")
+    check("полоса кадров не вызывает clear() и ключ — имя файла",
+          ".clear()" not in sources["frame_strip.py"]
+          and "Path(str(frame.get(\"file\") or \"\")).name" in sources["frame_strip.py"],
+          "frame_strip.py пересобирает полосу")
+    check("зона ошибки обрезает один раз и показывает полный текст",
+          sources["error_zone.py"].count("short(") == 1
+          and "self.text.set_text(text)" in sources["error_zone.py"]
+          and "ui.dialog(" in sources["error_zone.py"],
+          str(sources["error_zone.py"].count("short(")))
+    check("вкладки построены один раз, а не пересобираются",
+          ".clear()" not in sources["stage_tabs.py"]
+          and "set_visibility" in sources["stage_tabs.py"])
+    check("шаг подписан проходом из state, а не из варианта",
+          "state.step_text" in sources["phase_timeline.py"]
+          and "pass_steps" in sources["phase_timeline.py"])
+
+
+def test_rail_and_badges():
+    print("\n33) рельс без вложенной прокрутки, бейдж с точкой")
+    css = theme.css()
+    layer = css[css.index("@layer components"):]
+    rail = _rule(layer, ".cp-rail")
+    check("рельс липкий сверху и без своей прокрутки",
+          "position: sticky" in rail
+          and "top: calc(var(--cp-topbar) + var(--cp-gutter))" in rail
+          and "overflow" not in rail and "max-height" not in rail, rail)
+    check("рельс липнет только там, где влезает в окно",
+          "@media (max-height: 899px)" in css
+          and "position: static" in css[css.index("@media (max-height: 899px)"):],
+          css[css.index("@media (max-height: 899px)"):][:120])
+    check("внутреннего контейнера прокрутки больше нет",
+          ".cp-rail__scroll" not in css and "rail-scroll" not in theme.CLASSES
+          and "rail-scroll" not in (V2 / "v2.py").read_text(encoding="utf-8"))
+    check("рельс высотой по содержимому, а не на высоту сцены",
+          "align-items: start" in _rule(layer, ".cp-layout"),
+          _rule(layer, ".cp-layout"))
+    start = _rule(layer, ".cp-start")
+    check("блок запуска больше не липнет к низу окна",
+          "position" not in start and "bottom" not in start
+          and "margin-top" not in start, start)
+    check("две кнопки запуска стоят в одну строку",
+          "display: flex" in _rule(layer, ".cp-start__buttons")
+          and ".cp-start__buttons > .cp-btn" in css,
+          _rule(layer, ".cp-start__buttons"))
+    check("карточка фото компактная: шапка в одну строку",
+          "min-height: var(--cp-row)" in _rule(layer, ".cp-photo__head")
+          and ".cp-photo__head .cp-icon" in css,
+          _rule(layer, ".cp-photo__head"))
+    check("поля параметров запуска — две строки по 32 px",
+          ".cp-params .q-field--dense .q-field__control,\n"
+          ".cp-params .q-field--dense .q-field__marginal {\n"
+          "  height: var(--cp-row);\n  min-height: var(--cp-row);" in css
+          and "flex-direction: column" in _rule(layer, ".cp-params__rows"),
+          _rule(layer, ".cp-params__rows"))
+    badge = _rule(layer, ".cp-badge")
+    check("бейдж — нейтральная пилюля",
+          "border: 1px solid var(--line)" in badge
+          and "background: var(--surface-2)" in badge
+          and "color: var(--ink-2)" in badge, badge)
+    check("цвет состояния несёт только точка",
+          _rule(css, ".cp-badge--ok") == "" and _rule(css, ".cp-badge--warn") == ""
+          and _rule(css, ".cp-badge--err") == ""
+          and "background: var(--ok)" in _rule(css, ".cp-badge--ok .cp-dot")
+          and "background: var(--warn)" in _rule(css, ".cp-badge--warn .cp-dot")
+          and "background: var(--err)" in _rule(css, ".cp-badge--err .cp-dot"),
+          _rule(css, ".cp-badge--ok"))
+    topbar_src = (V2 / "components" / "topbar.py").read_text(encoding="utf-8")
+    check("в разметке бейджа есть точка",
+          'theme.mark(ui.element("span"), "dot")' in topbar_src
+          and 'theme.mark(label, "badge-text")' in topbar_src)
+
+
+def _rule(css, selector):
+    """Тело правила по селектору: `{...}` без вложенных блоков."""
+    head = f"{selector} {{"
+    start = css.find(head)
+    if start < 0:
+        return ""
+    return css[start + len(head): css.find("}", start)]
+
+
+# --------------------------------------------------------------- отмена и расширенные
+def _wait_for(cond, timeout=30.0, step=0.01):
+    """Дождаться условия в чужом потоке: без фиксированных пауз."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if cond():
+            return True
+        time.sleep(step)
+    return False
+
+
+def _settled(svc, job_id, timeout=60):
+    """Снимок задания после того, как поток действительно закончил работу.
+
+    `svc.wait` возвращает сразу после `cancel`: статус `cancelled` ставится до
+    того, как поток допишет результат. Ждём освобождения исполнителя, иначе
+    проверка «кадра нет» проходила бы и тогда, когда кадр ещё появится.
+    """
+    if not _wait_for(lambda: svc.active_id() is None, timeout=timeout):
+        raise TimeoutError(f"задание {job_id} не отпустило исполнителя за {timeout} с")
+    return svc.snapshot(job_id)
+
+
+def test_cancel():
+    print("\n34) отмена: очередь снимается без ComfyUI, работа — через /interrupt")
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy) as root:
+            img = TMP / "cancel.png"
+            make(img, (12, 34, 56))
+            comfy.state.delay = 60      # история «думает»: первое успевает пойти
+            svc = JobService(jobs_root=root / "out" / "jobs")
+            try:
+                first = svc.submit(jobs.JobRequest(
+                    image="", workflow="07_photo_thepit",
+                    subject="adult woman, one", seed=1), source_path=str(img))
+                uid, _ = svc.save_upload("cancel_two.png", img.read_bytes())
+                second = svc.submit(jobs.JobRequest(
+                    image="", workflow="07_photo_thepit",
+                    subject="adult woman, two", seed=2), upload_id=uid)
+                check("первое задание уже в ComfyUI",
+                      _wait_for(lambda: len(comfy.state.prompts) == 1),
+                      str(len(comfy.state.prompts)))
+                ok, note = svc.cancel(second.id)
+                check("задание из очереди снято",
+                      ok and note == "" and second.status == "cancelled",
+                      f"{ok} {note!r} {second.status}")
+                check("снятое из очереди не зовёт /interrupt",
+                      comfy.state.interrupts == [], str(comfy.state.interrupts))
+                check("соседнее задание продолжает идти", first.status == "running",
+                      first.status)
+                snap = svc.snapshot(second.id)
+                check("снятое: исход, а не ошибка",
+                      snap["status"] == "cancelled" and snap["error"] == ""
+                      and snap["running"] is False and snap["queue"] == 0,
+                      str((snap["status"], snap["error"], snap["queue"])))
+                check("снять снятое больше нельзя", svc.cancel(second.id)[0] is False)
+                check("журнал снятого говорит об отмене",
+                      [e["stage"] for e in snap["events"]][-1:] == ["cancelled"],
+                      str([e["stage"] for e in snap["events"]][-3:]))
+                done = svc.wait(first.id, timeout=60)
+                check("первое задание дошло своим ходом", done["status"] == "done",
+                      str(done["status"]))
+                check("кадр первого на месте", len(done["frames"]) == 1,
+                      str(done["frames"]))
+                check("в ComfyUI ушёл ровно один промпт",
+                      len(comfy.state.prompts) == 1, str(len(comfy.state.prompts)))
+            finally:
+                svc.shutdown()
+
+            # ---- работающее задание: /interrupt и ни одного лишнего кадра ----
+            comfy.state.prompts.clear()
+            comfy.state.pending.clear()
+            comfy.state.interrupts.clear()
+            comfy.state.interrupted.clear()
+            comfy.state.polls.clear()
+            comfy.state.delay = 200
+            run_img = TMP / "cancel_run.png"
+            make(run_img, (56, 34, 12))
+            comfy.state.frames["p1"] = "cancel_run_p1.png"
+            svc = JobService(jobs_root=root / "out" / "jobs2")
+            try:
+                job = svc.submit(jobs.JobRequest(
+                    image="", workflow="07_photo_thepit",
+                    subject="adult woman, running", seed=3), source_path=str(run_img))
+                check("работающее задание отправило промпт",
+                      _wait_for(lambda: len(comfy.state.prompts) == 1),
+                      str(len(comfy.state.prompts)))
+                ok, note = svc.cancel(job.id)
+                check("работающее задание отменено", ok and note == "",
+                      f"{ok} {note!r}")
+                check("/interrupt ушёл в ComfyUI того задания",
+                      comfy.state.interrupts == ["/interrupt"],
+                      str(comfy.state.interrupts))
+                snap = _settled(svc, job.id)
+                check("статус cancelled, текста провала нет",
+                      snap["status"] == "cancelled" and snap["error"] == ""
+                      and snap["running"] is False,
+                      str((snap["status"], snap["error"])))
+                check("недоделанный кадр не попал в снимок",
+                      snap["frames"] == [], str(snap["frames"]))
+                check("кадр не записан и в паспорт",
+                      book_for(run_img) is None, str(book_for(run_img)))
+                check("файла кадра нет на диске",
+                      not (pp.OUTPUT_DIR / "cancel_run_p1.png").exists(),
+                      str(pp.OUTPUT_DIR / "cancel_run_p1.png"))
+                check("исполнитель освобождён", svc.active_id() is None,
+                      str(svc.active_id()))
+            finally:
+                svc.shutdown()
+
+            # ---- кадр успел появиться до отмены: outcome=cancelled ----
+            comfy.state.prompts.clear()
+            comfy.state.pending.clear()
+            comfy.state.interrupts.clear()
+            comfy.state.interrupted.clear()
+            comfy.state.polls.clear()
+            comfy.state.delay = 2
+            comfy.state.interrupt_keeps = True      # кадр появился раньше отмены
+            kept_img = TMP / "cancel_kept.png"
+            make(kept_img, (90, 12, 34))
+            svc = JobService(jobs_root=root / "out" / "jobs3")
+            try:
+                job = svc.submit(jobs.JobRequest(
+                    image="", workflow="07_photo_thepit",
+                    subject="adult woman, kept", seed=4), source_path=str(kept_img))
+                _wait_for(lambda: len(comfy.state.prompts) == 1)
+                svc.cancel(job.id)
+                snap = _settled(svc, job.id)
+                check("кадр, успевший появиться, помечен отменённым",
+                      snap["status"] == "cancelled"
+                      and [f["outcome"] for f in snap["frames"]] == ["cancelled"],
+                      str((snap["status"], [f.get("outcome") for f in snap["frames"]])))
+                book = book_for(kept_img)
+                check("в паспорте outcome=cancelled",
+                      bool(book) and book["runs"][-1]["outcome"] == "cancelled",
+                      str(book and [r.get("outcome") for r in book["runs"]]))
+                check("отмена кадра не делает ошибку",
+                      snap["error"] == "" and snap["partial"] is False,
+                      str((snap["error"], snap["partial"])))
+            finally:
+                svc.shutdown()
+    finally:
+        lm.stop()
+        comfy.stop()
+
+
+def test_start_action():
+    print("\n36) кнопка «Отмена»: только queued/running и только через сервис")
+    action = (V2 / "components" / "start_action.py").read_text(encoding="utf-8")
+    check("«Отмена» видна ровно в queued/running",
+          'CANCELLABLE = ("queued", "running")' in action
+          and 'self.state["status"] in CANCELLABLE' in action
+          and "self.cancel_button.set_visibility(cancellable)" in action,
+          "кнопка видна не там, где обещано")
+    check("пока задание живо, запуск скрыт (главное действие — отмена)",
+          "self.start_button.set_visibility(not cancellable)" in action
+          and "self.describe_button.set_visibility(not cancellable)" in action)
+    check("клик отдаёт решение сервису, а не гадает сам",
+          "on_click=self._cancel" in action and "self._on_cancel()" in action
+          and "self.svc.cancel" in (V2 / "v2.py").read_text(encoding="utf-8"))
+
+
+def test_advanced_dialog():
+    print("\n35) расширенные параметры: дефолты из meta, пусто — граф, ноль — ноль")
+    meta = catalog.load_meta("07_photo_thepit")
+    hints = advanced_dialog.defaults(meta)
+    check("дефолты взяты из meta, а не из кода",
+          hints == {"steps": 30, "cfg": 6.0, "denoise": 0.75, "cn_strength": 0.6,
+                    "style_weight": 0.9, "seed": 12345, "variants": 1,
+                    "negative_extra": None}, str(hints))
+    check("группы диалога — генерация, стиль, прочее",
+          [name for name, _ in advanced_dialog.GROUPS] == ["Генерация", "Стиль", "Прочее"],
+          str([name for name, _ in advanced_dialog.GROUPS]))
+    check("в группах ровно поля из плана",
+          [key for _, keys in advanced_dialog.GROUPS for key in keys]
+          == ["steps", "cfg", "denoise", "cn_strength", "style_weight", "seed",
+              "variants", "negative_extra"],
+          str([key for _, keys in advanced_dialog.GROUPS for key in keys]))
+    check("подсказка — значение сборки, у сида — честная",
+          advanced_dialog.placeholder("denoise", 0.75) == "как в графе · 0.75"
+          and advanced_dialog.placeholder("steps", 30) == "как в графе · 30"
+          and advanced_dialog.placeholder("negative_extra", None) == "как в графе"
+          and advanced_dialog.placeholder("seed", 12345) == "пусто — случайный",
+          str([advanced_dialog.placeholder(k, hints[k]) for k in hints]))
+
+    empty = advanced_dialog.flat({key: None for key in hints})
+    check("пустой диалог ничего не переопределяет", empty == {}, str(empty))
+    zero = advanced_dialog.flat({"steps": 0, "cfg": "", "denoise": 0, "seed": None,
+                                 "negative_extra": "  "})
+    check("ноль остаётся нулём, пустое поле — нет",
+          zero == {"fields": {"steps": 0}, "denoise": 0}, str(zero))
+
+    entered = {"steps": 20, "cfg": 7.5, "denoise": 0.5, "cn_strength": 0.2,
+               "style_weight": 0.4, "seed": 42, "variants": 2,
+               "negative_extra": " rain "}
+    request, why = collect_form({"image": "abc", "workflow": "07_photo_thepit",
+                                 **advanced_dialog.flat(entered)}, meta)
+    check("введённое доходит до JobRequest",
+          request is not None and request.overrides["fields"] == {"steps": 20, "cfg": 7.5}
+          and request.denoise == 0.5 and request.cn_strength == 0.2
+          and request.style_weight == 0.4 and request.seed == 42
+          and request.variants == 2 and request.negative_extra == "rain",
+          f"{why} {request}")
+
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy) as root:
+            img = TMP / "advanced.png"
+            make(img, (70, 20, 90))
+            new_frame(comfy, "p1")
+            request, why = collect_form({"image": "advanced.png",
+                                         "workflow": "07_photo_thepit",
+                                         "subject": "adult woman, advanced",
+                                         **advanced_dialog.flat(entered)}, meta)
+            check("форма собрала задание для прогона", request is not None, why)
+            svc = JobService(jobs_root=root / "out" / "jobs")
+            try:
+                job = svc.submit(request, source_path=str(img))
+                snap = svc.wait(job.id, timeout=60)
+            finally:
+                svc.shutdown()
+            runs = (book_for(img) or {}).get("runs") or []
+            run = runs[0] if runs else {}
+            check("паспорт кадра помнит расширенные параметры",
+                  run.get("steps") == 20 and run.get("cfg") == 7.5
+                  and run.get("denoise") == 0.5 and run.get("cn_strength") == 0.2
+                  and run.get("style_weight") == 0.4 and run.get("seed") == 42,
+                  str({k: run.get(k) for k in
+                       ("steps", "cfg", "denoise", "cn_strength", "style_weight", "seed")}))
+            check("вариантов из диалога — два кадра подряд",
+                  [r.get("seed") for r in runs] == [42, 43],
+                  str([r.get("seed") for r in runs]))
+            check("снимок задания отдаёт то же",
+                  bool(snap["frames"]) and snap["frames"][0]["steps"] == 20
+                  and snap["frames"][0]["denoise"] == 0.5, str(snap["frames"]))
+            check("негатив из диалога не снимает возрастную рамку",
+                  "rain" in (run.get("negative") or "")
+                  and "underage" in (run.get("negative") or ""),
+                  str(run.get("negative"))[-120:])
+            prompts = comfy.state.prompts[-1]["prompt"]
+            steps = [n["inputs"]["steps"] for n in prompts.values()
+                     if n["class_type"] == "KSampler"]
+            check("в граф ушли шаги из диалога", 20 in steps, str(steps))
+    finally:
+        lm.stop()
+        comfy.stop()
+
+    src = (V2 / "components" / "advanced_dialog.py").read_text(encoding="utf-8")
+    check("расширенные — диалог, а не панель в рельсе",
+          "ui.dialog(" in src and "ui.drawer(" not in src
+          and "ui.expansion(" not in src)
+    check("все три группы на месте в разметке",
+          all(f'"{name}"' in src for name, _ in advanced_dialog.GROUPS))
+    other = advanced_dialog.defaults(catalog.load_meta("07_photo_bimbo"))
+    check("другой стиль — другие дефолты из его meta",
+          other["style_weight"] != hints["style_weight"]
+          and other["style_weight"] == catalog.load_meta("07_photo_bimbo")["style_weight"],
+          f'{other["style_weight"]} / {hints["style_weight"]}')
+    check("«Вариантов» связано с полем рельса, а не продублировано",
+          "bind_value(self.variants" in src
+          and "variants" in (V2 / "components" / "run_controls.py").read_text(
+              encoding="utf-8"))
+
+
+
 def main():
     try:
         test_catalog_fields()
@@ -1443,6 +2282,8 @@ def main():
         test_manual_without_lm()
         test_scene_cache()
         test_settings_in_passport()
+        test_passport_sampler_settings()
+        test_snapshot_frame_keys()
         test_failures()
         test_ws_fallback()
         test_ws_steps()
@@ -1457,6 +2298,7 @@ def main():
         test_recheck_isolation()
         test_recheck_with_override()
         test_frame_prompt_passport()
+        test_preview_matches_frame()
         test_comfy_launch_plan()
         test_job_autostart()
         test_upload_limits()
@@ -1465,6 +2307,16 @@ def main():
         test_past_jobs_swept()
         test_upload_headers()
         test_openai_service_health()
+        test_theme_tokens()
+        test_collect_form()
+        test_labels_same_as_old_page()
+        test_push_from_job()
+        test_phases_and_step()
+        test_stage_panels()
+        test_rail_and_badges()
+        test_cancel()
+        test_start_action()
+        test_advanced_dialog()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")
