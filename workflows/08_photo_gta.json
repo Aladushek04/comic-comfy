@@ -1,6 +1,6 @@
 {
   "last_node_id": 30,
-  "last_link_id": 29,
+  "last_link_id": 31,
   "nodes": [
     {
       "id": 1,
@@ -38,10 +38,10 @@
           "name": "VAE",
           "type": "VAE",
           "links": [
-            13,
-            19,
-            22,
-            28
+            15,
+            21,
+            24,
+            30
           ],
           "slot_index": 2
         }
@@ -120,8 +120,8 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            14,
-            23
+            16,
+            25
           ],
           "slot_index": 0
         }
@@ -201,7 +201,7 @@
           "name": "CONDITIONING",
           "type": "CONDITIONING",
           "links": [
-            8
+            10
           ],
           "slot_index": 0
         }
@@ -240,7 +240,7 @@
           "name": "CONDITIONING",
           "type": "CONDITIONING",
           "links": [
-            9
+            11
           ],
           "slot_index": 0
         }
@@ -318,8 +318,8 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            7,
-            12
+            8,
+            14
           ],
           "slot_index": 0
         }
@@ -335,8 +335,8 @@
       "title": "Масштаб до 1 МП"
     },
     {
-      "id": 9,
-      "type": "DepthAnythingV2Preprocessor",
+      "id": 21,
+      "type": "LoadDA3Model",
       "pos": [
         920,
         60
@@ -348,11 +348,93 @@
       "flags": {},
       "order": 8,
       "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "DA3_MODEL",
+          "type": "DA3_MODEL",
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadDA3Model"
+      },
+      "widgets_values": [
+        "depth_anything_3_mono_large.safetensors",
+        "default"
+      ],
+      "title": "Глубина DA3: модель"
+    },
+    {
+      "id": 22,
+      "type": "DA3Inference",
+      "pos": [
+        920,
+        320
+      ],
+      "size": [
+        380,
+        210
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
       "inputs": [
+        {
+          "name": "da3_model",
+          "type": "DA3_MODEL",
+          "link": 7
+        },
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 7
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "DA3_GEOMETRY",
+          "type": "DA3_GEOMETRY",
+          "links": [
+            9
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DA3Inference"
+      },
+      "widgets_values": [
+        504,
+        "upper_bound_resize",
+        {
+          "mode": "mono"
+        }
+      ],
+      "title": "Глубина DA3"
+    },
+    {
+      "id": 23,
+      "type": "DA3Render",
+      "pos": [
+        920,
+        580
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "da3_geometry",
+          "type": "DA3_GEOMETRY",
+          "link": 9
         }
       ],
       "outputs": [
@@ -360,17 +442,20 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            11
+            13
           ],
           "slot_index": 0
         }
       ],
       "properties": {
-        "Node name for S&R": "DepthAnythingV2Preprocessor"
+        "Node name for S&R": "DA3Render"
       },
       "widgets_values": [
-        "depth_anything_v2_vitl.pth",
-        768
+        {
+          "output": "depth",
+          "normalization": "v2_style",
+          "apply_sky_clip": false
+        }
       ],
       "title": "Карта глубины"
     },
@@ -379,14 +464,14 @@
       "type": "ControlNetLoader",
       "pos": [
         920,
-        320
+        840
       ],
       "size": [
         380,
         150
       ],
       "flags": {},
-      "order": 9,
+      "order": 11,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -394,7 +479,7 @@
           "name": "CONTROL_NET",
           "type": "CONTROL_NET",
           "links": [
-            10
+            12
           ],
           "slot_index": 0
         }
@@ -411,36 +496,36 @@
       "id": 11,
       "type": "ControlNetApplyAdvanced",
       "pos": [
-        920,
-        580
+        1340,
+        60
       ],
       "size": [
         380,
         210
       ],
       "flags": {},
-      "order": 10,
+      "order": 12,
       "mode": 0,
       "inputs": [
         {
           "name": "positive",
           "type": "CONDITIONING",
-          "link": 8
+          "link": 10
         },
         {
           "name": "negative",
           "type": "CONDITIONING",
-          "link": 9
+          "link": 11
         },
         {
           "name": "control_net",
           "type": "CONTROL_NET",
-          "link": 10
+          "link": 12
         },
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 11
+          "link": 13
         }
       ],
       "outputs": [
@@ -448,8 +533,8 @@
           "name": "CONDITIONING",
           "type": "CONDITIONING",
           "links": [
-            15,
-            24
+            17,
+            26
           ],
           "slot_index": 0
         },
@@ -457,8 +542,8 @@
           "name": "CONDITIONING",
           "type": "CONDITIONING",
           "links": [
-            16,
-            25
+            18,
+            27
           ],
           "slot_index": 1
         }
@@ -477,26 +562,26 @@
       "id": 12,
       "type": "VAEEncode",
       "pos": [
-        920,
-        840
+        1340,
+        320
       ],
       "size": [
         380,
         120
       ],
       "flags": {},
-      "order": 11,
+      "order": 13,
       "mode": 0,
       "inputs": [
         {
           "name": "pixels",
           "type": "IMAGE",
-          "link": 12
+          "link": 14
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 13
+          "link": 15
         }
       ],
       "outputs": [
@@ -504,7 +589,7 @@
           "name": "LATENT",
           "type": "LATENT",
           "links": [
-            17
+            19
           ],
           "slot_index": 0
         }
@@ -520,35 +605,35 @@
       "type": "KSampler",
       "pos": [
         1340,
-        60
+        580
       ],
       "size": [
         380,
         300
       ],
       "flags": {},
-      "order": 12,
+      "order": 14,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 14
+          "link": 16
         },
         {
           "name": "positive",
           "type": "CONDITIONING",
-          "link": 15
+          "link": 17
         },
         {
           "name": "negative",
           "type": "CONDITIONING",
-          "link": 16
+          "link": 18
         },
         {
           "name": "latent_image",
           "type": "LATENT",
-          "link": 17
+          "link": 19
         }
       ],
       "outputs": [
@@ -556,7 +641,7 @@
           "name": "LATENT",
           "type": "LATENT",
           "links": [
-            18
+            20
           ],
           "slot_index": 0
         }
@@ -580,25 +665,25 @@
       "type": "VAEDecode",
       "pos": [
         1340,
-        320
+        840
       ],
       "size": [
         380,
         120
       ],
       "flags": {},
-      "order": 13,
+      "order": 15,
       "mode": 0,
       "inputs": [
         {
           "name": "samples",
           "type": "LATENT",
-          "link": 18
+          "link": 20
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 19
+          "link": 21
         }
       ],
       "outputs": [
@@ -606,7 +691,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            20
+            22
           ],
           "slot_index": 0
         }
@@ -621,21 +706,21 @@
       "id": 15,
       "type": "ImageScaleBy",
       "pos": [
-        1340,
-        580
+        1760,
+        60
       ],
       "size": [
         380,
         180
       ],
       "flags": {},
-      "order": 14,
+      "order": 16,
       "mode": 0,
       "inputs": [
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 20
+          "link": 22
         }
       ],
       "outputs": [
@@ -643,7 +728,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            21
+            23
           ],
           "slot_index": 0
         }
@@ -661,26 +746,26 @@
       "id": 16,
       "type": "VAEEncode",
       "pos": [
-        1340,
-        840
+        1760,
+        320
       ],
       "size": [
         380,
         120
       ],
       "flags": {},
-      "order": 15,
+      "order": 17,
       "mode": 0,
       "inputs": [
         {
           "name": "pixels",
           "type": "IMAGE",
-          "link": 21
+          "link": 23
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 22
+          "link": 24
         }
       ],
       "outputs": [
@@ -688,7 +773,7 @@
           "name": "LATENT",
           "type": "LATENT",
           "links": [
-            26
+            28
           ],
           "slot_index": 0
         }
@@ -704,35 +789,35 @@
       "type": "KSampler",
       "pos": [
         1760,
-        60
+        580
       ],
       "size": [
         380,
         300
       ],
       "flags": {},
-      "order": 16,
+      "order": 18,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 23
+          "link": 25
         },
         {
           "name": "positive",
           "type": "CONDITIONING",
-          "link": 24
+          "link": 26
         },
         {
           "name": "negative",
           "type": "CONDITIONING",
-          "link": 25
+          "link": 27
         },
         {
           "name": "latent_image",
           "type": "LATENT",
-          "link": 26
+          "link": 28
         }
       ],
       "outputs": [
@@ -740,7 +825,7 @@
           "name": "LATENT",
           "type": "LATENT",
           "links": [
-            27
+            29
           ],
           "slot_index": 0
         }
@@ -764,25 +849,25 @@
       "type": "VAEDecode",
       "pos": [
         1760,
-        320
+        840
       ],
       "size": [
         380,
         120
       ],
       "flags": {},
-      "order": 17,
+      "order": 19,
       "mode": 0,
       "inputs": [
         {
           "name": "samples",
           "type": "LATENT",
-          "link": 27
+          "link": 29
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 28
+          "link": 30
         }
       ],
       "outputs": [
@@ -790,7 +875,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            29
+            31
           ],
           "slot_index": 0
         }
@@ -805,21 +890,21 @@
       "id": 19,
       "type": "SaveImage",
       "pos": [
-        1760,
-        580
+        2180,
+        60
       ],
       "size": [
         380,
         150
       ],
       "flags": {},
-      "order": 18,
+      "order": 20,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 29
+          "link": 31
         }
       ],
       "outputs": [
@@ -890,14 +975,30 @@
     ],
     [
       7,
-      8,
+      21,
       0,
-      9,
+      22,
       0,
-      "IMAGE"
+      "DA3_MODEL"
     ],
     [
       8,
+      8,
+      0,
+      22,
+      1,
+      "IMAGE"
+    ],
+    [
+      9,
+      22,
+      0,
+      23,
+      0,
+      "DA3_GEOMETRY"
+    ],
+    [
+      10,
       5,
       0,
       11,
@@ -905,7 +1006,7 @@
       "CONDITIONING"
     ],
     [
-      9,
+      11,
       6,
       0,
       11,
@@ -913,7 +1014,7 @@
       "CONDITIONING"
     ],
     [
-      10,
+      12,
       10,
       0,
       11,
@@ -921,15 +1022,15 @@
       "CONTROL_NET"
     ],
     [
-      11,
-      9,
+      13,
+      23,
       0,
       11,
       3,
       "IMAGE"
     ],
     [
-      12,
+      14,
       8,
       0,
       12,
@@ -937,7 +1038,7 @@
       "IMAGE"
     ],
     [
-      13,
+      15,
       1,
       2,
       12,
@@ -945,7 +1046,7 @@
       "VAE"
     ],
     [
-      14,
+      16,
       3,
       0,
       13,
@@ -953,7 +1054,7 @@
       "MODEL"
     ],
     [
-      15,
+      17,
       11,
       0,
       13,
@@ -961,39 +1062,39 @@
       "CONDITIONING"
     ],
     [
-      16,
+      18,
       11,
       1,
       13,
       2,
       "CONDITIONING"
-    ],
-    [
-      17,
-      12,
-      0,
-      13,
-      3,
-      "LATENT"
-    ],
-    [
-      18,
-      13,
-      0,
-      14,
-      0,
-      "LATENT"
     ],
     [
       19,
-      1,
-      2,
-      14,
-      1,
-      "VAE"
+      12,
+      0,
+      13,
+      3,
+      "LATENT"
     ],
     [
       20,
+      13,
+      0,
+      14,
+      0,
+      "LATENT"
+    ],
+    [
+      21,
+      1,
+      2,
+      14,
+      1,
+      "VAE"
+    ],
+    [
+      22,
       14,
       0,
       15,
@@ -1001,7 +1102,7 @@
       "IMAGE"
     ],
     [
-      21,
+      23,
       15,
       0,
       16,
@@ -1009,7 +1110,7 @@
       "IMAGE"
     ],
     [
-      22,
+      24,
       1,
       2,
       16,
@@ -1017,7 +1118,7 @@
       "VAE"
     ],
     [
-      23,
+      25,
       3,
       0,
       17,
@@ -1025,7 +1126,7 @@
       "MODEL"
     ],
     [
-      24,
+      26,
       11,
       0,
       17,
@@ -1033,7 +1134,7 @@
       "CONDITIONING"
     ],
     [
-      25,
+      27,
       11,
       1,
       17,
@@ -1041,7 +1142,7 @@
       "CONDITIONING"
     ],
     [
-      26,
+      28,
       16,
       0,
       17,
@@ -1049,7 +1150,7 @@
       "LATENT"
     ],
     [
-      27,
+      29,
       17,
       0,
       18,
@@ -1057,7 +1158,7 @@
       "LATENT"
     ],
     [
-      28,
+      30,
       1,
       2,
       18,
@@ -1065,7 +1166,7 @@
       "VAE"
     ],
     [
-      29,
+      31,
       18,
       0,
       19,

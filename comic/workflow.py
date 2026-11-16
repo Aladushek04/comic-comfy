@@ -53,6 +53,14 @@ DEFS = {
                               ["CONDITIONING", "CONDITIONING", "LATENT"]),
     "ImageScaleToTotalPixels": (["image"], ["upscale_method", "megapixels", "resolution_steps"], ["IMAGE"]),
     "ModelSamplingAuraFlow": (["model"], ["shift", "sampling"], ["MODEL"]),
+    # Глубина 07/08: нативные узлы Depth Anything 3. `mode` и `output` —
+    # DynamicCombo: в API это объект (`{"mode": "mono"}`, `{"output": ...}`),
+    # а вложенные поля живут внутри него, а не отдельными входами.
+    "LoadDA3Model": ([], ["model_name", "weight_dtype"], ["DA3_MODEL"]),
+    "DA3Inference": (["da3_model", "image"], ["resolution", "resize_method", "mode"],
+                     ["DA3_GEOMETRY"]),
+    "DA3Render": (["da3_geometry"], ["output"], ["IMAGE"]),
+    # Запасной путь: DA2 кастомного пакета, графы с ним остались в истории git.
     "DepthAnythingV2Preprocessor": (["image"], ["ckpt_name", "resolution"], ["IMAGE"]),
     "ControlNetLoader": ([], ["control_net_name"], ["CONTROL_NET"]),
     "ControlNetApplyAdvanced": (["positive", "negative", "control_net", "image"],
@@ -93,7 +101,10 @@ _TITLES = {
     "CLIPLoader": "Текстовый энкодер",
     "VAELoader": "VAE",
     "CLIPSetLastLayer": "Clip skip -2",
-    "DepthAnythingV2Preprocessor": "Карта глубины",
+    "DepthAnythingV2Preprocessor": "Карта глубины (DA2)",
+    "LoadDA3Model": "Глубина DA3: модель",
+    "DA3Inference": "Глубина DA3",
+    "DA3Render": "Карта глубины",
     "ControlNetLoader": "ControlNet Union",
     "ControlNetApplyAdvanced": "ControlNet: применить",
     "DWPreprocessor": "Скелет позы",

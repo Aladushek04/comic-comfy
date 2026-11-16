@@ -693,7 +693,7 @@ def test_portable_paths():
     check("CLI работает из чужого cwd", r.returncode == 0 and "итоговый промпт" in r.stdout,
           (r.stdout + r.stderr).strip()[-200:])
 
-    # check_install: полный набор, отсутствие depth, пропавшая модель, пропавшая строка в доке
+    # check_install: полный набор, файл кастомного узла, пропавшая модель, пропавшая строка в доке
     models = TMP / "install_models"
     needed, broken = ci.workflow_models(tools.parent / "workflows")
     check("все графы читаются", not broken, str(broken))
@@ -722,9 +722,10 @@ def test_portable_paths():
     check("полный набор -> код 0", rc == 0, out[-200:])
     check("найдены все 17 моделей сборок", "моделей в сборках: 17" in out, out[-200:])
 
-    (models / "depth_anything_v2_vitl.pth").unlink()
+    # Файл кастомного узла (поза 04) качает сам узел: пропажа — не провал.
+    (models / "dw-ll_ucoco_384_bs5.torchscript.pt").unlink()
     rc, out = check_install_run()
-    check("depth не считается пропажей (его качает узел)", rc == 0, out[-200:])
+    check("файл кастомного узла не считается пропажей", rc == 0, out[-200:])
 
     missing = models / "loras" / "thepit2_1768210.safetensors"
     if not missing.exists():
@@ -2394,6 +2395,84 @@ def test_builds_structural():
           roles.get("2") == "style" and roles.get("3") == "body", str(roles))
 
 
+def test_depth_from_da3():
+    """45) глубина 07/08 — Depth Anything 3 нативными узлами, а не DA2."""
+    print("\n45) глубина 07/08 из Depth Anything 3")
+    repo = Path(__file__).resolve().parent.parent
+    wf_dir = repo / "workflows"
+    photo = sorted(p.stem[:-len(".api")] for p in wf_dir.glob("*.api.json")
+                   if p.stem.startswith(("07_photo_", "08_photo_")))
+    check("фото-сборок пять", len(photo) == 5, str(photo))
+
+    for name in photo:
+        api = json.loads((wf_dir / (name + ".api.json")).read_text(encoding="utf-8"))["prompt"]
+
+        def one(kind):
+            ids = [nid for nid, n in api.items() if n["class_type"] == kind]
+            return ids[0] if len(ids) == 1 else None
+
+        loader, inf, ren = one("LoadDA3Model"), one("DA3Inference"), one("DA3Render")
+        check(f"{name}: три узла DA3 по одному",
+              None not in (loader, inf, ren), f"{loader} {inf} {ren}")
+        if None in (loader, inf, ren):
+            continue
+        check(f"{name}: DA2 в графе нет",
+              not any(n["class_type"] == "DepthAnythingV2Preprocessor" for n in api.values()))
+        check(f"{name}: id новых узлов не заняты сэмплером и LoRA рук",
+              not ({loader, inf, ren} & {"13", "20"}), f"{loader} {inf} {ren}")
+
+        load = api[loader]["inputs"]
+        check(f"{name}: модель глубины — mono large, dtype default",
+              load.get("model_name") == "depth_anything_3_mono_large.safetensors"
+              and load.get("weight_dtype") == "default", str(load))
+
+        infer = api[inf]["inputs"]
+        check(f"{name}: режим — объект DynamicCombo, а не строка",
+              infer.get("mode") == {"mode": "mono"}, repr(infer.get("mode")))
+        check(f"{name}: инференс 504 и upper_bound_resize",
+              infer.get("resolution") == 504
+              and infer.get("resize_method") == "upper_bound_resize", str(infer))
+        check(f"{name}: инференс берёт модель и масштабированное фото",
+              infer.get("da3_model") == [loader, 0]
+              and infer.get("image") == [one("ImageScaleToTotalPixels"), 0], str(infer))
+
+        render = api[ren]["inputs"]
+        check(f"{name}: рендер — depth с нормализацией v2_style и без sky clip",
+              render.get("output") == {"output": "depth", "normalization": "v2_style",
+                                       "apply_sky_clip": False}, repr(render.get("output")))
+        check(f"{name}: рендер берёт геометрию из инференса",
+              render.get("da3_geometry") == [inf, 0], str(render))
+
+        cn = api[one("ControlNetApplyAdvanced")]["inputs"]
+        check(f"{name}: ControlNet берёт глубину из рендера", cn.get("image") == [ren, 0], str(cn))
+
+        graph = json.loads((wf_dir / (name + ".json")).read_text(encoding="utf-8"))
+        values = {str(n["id"]): n.get("widgets_values") for n in graph["nodes"]}
+        check(f"{name}: в UI-графе объект DynamicCombo, а не строка",
+              isinstance(values.get(inf, [None] * 3)[2], dict)
+              and isinstance(values.get(ren, [None])[0], dict),
+              f"{values.get(inf)} / {values.get(ren)}")
+
+    others = sorted(p.stem[:-len(".api")] for p in wf_dir.glob("*.api.json")
+                    if not p.stem.startswith(("07_photo_", "08_photo_")))
+    check("остальных сборок семь (12 − 5 фото)", len(others) == 7, str(others))
+    touched = []
+    for name in others:
+        api = json.loads((wf_dir / (name + ".api.json")).read_text(encoding="utf-8"))["prompt"]
+        if any(n["class_type"].startswith("DA3") or n["class_type"] == "LoadDA3Model"
+               for n in api.values()):
+            touched.append(name)
+    check("DA3 не просочился в остальные восемь", not touched, str(touched))
+
+    example = (repo / "extra_model_paths.example.yaml").read_text(encoding="utf-8")
+    check("geometry_estimation есть в образце путей",
+          "geometry_estimation: geometry_estimation" in example)
+    local = repo / "extra_model_paths.yaml"
+    if local.exists():
+        check("geometry_estimation есть в локальных путях",
+              "geometry_estimation: geometry_estimation" in local.read_text(encoding="utf-8"))
+
+
 def test_prompt_builder():
     """38) PromptBuilder: промпт кадра собирается побайтно, как в эталоне P0.
 
@@ -2698,6 +2777,7 @@ def main():
         test_prompt_golden()
         test_golden_meta()
         test_builds_structural()
+        test_depth_from_da3()
         test_guard_overrides()
         test_panel_sync()
     finally:

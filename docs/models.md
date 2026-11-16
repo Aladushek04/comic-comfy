@@ -64,11 +64,39 @@ ComfyUI показывает подпапки через обратный слэ
 ## Прочее (не LoRA)
 
 - `controlnet\controlnet-union-sdxl-promax.safetensors` — поза, глубина, линии одним файлом.
+- `geometry_estimation\depth_anything_3_mono_large.safetensors` — **глубина 07/08** (1.34 ГБ),
+  нативные узлы ComfyUI `LoadDA3Model` → `DA3Inference` → `DA3Render`. Нормализация
+  `v2_style`: та же, что даёт DA2 в `controlnet_aux`, поэтому полярность глубины
+  совместима с union-ControlNet. Раздел `geometry_estimation` должен быть прописан в
+  `extra_model_paths.yaml`, иначе загрузчик файла не видит.
 - `ipadapter\ip-adapter-plus_sdxl_vit-h.safetensors` + `clip_vision\CLIP-ViT-H-…` — референс персонажа.
 - `upscale_models\4x-UltraSharp.pth` — финальный апскейл.
 - `diffusion_models\` — Qwen-Edit 2511 uncensored Q4, NoctQA (Qwen 2.1), SeedVR2 для видео.
 - `loras\qwen\qwen4play_aio.safetensors` — **новый**: all-in-one NSFW для Qwen-редактора, конкурент MCNL.
 - `loras\Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors` — 4 шага для Qwen.
+
+## Глубина (ControlNet 07/08)
+
+| Файл | Раздел | Размер | Для чего |
+|---|---|---|---|
+| `geometry_estimation\depth_anything_3_mono_large.safetensors` | geometry_estimation | 1.34 | **новый**: глубина 07/08, узлы `LoadDA3Model` → `DA3Inference` → `DA3Render` (нативные, `comfy_extras\nodes_depth_anything_3.py`) |
+| `geometry_estimation\depth_anything_3_small.safetensors` | geometry_estimation | 0.14 | запасной вариант, быстрее и грубее; в сборках не стоит |
+| `depth_anything_v2_vitl.pth` | качает `controlnet_aux` | 1.25 | **запасной путь**: DA2 для старого графа из истории git, ни одна сборка его больше не грузит |
+
+Почему DA3: узел `DepthAnythingV2Preprocessor` живёт в кастомном пакете, свои веса качает сам
+и в `/object_info` его нет — сверка виджетов и `check_install` его не видели. DA3 — нативные
+узлы ComfyUI, файл лежит в общем каталоге моделей и проверяется как все остальные.
+
+Три вещи, которые нельзя менять без замера:
+
+- `normalization="v2_style"` — та же нормализация, что даёт DA2 в `controlnet_aux`. `min_max` и
+  `raw` меняют полярность/диапазон, и union-ControlNet получает изнанку глубины;
+- `apply_sky_clip=false` — включать только если по кадру видно, что небо портит карту;
+- `mode={"mode": "mono"}` и `output={"output": "depth", ...}` — DynamicCombo, в API это объект,
+  а не строка; `tools\check_widgets.py` проверяет и ключ, и вложенные поля.
+
+`geometry_estimation` обязан быть в `extra_model_paths.yaml`, иначе `LoadDA3Model` не видит файл
+и граф падает на «value not in list».
 
 ## План тестов (по одному кадру на файл)
 
@@ -117,7 +145,7 @@ ComfyUI показывает подпапки через обратный слэ
 | `style\thepit_comic`, `style\johnpersons_original`, `style\bimbofusion` | стили 07 | не меняются: портов на другие базы нет |
 | `GTAV_IL_MIX` | стиль 08 | остаётся для SDXL; **добавится** порт `ZImageTurbo` (162 МБ, v2513561) |
 | `controlnet-union-sdxl-promax` | глубина/поза 07/08 | остаётся; для Z-Image **добавится** `Fun ControlNet Union 2.1` (1.9 ГБ lite или 6.71 ГБ) |
-| `depth_anything_v2_vitl` | глубина | **заменяется** на Depth Anything 3 (1.34 ГБ) |
+| `depth_anything_v2_vitl` | глубина 07/08 | **заменён** на Depth Anything 3 (V2.1a); остаётся запасным путём, пока старый граф лежит в истории git |
 | `NoctQA_V1_int8_convrot` + `qwen3vl_8b_int8` + `qwen_image_2.1_vae` | сцена 06 | не меняются |
 | `CLIP-ViT-H-14`, `ip-adapter-plus`, `4x-UltraSharp` | референс, апскейл | не меняются |
 | WD14 `swinv2` + `eva02-large` | теггер | не меняются; кандидат на A/B — pixai-tagger-v1.0 (только GPU) |

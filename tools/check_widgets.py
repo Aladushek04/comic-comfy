@@ -29,6 +29,10 @@ import comfy_launch  # noqa: E402
 from comic.workflow import DEFS  # noqa: E402
 
 WIDGET_SCALARS = ("INT", "FLOAT", "STRING", "BOOLEAN")
+# DynamicCombo: /object_info отдаёт тип строкой, а значение — объектом
+# (`{"mode": "mono"}`), внутри которого живут вложенные поля выбранного
+# варианта. Список вариантов — в `options[].key`, их поля — в `options[].inputs`.
+DYNAMIC_COMBOS = ("COMFY_DYNAMICCOMBO_V3",)
 SEED_NAMES = ("seed", "noise_seed")
 REPORT = settings.ROOT / "out" / "bench" / "widgets_check.md"
 
@@ -38,7 +42,7 @@ def is_widget(spec):
     if not isinstance(spec, (list, tuple)) or not spec:
         return False
     typ = spec[0]
-    if isinstance(typ, list) or typ == "COMBO":
+    if isinstance(typ, list) or typ == "COMBO" or typ in DYNAMIC_COMBOS:
         return True
     opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
     if opts.get("forceInput"):
@@ -62,6 +66,36 @@ def spec_of(info, name):
         if found:
             return found
     return None
+
+
+def combo_options(spec):
+    """Варианты COMBO/DynamicCombo: строки или объекты `{key, inputs}`."""
+    if not isinstance(spec, (list, tuple)) or len(spec) < 2:
+        return []
+    return (spec[1] if isinstance(spec[1], dict) else {}).get("options") or []
+
+
+def dynamic_combo_problem(wname, spec, value):
+    """Что не так с объектом DynamicCombo. Пустая строка — всё в порядке.
+
+    Значение такого входа — объект: ключ с именем самого входа (`output`) и
+    поля выбранного варианта рядом. Строка или объект с чужим ключом проходит
+    проверку ComfyUI молча, а узел получает не то, что ждал.
+    """
+    options = combo_options(spec)
+    keys = [o.get("key") for o in options if isinstance(o, dict)]
+    if not isinstance(value, dict):
+        return f"{wname}={value!r} не объект"
+    chosen = value.get(wname)
+    if keys and chosen not in keys:
+        return f"{wname}: выбран {chosen!r}, а варианты {keys}"
+    option = next((o for o in options if o.get("key") == chosen), {})
+    need = list(((option.get("inputs") or {}).get("required") or {}).keys())
+    missing = [k for k in need if k not in value]
+    extra = [k for k in value if k != wname and k not in need]
+    if missing or extra:
+        return f"{wname}: нет {missing}, лишние {extra}"
+    return ""
 
 
 def probe(url):
@@ -126,7 +160,12 @@ def check_build(name, data, info):
             if not spec:
                 continue
             typ_decl = spec[0]
-            if isinstance(typ_decl, list) or typ_decl == "COMBO":
+            if typ_decl in DYNAMIC_COMBOS:
+                problem = dynamic_combo_problem(wname, spec, value)
+                if problem:
+                    rows.append((name, nid, typ, "провал", problem))
+                    fails += 1
+            elif isinstance(typ_decl, list) or typ_decl == "COMBO":
                 options = typ_decl if isinstance(typ_decl, list) else \
                     (spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}).get("options") or []
                 if options and value not in options:

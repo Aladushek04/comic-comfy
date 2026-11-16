@@ -29,7 +29,10 @@ SDXL = "WAI-Nsfw-Illustrious-17.safetensors"
 NOCT = "NoctQA_V1_int8_convrot.safetensors"
 NOCT_TE = "qwen3vl_8b_int8_convrot.safetensors"
 NOCT_VAE = "qwen_image_2.1_vae_bf16.safetensors"
-DEPTH = "depth_anything_v2_vitl.pth"
+# Глубина 07/08: Depth Anything 3, нативные узлы ComfyUI (`geometry_estimation`).
+# DA2 (`depth_anything_v2_vitl.pth`, узел `DepthAnythingV2Preprocessor`) остаётся
+# запасным путём: старые графы живут в истории git, и `DEFS` его помнит.
+DA3 = "depth_anything_3_mono_large.safetensors"
 CONTROLNET = "controlnet-union-sdxl-promax.safetensors"
 
 # Общий негатив сборок Illustrious: фотореализм и мусор против плоского стиля.
@@ -245,6 +248,10 @@ def photo(*, name, title, style, body, hands=None, character=None,
           positive_extra="", negative_extra=""):
     """07/08: фото -> стиль через ControlNet глубины и hires-проход.
 
+    Глубину считает Depth Anything 3 (21 → 22 → 23), а не DA2 из
+    `controlnet_aux`: узел кастомного пакета тянул свои веса сам и жил вне
+    `/object_info`-сверки. Промпты, `meta` и ControlNet не меняются.
+
     `style` — место субъекта в промпте: `{"sample": ...}` (07, субъект уже в
     тексте) или `{"after": ...}` (08, субъект вставляется после «saturated
     colors», чтобы свет и палитра шли первыми).
@@ -267,12 +274,25 @@ def photo(*, name, title, style, body, hands=None, character=None,
         node(8, "ImageScaleToTotalPixels",
              {"upscale_method": "lanczos", "megapixels": 1.0, "resolution_steps": 1},
              image=(7, 0)),
-        node(9, "DepthAnythingV2Preprocessor", {"ckpt_name": DEPTH, "resolution": 768},
-             image=(8, 0)),
+        # Глубина — Depth Anything 3 нативными узлами: модель, инференс, рендер.
+        # 21/22/23 свободны: 20 занят LoRA рук, 13 — сэмплером. `mode` и `output`
+        # — DynamicCombo, в API это объект, а не строка (проверяет check_widgets).
+        # `v2_style` — та же нормализация, что у DA2 в controlnet_aux: полярность
+        # глубины остаётся совместимой с union-ControlNet. `min_max`/`raw` без
+        # замера не берём.
+        node(21, "LoadDA3Model", {"model_name": DA3, "weight_dtype": "default"}),
+        node(22, "DA3Inference",
+             {"resolution": 504, "resize_method": "upper_bound_resize",
+              "mode": {"mode": "mono"}},
+             da3_model=(21, 0), image=(8, 0)),
+        node(23, "DA3Render",
+             {"output": {"output": "depth", "normalization": "v2_style",
+                         "apply_sky_clip": False}},
+             da3_geometry=(22, 0)),
         node(10, "ControlNetLoader", {"control_net_name": CONTROLNET}),
         node(11, "ControlNetApplyAdvanced",
              {"strength": cn[0], "start_percent": cn[1], "end_percent": cn[2]},
-             positive=(5, 0), negative=(6, 0), control_net=(10, 0), image=(9, 0)),
+             positive=(5, 0), negative=(6, 0), control_net=(10, 0), image=(23, 0)),
         encode(12, (8, 0), (1, 2)),
         sampler(13, model=(model, 0), positive=(11, 0), negative=(11, 1), latent=(12, 0),
                 steps=first[0], cfg=first[1], denoise=first[2]),
