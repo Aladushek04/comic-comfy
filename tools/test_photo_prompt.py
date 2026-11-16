@@ -17,6 +17,7 @@
 """
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -2234,6 +2235,49 @@ def test_run_migration():
         pp.ROOT, pp.OUTPUT_DIR = saved
 
 
+def meta_hash(value):
+    """sha256 канонического JSON: ключи отсортированы, пробелы убраны.
+
+    Сравнивать хеш, а не сам meta: в `fields` и `loras` десятки полей, и diff
+    такого словаря не читается. Хеш говорит «изменилось», а имя сборки и поля —
+    что именно.
+    """
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def test_golden_meta():
+    """43) meta всех 14 сборок заморожена перед интерфейсом.
+
+    P3 перегенерирует сборки декларативно, и тогда легко незаметно поменять
+    контракт формы: привязки полей, слоты LoRA, стилевой шаблон и негатив. Здесь
+    лежит хеш каждой части meta; изменилась хотя бы одна — проверка падает и
+    называет сборку с полями.
+    """
+    repo = Path(__file__).resolve().parent.parent
+    golden = json.loads((repo / "tools" / "golden" / "meta.json").read_text(encoding="utf-8"))
+    keys = golden["keys"]
+    builds = sorted(p.name[:-len(".api.json")]
+                    for p in (repo / "workflows").glob("*.api.json"))
+    check("эталон сравнивает нужные части meta",
+          keys == ["fields", "loras", "style_lora", "style_weight",
+                   "positive_template", "negative", "samplers"], str(keys))
+    check("в эталоне 14 сборок", len(golden["builds"]) == 14, str(len(golden["builds"])))
+    check("сборки на диске и в эталоне совпадают", builds == sorted(golden["builds"]),
+          str(sorted(set(builds) ^ set(golden["builds"]))))
+    for name in builds:
+        meta = json.loads((repo / "workflows" / (name + ".api.json"))
+                          .read_text(encoding="utf-8")).get("meta")
+        want = golden["builds"].get(name)
+        if want is None:
+            # Сборка без meta — тоже контракт: появившийся meta меняет её поведение.
+            check(f"{name}: meta нет, как и в эталоне", meta is None, str(meta)[:80])
+            continue
+        diff = [key for key in keys if meta_hash((meta or {}).get(key)) != want.get(key)]
+        check(f"{name}: meta совпадает с эталоном", meta is not None and not diff,
+              "meta пропал" if meta is None else "изменилось: " + ", ".join(diff))
+
+
 def test_prompt_builder():
     """38) PromptBuilder: промпт кадра собирается побайтно, как в эталоне P0.
 
@@ -2480,6 +2524,7 @@ def main():
         test_run_migration()
         test_prompt_builder()
         test_prompt_golden()
+        test_golden_meta()
         test_guard_overrides()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

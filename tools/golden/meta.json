@@ -1,0 +1,68 @@
+{
+  "_about": "Эталон meta сборок: контракт интерфейса и промпта (spec 7.2). Снято с workflows/*.api.json; сравнивается целиком, включая positive_template и negative, иначе P3 сможет незаметно поменять промпт кадра. null — у сборки нет блока meta (txt2img, edit, pose), и это тоже контракт: появившийся meta меняет её поведение.",
+  "keys": [
+    "fields",
+    "loras",
+    "style_lora",
+    "style_weight",
+    "positive_template",
+    "negative",
+    "samplers"
+  ],
+  "builds": {
+    "01_scene_comic": null,
+    "01_scene_jp": null,
+    "01_scene_thepit": null,
+    "02_edit_mask": null,
+    "03_edit_qwen_fast": null,
+    "03_edit_qwen_quality": null,
+    "04_pose_reference": null,
+    "05_style_return": null,
+    "06_scene_noct": null,
+    "07_photo_bimbo": {
+      "fields": "23a170f2a30b6e269aebac5eaf381243e32dd90fb37205b0f56ad89a18570886",
+      "loras": "1a81a6b8b1329c1a1daa2af4df85b564886059bd91d659dba1771c054df64fd6",
+      "style_lora": "ea061df313b20f74e2ba123f8ec1a4a39711b3e45613a99c6eca2ed1960263f0",
+      "style_weight": "b4af4e0d40391d3a00179d935c63b7e15ba8cd3dfa29f218dedc270bd3eb3e79",
+      "positive_template": "0fcda87ffdf2a634cdb05c79a639073a79002804545fc11dd2315e70461605ea",
+      "negative": "e3cbb99b21daa0db8b797a473d0db81ba7e8eb415dd9c9cb6293a03ddea09c3f",
+      "samplers": "5ca159b3e6dbd7f2d07615b6375cc974dfb46c49fc8c22bbd11e30d5a0d62a3c"
+    },
+    "07_photo_comic": {
+      "fields": "b9b631c173bbb502e418e3fe12d2d9177446b0252da26e2b8715b8c1631164b8",
+      "loras": "d68c0be3197bbc40abf734386e2c512f435fd398d843fd9d7ec0012940332063",
+      "style_lora": "603c9340108157310976acb5fb971d1e9a6fdadd9ebaa0dff5b12a9a9024feb5",
+      "style_weight": "8139b33952401b3ee0e2ca84651cb9a1d7f66d442bf908f9cf1f53ea746e5801",
+      "positive_template": "feb478975aa945ecfedc99bad436516580e06f2950f31708a6c8d0770357c39b",
+      "negative": "4220bc186061a3b514f71a79f5b16a7489e84c0f9db3dcec974157791b2df410",
+      "samplers": "5ca159b3e6dbd7f2d07615b6375cc974dfb46c49fc8c22bbd11e30d5a0d62a3c"
+    },
+    "07_photo_jp": {
+      "fields": "4fd8861124281b9ee1dd535c4db0f312b9a921a96eaaf6fda83f6b6022ffa0ed",
+      "loras": "1a21af07f236dd518c5168a762a0db134b6feec19698d1ea1dfc244256778823",
+      "style_lora": "dc828831e2f70da56262d712460fef0cdf44cef62f866e1670322fb172f6b6d6",
+      "style_weight": "8139b33952401b3ee0e2ca84651cb9a1d7f66d442bf908f9cf1f53ea746e5801",
+      "positive_template": "048a4d6d9735ba1dc5fc1c373fddffd991051cbd225a98cfb8c85261f35c2512",
+      "negative": "4220bc186061a3b514f71a79f5b16a7489e84c0f9db3dcec974157791b2df410",
+      "samplers": "5ca159b3e6dbd7f2d07615b6375cc974dfb46c49fc8c22bbd11e30d5a0d62a3c"
+    },
+    "07_photo_thepit": {
+      "fields": "90ab9e227d39d9219ab0832af057423279424996913a67c355901880224b92dd",
+      "loras": "db2b3d5f9b3a6e0e189582389514852e46c3965955acd7b7a7074ae1c9d43780",
+      "style_lora": "3c29ef4304803e950d71d553f403e8b963d374e99cb973a792c19262d619f3d7",
+      "style_weight": "8139b33952401b3ee0e2ca84651cb9a1d7f66d442bf908f9cf1f53ea746e5801",
+      "positive_template": "c3de0f0894f60463a9f0fd78448d1dc5a063a1a688b954bbbc9fd371d917501e",
+      "negative": "4220bc186061a3b514f71a79f5b16a7489e84c0f9db3dcec974157791b2df410",
+      "samplers": "5ca159b3e6dbd7f2d07615b6375cc974dfb46c49fc8c22bbd11e30d5a0d62a3c"
+    },
+    "08_photo_gta": {
+      "fields": "d23e3e6c01dd2ea332bddcb7216fbfe03b4ed270472f5edcdf15cdaca1755d50",
+      "loras": "ca10de91911b66f118e36da086860b6d226d29261d302d6423be8c95a4706c0b",
+      "style_lora": "398df61d42e0b8904136ae2f2db6cec55f92b6a887773b46afea68408e9b02db",
+      "style_weight": "1e181f0934d441445f03ff51c972ef44275b830c10a80401e53b27bf5baf327a",
+      "positive_template": "ea093320ef4ab02e2b710a52421fbdfe09a6622091ad9f44a7d251c1b67be6ed",
+      "negative": "5d1f7b2f87f736dc480fc5ea1e7b5caa6455a75d0ab52a7a4201de24de7dd2d6",
+      "samplers": "5ca159b3e6dbd7f2d07615b6375cc974dfb46c49fc8c22bbd11e30d5a0d62a3c"
+    }
+  }
+}
