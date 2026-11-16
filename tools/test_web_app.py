@@ -636,11 +636,19 @@ def test_passport_sampler_settings():
             check("cfg в паспорте веб-пути", run.get("cfg") == 6.0, str(run.get("cfg")))
             check("сэмплер в паспорте веб-пути", run.get("sampler") == "euler_ancestral",
                   str(run.get("sampler")))
+            check("оба прохода в паспорте веб-пути",
+                  run.get("passes") == [{"denoise": 0.75, "steps": 30},
+                                        {"denoise": 0.3, "steps": 15}],
+                  str(run.get("passes")))
             frame = (snap["frames"] or [{}])[0]
             check("снимок задания отдаёт настройки кадра",
                   frame.get("steps") == 30 and frame.get("cfg") == 6.0
                   and frame.get("sampler") == "euler_ancestral", str(frame))
             check("планировщик в снимке", frame.get("scheduler") == "normal", str(frame))
+            check("снимок задания отдаёт оба прохода",
+                  frame.get("passes") == [{"denoise": 0.75, "steps": 30},
+                                          {"denoise": 0.3, "steps": 15}],
+                  str(frame.get("passes")))
     finally:
         lm.stop()
         comfy.stop()

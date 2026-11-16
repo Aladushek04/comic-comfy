@@ -128,7 +128,8 @@ def _sampler_fields(report):
     """
     s = (report or {}).get("settings") or {}
     return {"steps": s.get("steps"), "cfg": s.get("cfg"),
-            "sampler": s.get("sampler"), "scheduler": s.get("scheduler")}
+            "sampler": s.get("sampler"), "scheduler": s.get("scheduler"),
+            "passes": s.get("passes")}
 
 
 def _negative_tags(desc, req):

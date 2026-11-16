@@ -909,6 +909,9 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
         "cfg": (settings or {}).get("cfg"),
         "sampler": (settings or {}).get("sampler"),
         "scheduler": (settings or {}).get("scheduler"),
+        # Оба прохода: у 07 главный 0.75/30 и второй 0.3/15. По одному `denoise`
+        # не видно, что кадр сделан двумя сэмплерами.
+        "passes": (settings or {}).get("passes"),
     })
     book.pop("workflow", None)
     book["workflows"] = sorted({r["workflow"] for r in book["runs"] if r.get("workflow")})
@@ -1097,7 +1100,7 @@ def apply_loras(api, meta, loras):
 
 
 def sampler_settings(samplers):
-    """Применённые настройки главного прохода: шаги, cfg, сэмплер, планировщик.
+    """Применённые настройки сэмплеров: главный проход и все проходы графа.
 
     Значения читаются из собранного графа, а не из аргументов: `--denoise` правит
     главный KSampler, поля формы могут переписать `steps` и `cfg`, и паспорт должен
@@ -1105,11 +1108,16 @@ def sampler_settings(samplers):
     `denoise` (наибольший denoise), поэтому шаги, cfg и сэмплер в записи принадлежат
     одному узлу, а не смеси двух.
 
+    `passes` идут в порядке графа: главный проход первым, у 07 это 0.75/30, потом
+    0.3/15. Сортировать по denoise не нужно и опасно: с `--denoise 0.2` главный
+    проход уехал бы на второе место, и паспорт снова назвал бы второй проход первым.
+
     `None` вместо нулей: у старого паспорта настройки не записаны, и 0 шагов
     выглядел бы настоящим значением.
     """
     if not samplers:
-        return {"steps": None, "cfg": None, "sampler": None, "scheduler": None}
+        return {"steps": None, "cfg": None, "sampler": None, "scheduler": None,
+                "passes": []}
     main = max(samplers, key=lambda s: float(s["inputs"].get("denoise") or 0))
     inputs = main["inputs"]
     return {
@@ -1117,6 +1125,8 @@ def sampler_settings(samplers):
         "cfg": inputs.get("cfg"),
         "sampler": inputs.get("sampler_name"),
         "scheduler": inputs.get("scheduler"),
+        "passes": [{"denoise": s["inputs"].get("denoise"), "steps": s["inputs"].get("steps")}
+                   for s in samplers],
     }
 
 

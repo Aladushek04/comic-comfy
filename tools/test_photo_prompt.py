@@ -1168,6 +1168,58 @@ def test_passport_records_sampler_settings():
         pp.ROOT, pp.OUTPUT_DIR = saved
 
 
+def test_passport_records_passes():
+    print("\n24a) run.json: оба прохода, каждый со своими шагами")
+    payload = pp.build_payload("07_photo_thepit", "adult woman", "", denoise=0.75, seed=1)
+    passes = (payload.get("settings") or {}).get("passes")
+    check("два прохода 07 в порядке графа",
+          passes == [{"denoise": 0.75, "steps": 30}, {"denoise": 0.3, "steps": 15}],
+          str(passes))
+
+    # --denoise правит главный проход, а не оба: второй остаётся 0.3/15.
+    raised = pp.build_payload("07_photo_thepit", "adult woman", "", denoise=0.9, seed=1)
+    check("--denoise виден в своём проходе",
+          (raised.get("settings") or {}).get("passes")
+          == [{"denoise": 0.9, "steps": 30}, {"denoise": 0.3, "steps": 15}],
+          str((raised.get("settings") or {}).get("passes")))
+
+    # У 06 нет стилевого блока (это текст→картинка), поэтому проходы берём тем же
+    # сборщиком напрямую по её графу: у photo-сборок путь один и тот же.
+    api, _ = pp.load_workflow("06_scene_noct")
+    single = pp.sampler_settings([n for n in api.values() if n["class_type"] == "KSampler"])
+    check("у 06 один проход", single.get("passes") == [{"denoise": 1.0, "steps": 8}],
+          str(single))
+
+    img = TMP / "passes.png"
+    make(img, (17, 18, 19))
+    saved = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT = TMP / "root_passes"
+    pp.OUTPUT_DIR = TMP / "out_passes"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        frame = "07_photo_thepit_00021_.png"
+        (pp.OUTPUT_DIR / frame).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "x", "negative_extra": ""}, 1, 0.75, frame,
+                        settings=payload.get("settings"))
+        frame2 = "07_photo_thepit_00022_.png"
+        (pp.OUTPUT_DIR / frame2).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "x", "negative_extra": ""}, 2, None, frame2)
+        runs = json.loads((pp.ROOT / "out" / pp.image_tag(img) / "run.json")
+                          .read_text(encoding="utf-8"))["runs"]
+        check("проходы в паспорте кадра",
+              runs[0].get("passes") == [{"denoise": 0.75, "steps": 30},
+                                        {"denoise": 0.3, "steps": 15}],
+              str(runs[0].get("passes")))
+        check("без настроек проходы не выдуманы", runs[1].get("passes") is None,
+              str(runs[1].get("passes")))
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved
+
+
 def test_atomic_json():
     print("\n25) JSON пишется целиком или не пишется вовсе")
     img = TMP / "root" / "atomic.png"
@@ -1683,6 +1735,7 @@ def main():
         test_controlnet_strength_flag()
         test_passport_records_generation_settings()
         test_passport_records_sampler_settings()
+        test_passport_records_passes()
         test_atomic_json()
         test_utf8_streams()
         test_passport_not_lost()
