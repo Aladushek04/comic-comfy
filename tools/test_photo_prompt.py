@@ -2193,6 +2193,47 @@ def test_prompt_golden():
         check(f"{name}: рамка по-прежнему замыкает негатив", tags[-1] == "underage", tags[-3:])
 
 
+def test_guard_overrides():
+    """40) возрастная рамка действует и на переопределения промпта.
+
+    Переопределение — явная замена текста, но не отмена правил проекта 18+:
+    positive проходит тот же санитайзер, что описание VLM, а negative замыкается
+    NEG_GUARD, не переставляя уже написанное.
+    """
+    from comic import guard as cg
+
+    p = pp.build_payload("07_photo_thepit", "adult woman", "",
+                         positive="adult woman, loli, young schoolgirl, red dress",
+                         negative="MY OWN NEGATIVE")
+    low = p["positive"].lower()
+    check("override positive: возрастные слова вырезаны",
+          all(w not in low for w in ("loli", "young", "schoolgirl")), p["positive"][:160])
+    check("override positive: взрослый первым тегом",
+          p["positive"].startswith("adult woman"), p["positive"][:80])
+    check("override positive: остальной текст сохранён", "red dress" in p["positive"])
+    check("override negative: рамка дописана в конец",
+          p["negative"] == "MY OWN NEGATIVE, " + cg.NEG_GUARD, p["negative"])
+    check("override negative: текст не переставлен",
+          p["negative"].startswith("MY OWN NEGATIVE"), p["negative"])
+    check("ensure_guard идемпотентен",
+          cg.ensure_guard(p["negative"]) == p["negative"], p["negative"])
+
+    once = pp.build_payload("07_photo_thepit", "adult woman", "",
+                            negative="bad hands, underage")
+    check("рамка не дублируется: уже сказанное остаётся на месте",
+          once["negative"] == "bad hands, underage, child, loli, shota",
+          once["negative"])
+    plain = pp.build_payload("07_photo_thepit", "adult woman", "")
+    check("обычный путь: рамка по-прежнему последняя",
+          plain["negative"].endswith(cg.NEG_GUARD.split(",")[-1].strip()),
+          plain["negative"][-80:])
+    check("санитайзер не трогает обычное описание",
+          cg.sanitize_subject("adult woman, long hair") == "adult woman, long hair")
+    check("with_adult — та же функция, что санитайзер",
+          pp.with_adult("young girl, red dress") == "adult woman, red dress",
+          pp.with_adult("young girl, red dress"))
+
+
 def main():
     patch_roots()
     try:
@@ -2237,6 +2278,7 @@ def main():
         test_cache_wrapper_keys()
         test_prompt_builder()
         test_prompt_golden()
+        test_guard_overrides()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

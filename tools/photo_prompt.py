@@ -40,6 +40,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import settings
 import tagger
 from comic import cache  # noqa: E402  — корень репозитория добавляет settings.py
+from comic.guard import (  # noqa: E402
+    AGE_WORDS, GENERIC_PERSON, ensure_guard, sanitize_subject, scrub_tags,
+)
 from comic.prompt import (  # noqa: E402
     NEG_CORE, NEG_GUARD, SUBJECT_SLOT, PromptBuilder, join_tags,
 )
@@ -359,52 +362,14 @@ Rules:
 Example output:
 {"subject":"adult woman, early 30s, long wavy blonde hair, blue eyes, black framed glasses, light eye makeup, red sleeveless dress, thin gold necklace, arms spread wide, neutral grey studio background, soft frontal light","negative_extra":"white lenses, opaque glasses, missing necklace","notes":"главное — сохранить очки и цепочку."}"""
 
-# Возрастные слова, которые модель любит добавлять в описание.
-AGE_WORDS = ("young", "teen", "teenage", "teenager", "girl", "boy", "child", "kid",
-             "schoolgirl", "schoolboy", "adolescent", "loli", "shota", "underage", "minor")
-
-
-def scrub_tags(text):
-    """Убирает возрастные слова и точные дубли, сохраняя порядок."""
-    out, seen = [], set()
-    for part in str(text).split(","):
-        tag = part.strip().strip(".")
-        if not tag:
-            continue
-        low = tag.lower()
-        if any(re.search(r"(?<![a-z])" + re.escape(w) + r"(?![a-z])", low) for w in AGE_WORDS):
-            continue
-        if low in seen:
-            continue
-        seen.add(low)
-        out.append(tag)
-    return out
-
-
-GENERIC_PERSON = {"woman", "women", "lady", "female", "man", "male", "guy", "gentleman", "person"}
-
 
 def with_adult(subject):
-    """Взрослый — первым тегом, с явным родом. Убирает дубли-роды и всё школьное."""
-    raw = scrub_tags(subject)
-    if not raw:
-        return ""
-    low = str(subject).lower()
-    male = re.search(r"(?<![a-z])(man|male|guy|gentleman|boy)(?![a-z])", low)
-    female = re.search(r"(?<![a-z])(woman|women|female|lady|girl)(?![a-z])", low)
-    man = bool(male) and not bool(female)
+    """Взрослый — первым тегом, с явным родом. Убирает дубли-роды и всё школьное.
 
-    tags = [t for t in raw if t.lower() not in GENERIC_PERSON and "school" not in t.lower()]
-    adult_idx = next((i for i, t in enumerate(tags) if "adult" in t.lower()), None)
-    if adult_idx is None:
-        tags.insert(0, "adult man" if man else "adult woman")
-    else:
-        if adult_idx != 0:
-            tags.insert(0, tags.pop(adult_idx))
-        first = tags[0].lower()
-        if "man" not in first and "woman" not in first:
-            tags[0] = tags[0] + (" man" if man else " woman")
-    return ", ".join(tags)
+    Сама логика — `comic.guard.sanitize_subject`: ею же проверяются переопределения
+    промпта, иначе рамку можно было снять, заменив текст целиком.
+    """
+    return sanitize_subject(subject)
 
 
 def enrich_subject(desc, image_path, warn=True):
@@ -1076,7 +1041,9 @@ def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, la
     Правки не касаются файла сборки: граф загружается заново, поэтому два
     задания с разными настройками не мешают друг другу. Полный positive или
     negative (overrides) заменяет собранный текст целиком — это явное
-    переопределение, а не добавка к описанию.
+    переопределение, а не добавка к описанию. Рамку возраста заменить нельзя:
+    positive проходит `sanitize_subject`, negative замыкается `ensure_guard`
+    (`comic.guard`), поэтому переопределение не снимает правила проекта 18+.
     """
     api, meta = load_workflow(workflow)
     problems = check_bindings(api, meta)
@@ -1087,9 +1054,9 @@ def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, la
     if not prefix:
         raise PipelineError(f"для {workflow} не задан стилевой блок: пересобери воркфлоу")
 
-    positive_text = (str(positive) if positive is not None
+    positive_text = (sanitize_subject(positive) if positive is not None
                      else compose_positive(meta, subject, workflow))
-    negative_text = (str(negative) if negative is not None
+    negative_text = (ensure_guard(negative) if negative is not None
                      else compose_negative(negative_extra, meta))
 
     patched = 0

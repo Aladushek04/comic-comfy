@@ -1051,10 +1051,13 @@ def test_overrides():
                   and sent["4"]["inputs"]["strength_model"] == 0.4, str(sent["4"]["inputs"]))
             texts = {n["inputs"].get("text") for n in sent.values()
                      if n["class_type"] == "CLIPTextEncode"}
-            check("полный positive ушёл как есть", "MY OWN POSITIVE, adult woman" in texts,
-                  str(texts)[:200])
-            check("полный negative ушёл как есть", "MY OWN NEGATIVE" in texts,
-                  str(texts)[:200])
+            check("полный positive сохранён и санитизирован",
+                  any(str(t).startswith("adult woman") and "MY OWN POSITIVE" in str(t)
+                      for t in texts), str(texts)[:200])
+            check("полный negative сохранён и замкнут рамкой",
+                  any(str(t).startswith("MY OWN NEGATIVE")
+                      and str(t).endswith("child, loli, shota, underage")
+                      for t in texts), str(texts)[:200])
             check("шаблон стиля не подмешан к переопределению",
                   not any("theofficialpit" in str(t) for t in texts), str(texts)[:200])
             record = book_for(img)["runs"][-1]
@@ -1273,14 +1276,14 @@ def test_recheck_with_override():
                           and "MY POSITIVE" in str(n["inputs"]["text"]))
                      for p in comfy.state.prompts]
             check("повтор ушёл с изменённым переопределением",
-                  texts[0] == "MY POSITIVE, adult woman"
+                  texts[0] == "adult woman, MY POSITIVE"
                   and "silver bracelet" in texts[1] and texts[1] != texts[0],
                   str(texts))
             check("фактический positive уточнённого кадра в галерее",
                   "silver bracelet" in (r.frames[-1].get("positive") or ""),
                   str(r.frames[-1].get("positive"))[:100])
             check("основной кадр хранит своё переопределение",
-                  r.frames[0]["positive"] == "MY POSITIVE, adult woman",
+                  r.frames[0]["positive"] == "adult woman, MY POSITIVE",
                   r.frames[0]["positive"])
     finally:
         lm.stop()
