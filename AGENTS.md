@@ -53,9 +53,11 @@
   трогает. `--no-tags` выключает, `COMIC_TAGGER=off` — для проверок. Стенд замера:
   `tools\tagger_bench.py` + `tools\tagger_compare.py`, отчёты в `out\bench\`.
   Решение и пороги — `docs\2026-11-16-tagger-addon-design.md`.
-- Веб-интерфейс: `webapp\` (`ui.py` — форма на NiceGUI, `service.py` — очередь и состояние,
+- Веб-интерфейс: `webapp\` (`ui.py` — форма на NiceGUI, `service.py` — очередь, состояние и
+  отмена (`cancel`: очередь снимается, работающему уходит `POST /interrupt`),
   `catalog.py` — сборки, `meta.fields`, `/object_info`, `state.py` — чистые правила шагов и
-  подписей), запуск `ComicWeb.cmd` / `ComicWeb.ps1` / `webapp\run.py`, зависимости
+  подписей, `components\advanced_dialog.py` — расширенные параметры диалогом), запуск
+  `ComicWeb.cmd` / `ComicWeb.ps1` / `webapp\run.py`, зависимости
   `requirements-web.txt`, проверки — `tools\test_web_ui.py` (Playwright,
   `requirements-web-dev.txt`). Ctrl+C в `run.py` — штатная остановка без трейсбека;
   вопрос cmd «Terminate batch job?» — это cmd, сервер уже остановлен.
@@ -362,6 +364,22 @@ ComfyUI не трогает. Без готового описания (кэш, `
    и модель дорисовывает бюстгальтер (кадр 00067 против 00068).
    Проверка: `python tools\test_photo_prompt.py`, пункт 33.
 
+0.19. **Отмена и расширенные: три места, где легко соврать себе.**
+   Первое: `/interrupt` уходит только заданию, которое уже отправило свой промпт
+   (`job.prompt_id`). Слепой `/interrupt` прервал бы чужой граф — например, работу
+   другого инструмента на том же ComfyUI; а задание, снятое из очереди, не зовёт
+   ComfyUI вовсе (ни `/prompt`, ни `/interrupt`). Второе: `svc.wait()` возвращает
+   сразу после `cancel` — статус ставится раньше, чем поток задания допишет
+   результат, поэтому проверки «кадра нет» ждут `active_id() is None`, иначе они
+   проходят и тогда, когда кадр ещё появится. Третье: отмена — исход, а не ошибка:
+   статус `cancelled`, `error` пуст, а `outcome=cancelled` попадает в паспорт
+   только если кадр успел появиться (`jobs.run_job(cancel=...)` ставит метку при
+   записи; после отмены `run.json` не переписывается). Пустое поле расширенного
+   диалога значит «как в графе», а введённый `0` остаётся нулём: `flat()` не
+   превращает его в «пусто», иначе `denoise 0` уехал бы в 0.75.
+   Проверка: `python tools\test_web_app.py`, пункты 34–35;
+   `python tools\test_web_ui.py`, 13г2 и 13и3.
+
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
    съезжают на позицию влево, панель Issues пишет «Invalid input: sampler_name / cfg».
@@ -482,13 +500,13 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 
 ## Проверки перед словом «готово»
 
-- `python tools\test_photo_prompt.py` — 273 проверки CLI и пайплайна (модели не нужны).
-- `python tools\test_web_app.py` — 181 проверка заданий, очереди и веб-слоя на HTTP-заглушках
+- `python tools\test_photo_prompt.py` — 464 проверки CLI и пайплайна (модели не нужны).
+- `python tools\test_web_app.py` — 324 проверки заданий, очереди и веб-слоя на HTTP-заглушках
   (LM Studio и ComfyUI подменяются, GPU не нужен).
-- `python tools\test_web_ui.py` — 35 браузерных проверок Chromium на тех же заглушках:
+- `python tools\test_web_ui.py` — 99 браузерных проверок Chromium на тех же заглушках:
   раскладка, тёмная тема и её переключение, расширенная панель, сохранение ввода после health-check, замена фото, второй кадр
   Recheck, две вкладки, потеря связи браузера, отказ WebSocket ComfyUI, промпт формы,
-  истёкшая история задания.
+  истёкшая история задания, диалог расширенных параметров и отмена задания.
 - Переменные кодировки не нужны: `settings.utf8_streams()` в точках входа ставит UTF-8 сам,
   поэтому те же команды работают и в консоли, и с перенаправлением вывода в файл или пайп.
   Это про `tools\*`: `webapp\run.py` поднимается из `.cmd`/`.ps1` со своим окружением, а

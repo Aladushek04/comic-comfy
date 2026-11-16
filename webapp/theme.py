@@ -106,6 +106,7 @@ SIZES = {
     "--cp-drop": "160px",
     "--cp-row": "32px",
     "--cp-btn": "40px",
+    "--cp-dialog": "520px",
     "--cp-tabs": "32px",
     "--cp-strip": "56px",
     "--cp-radius": "0.5rem",
@@ -145,6 +146,12 @@ CLASSES = {
     "photo-caption": "cp-photo__caption",
     "params": "cp-params",
     "params-rows": "cp-params__rows",
+    "params-head": "cp-params__head",
+    "link-btn": "cp-link-btn",
+    "dialog": "cp-dialog",
+    "dialog-actions": "cp-dialog__actions",
+    "group": "cp-group",
+    "group-fields": "cp-group__fields",
     "start-buttons": "cp-start__buttons",
     "drop": "cp-drop",
     "drop-title": "cp-drop-title",
@@ -926,6 +933,57 @@ COMPONENTS = """
 .cp-params__rows {
   display: flex;
   flex-direction: column;
+  gap: var(--cp-sp-2);
+}
+
+/* Заголовок карточки с кнопкой «Расширенные…»: строка остаётся высотой в
+   заголовок, иначе расширенные параметры растянули бы рельс. */
+.cp-params__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--cp-sp-2);
+}
+
+/* Кнопка-ссылка: открывает диалог, а не растит строку заголовка. */
+.cp-link-btn {
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--cp-fs-2);
+  text-transform: none;
+  box-shadow: none;
+}
+
+.cp-link-btn:hover {
+  text-decoration: underline;
+}
+
+/* ------------------------------------------------------------- диалог */
+/* Ширина — токеном: страница живёт только от 1280 px, и 520 px влезает
+   целиком; отдельного правила для узкого окна здесь нет. */
+.cp-dialog {
+  width: var(--cp-dialog);
+}
+
+.cp-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cp-sp-2);
+}
+
+/* Два поля в ряд: восемь полей в столбик не влезают в окно 900 px. */
+.cp-group__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--cp-sp-2) var(--cp-sp-3);
+}
+
+.cp-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
   gap: var(--cp-sp-2);
 }
 

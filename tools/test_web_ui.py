@@ -675,6 +675,82 @@ def main():
             check("сцена на месте после health-check",
                   scene.input_value() == "тестовая сцена v2", scene.input_value())
 
+            print("\n13г2) расширенные параметры: диалог, дефолты из meta, ноль — ноль")
+            # Стиль здесь — GTA: 13б выбрал его кликом, и подсказки диалога обязаны
+            # прийти из его meta, а не из thepit.
+            gta = tw.catalog.load_meta("08_photo_gta")
+            v2.set_input_files('input[type="file"]', str(photo_a))
+            wait_v2_upload(v2)
+            before_book = len((tw.book_for(photo_a) or {}).get("runs") or [])
+            v2.get_by_role("button", name="Расширенные…").click()
+            v2.wait_for_function(
+                "() => { const d = document.querySelector('.cp-dialog');"
+                " return d && d.getBoundingClientRect().width > 0; }", timeout=10000)
+            dialog = v2.evaluate("""() => ({
+                fields: [...document.querySelectorAll('.cp-dialog .q-field')].map(f => ({
+                    label: (f.querySelector('.q-field__label') || {}).innerText || '',
+                    value: (f.querySelector('input, textarea') || {}).value,
+                    placeholder: (f.querySelector('input, textarea') || {}).placeholder,
+                })),
+                titles: [...document.querySelectorAll('.cp-dialog .cp-prompt__label')]
+                    .map(e => e.innerText.trim().toLowerCase()),
+            })""")
+            check("диалог открылся и сгруппирован",
+                  dialog["titles"] == ["генерация", "стиль", "прочее"]
+                  and len(dialog["fields"]) == 8, str(dialog["titles"]))
+            fields = {f["label"].strip(): f for f in dialog["fields"]}
+            gta_fields = gta["fields"]
+            check("дефолты из meta видны подсказкой, поля пустые",
+                  fields["Шаги"]["placeholder"]
+                  == f"как в графе · {gta_fields['steps']['default']}"
+                  and fields["CFG"]["placeholder"]
+                  == f"как в графе · {gta_fields['cfg']['default']}"
+                  and fields["Denoise"]["placeholder"]
+                  == f"как в графе · {gta_fields['denoise']['default']}"
+                  and fields["Сила ControlNet"]["placeholder"]
+                  == f"как в графе · {gta_fields['cn_strength']['default']}"
+                  and fields["Вес стилевой LoRA"]["placeholder"]
+                  == f"как в графе · {gta['style_weight']}"
+                  and fields["Сид"]["placeholder"] == "пусто — случайный"
+                  and all(not (f["value"] or "").strip()
+                          for f in dialog["fields"]
+                          if f["label"].strip() != "Вариантов"),
+                  str(dialog["fields"]))
+            check("«Вариантов» в диалоге — то же число, что в рельсе",
+                  fields["Вариантов"]["value"] == "1"
+                  and v2.locator(".cp-params .q-field", has_text="Вариантов")
+                  .locator("input").first.input_value() == "1",
+                  str(fields["Вариантов"]))
+            fill_field(v2, "Шаги", 12)
+            fill_field(v2, "Сид", 0)
+            fill_field(v2, "Сила ControlNet", 0)
+            v2.get_by_role("button", name="Готово").click()
+            v2.wait_for_timeout(300)
+            v2.get_by_role("button", name="Старт").click()
+            wait_text(v2, "Готово", 60000)
+            frames = api_job(port, job_from_url(v2))["frames"]
+            runs = (tw.book_for(photo_a) or {}).get("runs") or []
+            check("введённое из диалога попало в кадр",
+                  bool(frames) and frames[0]["steps"] == 12
+                  and frames[0]["seed"] == 0 and frames[0]["cn_strength"] == 0,
+                  str(frames[:1]))
+            check("и в паспорт кадра — ноль остался нулём",
+                  len(runs) == before_book + 1 and runs[-1]["steps"] == 12
+                  and runs[-1]["seed"] == 0 and runs[-1]["cn_strength"] == 0
+                  and runs[-1]["cn_strength"] is not None,
+                  str({k: runs[-1].get(k) for k in
+                       ("steps", "seed", "cn_strength")}) if runs else "")
+            v2.get_by_role("button", name="Расширенные…").click()
+            v2.wait_for_timeout(400)
+            v2.get_by_role("button", name="Сбросить").click()
+            v2.wait_for_timeout(300)
+            reset = v2.evaluate("""() => [...document.querySelectorAll('.cp-dialog .q-field input')]
+                .map(i => i.value)""")
+            check("«Сбросить» возвращает «как в графе»",
+                  all(not (v or "").strip() for v in reset), str(reset))
+            v2.get_by_role("button", name="Готово").click()
+            v2.wait_for_timeout(300)
+
             print("\n13д) задание V2: старт, адрес и перезагрузка")
             v2.set_input_files('input[type="file"]', str(photo_a))
             wait_v2_upload(v2)

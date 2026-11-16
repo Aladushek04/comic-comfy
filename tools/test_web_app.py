@@ -36,7 +36,7 @@ from webapp import catalog, labels, push, theme
 from webapp import state as web_state
 from webapp import ui as web_ui
 from webapp.collect import collect_form
-from webapp.components import history_panel, params_panel
+from webapp.components import advanced_dialog, history_panel, params_panel
 from comic import run as comic_run
 from webapp.service import JobService, PNG_SIGNATURE, UploadError
 from webapp.state import fmt_setting, missing_job_text, pass_steps
@@ -2152,6 +2152,109 @@ def test_cancel():
         comfy.stop()
 
 
+def test_advanced_dialog():
+    print("\n35) расширенные параметры: дефолты из meta, пусто — граф, ноль — ноль")
+    meta = catalog.load_meta("07_photo_thepit")
+    hints = advanced_dialog.defaults(meta)
+    check("дефолты взяты из meta, а не из кода",
+          hints == {"steps": 30, "cfg": 6.0, "denoise": 0.75, "cn_strength": 0.6,
+                    "style_weight": 0.9, "seed": 12345, "variants": 1,
+                    "negative_extra": None}, str(hints))
+    check("группы диалога — генерация, стиль, прочее",
+          [name for name, _ in advanced_dialog.GROUPS] == ["Генерация", "Стиль", "Прочее"],
+          str([name for name, _ in advanced_dialog.GROUPS]))
+    check("в группах ровно поля из плана",
+          [key for _, keys in advanced_dialog.GROUPS for key in keys]
+          == ["steps", "cfg", "denoise", "cn_strength", "style_weight", "seed",
+              "variants", "negative_extra"],
+          str([key for _, keys in advanced_dialog.GROUPS for key in keys]))
+    check("подсказка — значение сборки, у сида — честная",
+          advanced_dialog.placeholder("denoise", 0.75) == "как в графе · 0.75"
+          and advanced_dialog.placeholder("steps", 30) == "как в графе · 30"
+          and advanced_dialog.placeholder("negative_extra", None) == "как в графе"
+          and advanced_dialog.placeholder("seed", 12345) == "пусто — случайный",
+          str([advanced_dialog.placeholder(k, hints[k]) for k in hints]))
+
+    empty = advanced_dialog.flat({key: None for key in hints})
+    check("пустой диалог ничего не переопределяет", empty == {}, str(empty))
+    zero = advanced_dialog.flat({"steps": 0, "cfg": "", "denoise": 0, "seed": None,
+                                 "negative_extra": "  "})
+    check("ноль остаётся нулём, пустое поле — нет",
+          zero == {"fields": {"steps": 0}, "denoise": 0}, str(zero))
+
+    entered = {"steps": 20, "cfg": 7.5, "denoise": 0.5, "cn_strength": 0.2,
+               "style_weight": 0.4, "seed": 42, "variants": 2,
+               "negative_extra": " rain "}
+    request, why = collect_form({"image": "abc", "workflow": "07_photo_thepit",
+                                 **advanced_dialog.flat(entered)}, meta)
+    check("введённое доходит до JobRequest",
+          request is not None and request.overrides["fields"] == {"steps": 20, "cfg": 7.5}
+          and request.denoise == 0.5 and request.cn_strength == 0.2
+          and request.style_weight == 0.4 and request.seed == 42
+          and request.variants == 2 and request.negative_extra == "rain",
+          f"{why} {request}")
+
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy) as root:
+            img = TMP / "advanced.png"
+            make(img, (70, 20, 90))
+            new_frame(comfy, "p1")
+            request, why = collect_form({"image": "advanced.png",
+                                         "workflow": "07_photo_thepit",
+                                         "subject": "adult woman, advanced",
+                                         **advanced_dialog.flat(entered)}, meta)
+            check("форма собрала задание для прогона", request is not None, why)
+            svc = JobService(jobs_root=root / "out" / "jobs")
+            try:
+                job = svc.submit(request, source_path=str(img))
+                snap = svc.wait(job.id, timeout=60)
+            finally:
+                svc.shutdown()
+            runs = (book_for(img) or {}).get("runs") or []
+            run = runs[0] if runs else {}
+            check("паспорт кадра помнит расширенные параметры",
+                  run.get("steps") == 20 and run.get("cfg") == 7.5
+                  and run.get("denoise") == 0.5 and run.get("cn_strength") == 0.2
+                  and run.get("style_weight") == 0.4 and run.get("seed") == 42,
+                  str({k: run.get(k) for k in
+                       ("steps", "cfg", "denoise", "cn_strength", "style_weight", "seed")}))
+            check("вариантов из диалога — два кадра подряд",
+                  [r.get("seed") for r in runs] == [42, 43],
+                  str([r.get("seed") for r in runs]))
+            check("снимок задания отдаёт то же",
+                  bool(snap["frames"]) and snap["frames"][0]["steps"] == 20
+                  and snap["frames"][0]["denoise"] == 0.5, str(snap["frames"]))
+            check("негатив из диалога не снимает возрастную рамку",
+                  "rain" in (run.get("negative") or "")
+                  and "underage" in (run.get("negative") or ""),
+                  str(run.get("negative"))[-120:])
+            prompts = comfy.state.prompts[-1]["prompt"]
+            steps = [n["inputs"]["steps"] for n in prompts.values()
+                     if n["class_type"] == "KSampler"]
+            check("в граф ушли шаги из диалога", 20 in steps, str(steps))
+    finally:
+        lm.stop()
+        comfy.stop()
+
+    src = (V2 / "components" / "advanced_dialog.py").read_text(encoding="utf-8")
+    check("расширенные — диалог, а не панель в рельсе",
+          "ui.dialog(" in src and "ui.drawer(" not in src
+          and "ui.expansion(" not in src)
+    check("все три группы на месте в разметке",
+          all(f'"{name}"' in src for name, _ in advanced_dialog.GROUPS))
+    other = advanced_dialog.defaults(catalog.load_meta("07_photo_bimbo"))
+    check("другой стиль — другие дефолты из его meta",
+          other["style_weight"] != hints["style_weight"]
+          and other["style_weight"] == catalog.load_meta("07_photo_bimbo")["style_weight"],
+          f'{other["style_weight"]} / {hints["style_weight"]}')
+    check("«Вариантов» связано с полем рельса, а не продублировано",
+          "bind_value(self.variants" in src
+          and "variants" in (V2 / "components" / "run_controls.py").read_text(
+              encoding="utf-8"))
+
+
+
 def main():
     try:
         test_catalog_fields()
@@ -2192,6 +2295,7 @@ def main():
         test_stage_panels()
         test_rail_and_badges()
         test_cancel()
+        test_advanced_dialog()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

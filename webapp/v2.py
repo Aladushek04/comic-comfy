@@ -17,7 +17,8 @@
 `app.storage.tab`, поэтому перезагрузка вкладки возвращает тот же кадр.
 
 Страница не решает за сервис: «Отмена» зовёт `service.cancel` (очередь — снять,
-работающему — `/interrupt`).
+работающему — `/interrupt`), а расширенные параметры собирает
+`components/advanced_dialog.py` и отдаёт в тот же `collect_form`.
 """
 import asyncio
 from pathlib import Path
@@ -28,9 +29,10 @@ from nicegui import Event, app, core, ui
 
 from . import catalog, labels, push, theme
 from .collect import collect_form
-from .components import (error_zone, frame_stage, frame_strip, history_panel,
-                        params_panel, phase_timeline, photo_slot, prompt_panel,
-                        run_controls, stage_tabs, start_action, style_picker, topbar)
+from .components import (advanced_dialog, error_zone, frame_stage, frame_strip,
+                        history_panel, params_panel, phase_timeline, photo_slot,
+                        prompt_panel, run_controls, stage_tabs, start_action,
+                        style_picker, topbar)
 from .labels import STAGE_LABEL, short
 from .service import UploadError
 from .ui import service
@@ -74,6 +76,7 @@ class V2Page:
         self.photo = None
         self.picker = None
         self.controls = None
+        self.advanced = None
         self.start = None
         self.timeline = None
         self.tabs = None
@@ -108,7 +111,7 @@ class V2Page:
                     # прокручивается страница, а «Старт» липнет к низу окна.
                     self.photo = photo_slot.PhotoSlot(self.svc, self.on_photo).build()
                     self.picker = style_picker.StylePicker(self.styles, self.on_style).build()
-                    self.controls = run_controls.RunControls().build()
+                    self.controls = run_controls.RunControls(self.open_advanced).build()
                     self.start = start_action.StartAction(self.submit, self.cancel).build()
                 with ui.element("main") as stage:
                     theme.mark(stage, "stage")
@@ -124,6 +127,9 @@ class V2Page:
                         self.prompt = prompt_panel.PromptPanel().build()
                     with self.tabs.panel("history"):
                         self.history = history_panel.HistoryPanel().build()
+            # Диалог расширенных параметров стоит вне рельса: он всплывает поверх
+            # страницы, а «Вариантов» в нём связано с полем рельса одной привязкой.
+            self.advanced = advanced_dialog.AdvancedDialog(self.controls.variants).build()
         self.watchdog = ui.timer(2.0, self.tick, active=False)
         self.sync()
 
@@ -261,6 +267,15 @@ class V2Page:
         """Смена стиля: стилевые поля живут в meta, поэтому форма ничего не хранит."""
         self.state["style"] = workflow
 
+    def open_advanced(self):
+        """Расширенные параметры: подсказки — из meta выбранной сборки."""
+        try:
+            meta = catalog.load_meta(self.picker.value)
+        except catalog.CatalogError as e:
+            ui.notify(str(e), type="negative")
+            meta = {}
+        self.advanced.open(meta)
+
     def submit(self, generate, manual):
         """Старт: JobRequest из формы в очередь сервиса. Без ComfyUI — описание."""
         if not self.state["styles_ok"]:
@@ -273,7 +288,7 @@ class V2Page:
             return
         values = {"image": self.photo.upload_id, "workflow": self.picker.value,
                   "generate": generate, "manual": manual, "subject": "",
-                  **self.controls.values}
+                  **self.controls.values, **self.advanced.values}
         request, why = collect_form(values, meta)
         if request is None:
             ui.notify(why, type="warning")
