@@ -1118,6 +1118,56 @@ def test_passport_records_generation_settings():
         pp.ROOT, pp.OUTPUT_DIR = saved
 
 
+def test_passport_records_sampler_settings():
+    print("\n24) run.json: применённые шаги, cfg и сэмплер")
+    img = TMP / "sampler.png"
+    make(img, (14, 15, 16))
+    payload = pp.build_payload("07_photo_thepit", "adult woman", "", seed=1)
+    settings = payload.get("settings") or {}
+    check("build_payload отдаёт настройки сэмплера",
+          settings.get("steps") == 30 and settings.get("cfg") == 6.0
+          and settings.get("sampler") == "euler_ancestral"
+          and settings.get("scheduler") == "normal", str(settings))
+
+    saved = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT = TMP / "root_sampler"
+    pp.OUTPUT_DIR = TMP / "out_sampler"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        frame = "07_photo_thepit_00011_.png"
+        (pp.OUTPUT_DIR / frame).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "x", "negative_extra": ""}, 1, 0.75, frame,
+                        settings=settings)
+        folder = pp.ROOT / "out" / pp.image_tag(img)
+        run = json.loads((folder / "run.json").read_text(encoding="utf-8"))["runs"][0]
+        check("steps в паспорте", run.get("steps") == 30, str(run.get("steps")))
+        check("cfg в паспорте", run.get("cfg") == 6.0, str(run.get("cfg")))
+        check("сэмплер в паспорте", run.get("sampler") == "euler_ancestral",
+              str(run.get("sampler")))
+        check("scheduler в паспорте", run.get("scheduler") == "normal",
+              str(run.get("scheduler")))
+
+        # Без настроек паспорт не выдумывает нули: denoise: null остаётся null,
+        # а шаги — пустыми, а не 0 (0 шагов выглядит как настоящее значение).
+        frame2 = "07_photo_thepit_00012_.png"
+        (pp.OUTPUT_DIR / frame2).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "07_photo_thepit",
+                        {"subject": "x", "negative_extra": ""}, 2, None, frame2)
+        runs = json.loads((folder / "run.json").read_text(encoding="utf-8"))["runs"]
+        check("denoise без настройки остался null", runs[1].get("denoise") is None,
+              str(runs[1].get("denoise")))
+        check("без настроек шаги не выдуманы",
+              runs[1].get("steps") is None and runs[1].get("cfg") is None,
+              str({k: runs[1].get(k) for k in ("steps", "cfg", "sampler")}))
+        check("запись с настройками читается вместе с новой",
+              runs[0]["steps"] == 30 and runs[0]["denoise"] == 0.75, str(runs[0])[:160])
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved
+
+
 def test_atomic_json():
     print("\n25) JSON пишется целиком или не пишется вовсе")
     img = TMP / "root" / "atomic.png"
@@ -1632,6 +1682,7 @@ def main():
         test_batch_scene_cache_no_lm()
         test_controlnet_strength_flag()
         test_passport_records_generation_settings()
+        test_passport_records_sampler_settings()
         test_atomic_json()
         test_utf8_streams()
         test_passport_not_lost()

@@ -369,7 +369,7 @@ class JobService:
             frames.append({k: frame.get(k) for k in
                            ("file", "folder", "seed", "workflow", "cn_strength",
                             "style_weight", "denoise", "refined", "subject", "positive",
-                            "negative")})
+                            "negative", "steps", "cfg", "sampler", "scheduler")})
         desc = (result.description if result else None) or None
         return {
             "id": job.id,

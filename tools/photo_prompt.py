@@ -848,7 +848,7 @@ def workflow_from_file(name):
 
 def save_run(image_path, workflow, desc, seed, denoise, name,
              cn_strength=None, style_weight=None, overrides=None, refined=False,
-             positive=None, negative=None):
+             positive=None, negative=None, settings=None):
     """Складывает кадр и его паспорт в папку out/<фото>_<хэш>/.
 
     Сборка пишется в каждый кадр, а не одна на папку: в одной папке лежат кадры
@@ -860,6 +860,9 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
     подписанными, хотя сделаны с разной силой ControlNet или LoRA.
     `positive` и `negative` — фактический запрос (шаблон стиля, переопределения
     и негатив вместе): по одному `subject` его не восстановить.
+    `settings` — применённые настройки сэмплера из `build_payload`: шаги, cfg,
+    сэмплер и планировщик. По аргументам их не восстановить: `--denoise` и поля
+    формы правят граф на лету.
     `None` означает «как в сборке».
 
     Возвращает папку или None, если кадра нет в OUTPUT_DIR: паспорт на
@@ -900,6 +903,12 @@ def save_run(image_path, workflow, desc, seed, denoise, name,
         "refined": bool(refined),
         "positive": positive, "negative": negative,
         "subject": desc.get("subject", ""), "negative_extra": desc.get("negative_extra", ""),
+        # Настройки главного прохода: без них паспорт не отличает кадр на 30 шагах
+        # от кадра на 15. Нет настроек — None, а не 0.
+        "steps": (settings or {}).get("steps"),
+        "cfg": (settings or {}).get("cfg"),
+        "sampler": (settings or {}).get("sampler"),
+        "scheduler": (settings or {}).get("scheduler"),
     })
     book.pop("workflow", None)
     book["workflows"] = sorted({r["workflow"] for r in book["runs"] if r.get("workflow")})
@@ -1087,6 +1096,30 @@ def apply_loras(api, meta, loras):
     return applied
 
 
+def sampler_settings(samplers):
+    """Применённые настройки главного прохода: шаги, cfg, сэмплер, планировщик.
+
+    Значения читаются из собранного графа, а не из аргументов: `--denoise` правит
+    главный KSampler, поля формы могут переписать `steps` и `cfg`, и паспорт должен
+    говорить то, что реально ушло в ComfyUI. Главный проход — тот же, который правит
+    `denoise` (наибольший denoise), поэтому шаги, cfg и сэмплер в записи принадлежат
+    одному узлу, а не смеси двух.
+
+    `None` вместо нулей: у старого паспорта настройки не записаны, и 0 шагов
+    выглядел бы настоящим значением.
+    """
+    if not samplers:
+        return {"steps": None, "cfg": None, "sampler": None, "scheduler": None}
+    main = max(samplers, key=lambda s: float(s["inputs"].get("denoise") or 0))
+    inputs = main["inputs"]
+    return {
+        "steps": inputs.get("steps"),
+        "cfg": inputs.get("cfg"),
+        "sampler": inputs.get("sampler_name"),
+        "scheduler": inputs.get("scheduler"),
+    }
+
+
 def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, landscape=False,
                   style_weight=None, image_name=None, cn_strength=None,
                   overrides=None, positive=None, negative=None):
@@ -1177,6 +1210,7 @@ def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, la
         "positive": positive_text,
         "negative": negative_text,
         "applied": applied,
+        "settings": sampler_settings(samplers),
     }
 
 
@@ -1399,7 +1433,8 @@ def generate(workflow, subject, negative_extra, denoise=None, seed=None, landsca
     positive_text, negative_text = payload["positive"], payload["negative"]
     if isinstance(report, dict):
         # Фактический запрос: его сохраняют паспорт кадра и галерея.
-        report.update({"positive": positive_text, "negative": negative_text})
+        report.update({"positive": positive_text, "negative": negative_text,
+                       "settings": payload.get("settings") or {}})
 
     print("   positive:", positive_text[:160] + ("…" if len(positive_text) > 160 else ""))
     print("   negative:", negative_text[:160] + ("…" if len(negative_text) > 160 else ""))
@@ -1551,7 +1586,8 @@ def run_batch(args, workflow):
             folder = save_run(str(f), workflow, desc, sd, args.denoise, name,
                               cn_strength=args.cn_strength, style_weight=args.style_weight,
                               positive=report.get("positive"),
-                              negative=report.get("negative"))
+                              negative=report.get("negative"),
+                              settings=report.get("settings"))
             if folder is None:
                 failed += 1
                 continue

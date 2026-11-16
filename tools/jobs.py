@@ -120,6 +120,17 @@ def _seed(req, index):
     return (req.seed + index) if req.seed is not None else random.randint(1, 2_000_000_000)
 
 
+def _sampler_fields(report):
+    """Настройки сэмплера из отчёта generate: кадр и паспорт говорят одно и то же.
+
+    Берутся из собранного графа (report["settings"]), а не из req: `--denoise`
+    правит главный проход, поля формы могут переписать steps и cfg.
+    """
+    s = (report or {}).get("settings") or {}
+    return {"steps": s.get("steps"), "cfg": s.get("cfg"),
+            "sampler": s.get("sampler"), "scheduler": s.get("scheduler")}
+
+
 def _negative_tags(desc, req):
     extra = [x.strip() for x in (desc.get("negative_extra") or "").split(",") if x.strip()]
     drop = [x.strip().lower() for x in (req.negative_drop or "").split(",") if x.strip()]
@@ -324,7 +335,8 @@ def run_job(req, emit=None):
                                      style_weight=req.style_weight,
                                      overrides=req.overrides or None,
                                      positive=report.get("positive"),
-                                     negative=report.get("negative"))
+                                     negative=report.get("negative"),
+                                     settings=report.get("settings"))
                 if folder is None:
                     ok_all = False
                 else:
@@ -335,6 +347,7 @@ def run_job(req, emit=None):
                         "refined": False, "subject": desc.get("subject", ""),
                         "positive": report.get("positive", ""),
                         "negative": report.get("negative", ""),
+                        **_sampler_fields(report),
                     })
                     result.folders.append(str(folder))
                     out("save", f"   кадр сохранён: {name}", file=name, folder=str(folder))
@@ -481,7 +494,8 @@ def _one_more(req, desc, out, seed=None, positive=None):
                          cn_strength=req.cn_strength, style_weight=req.style_weight,
                          overrides=req.overrides or None, refined=True,
                          positive=report.get("positive"),
-                         negative=report.get("negative"))
+                         negative=report.get("negative"),
+                         settings=report.get("settings"))
     if folder is None:
         return False, None
     out("save", f"   кадр сохранён: {name2}", file=name2, folder=str(folder),
@@ -494,4 +508,5 @@ def _one_more(req, desc, out, seed=None, positive=None):
         # Фактический запрос: для полного переопределения это он, а не subject.
         "positive": report.get("positive") or refined_positive or "",
         "negative": report.get("negative", ""),
+        **_sampler_fields(report),
     }

@@ -618,6 +618,34 @@ def test_settings_in_passport():
         comfy.stop()
 
 
+def test_passport_sampler_settings():
+    print("\n5a) паспорт кадра помнит шаги, cfg и сэмплер — и в снимке задания")
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy) as root:
+            img = TMP / "sampler_pass.png"
+            make(img, (30, 60, 90))
+            new_frame(comfy, "p1")
+            svc = JobService(jobs_root=root / "out" / "jobs")
+            job = svc.submit(jobs.JobRequest(
+                image="", workflow="07_photo_thepit", subject="adult woman, sampler",
+                seed=3), source_path=str(img))
+            snap = svc.wait(job.id, timeout=60)
+            run = book_for(img)["runs"][0]
+            check("steps в паспорте веб-пути", run.get("steps") == 30, str(run.get("steps")))
+            check("cfg в паспорте веб-пути", run.get("cfg") == 6.0, str(run.get("cfg")))
+            check("сэмплер в паспорте веб-пути", run.get("sampler") == "euler_ancestral",
+                  str(run.get("sampler")))
+            frame = (snap["frames"] or [{}])[0]
+            check("снимок задания отдаёт настройки кадра",
+                  frame.get("steps") == 30 and frame.get("cfg") == 6.0
+                  and frame.get("sampler") == "euler_ancestral", str(frame))
+            check("планировщик в снимке", frame.get("scheduler") == "normal", str(frame))
+    finally:
+        lm.stop()
+        comfy.stop()
+
+
 def test_failures():
     print("\n6) сбой API, пустой outputs, пропавший кадр")
     lm, comfy = lm_stub(), comfy_stub()
@@ -1443,6 +1471,7 @@ def main():
         test_manual_without_lm()
         test_scene_cache()
         test_settings_in_passport()
+        test_passport_sampler_settings()
         test_failures()
         test_ws_fallback()
         test_ws_steps()
