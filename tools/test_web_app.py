@@ -33,8 +33,11 @@ import build_workflows as bw
 import settings as st
 from PIL import Image
 from webapp import catalog, labels, push, theme
+from webapp import state as web_state
 from webapp import ui as web_ui
 from webapp.collect import collect_form
+from webapp.components import history_panel, params_panel
+from comic import run as comic_run
 from webapp.service import JobService, PNG_SIGNATURE, UploadError
 from webapp.state import fmt_setting, missing_job_text, pass_steps
 
@@ -1768,6 +1771,154 @@ def test_push_from_job():
         svc.shutdown()
 
 
+# --------------------------------------------------------------- сцена V2
+def _event(stage, **data):
+    """Событие задания: как его пишет `jobs.Emitter` (этап, данные, время)."""
+    return {"seq": 0, "t": 0.0, "stage": stage, "message": "", "data": data}
+
+
+def test_phases_and_step():
+    print("\n31) фазы задания и шаг текущего прохода")
+    check("четыре фазы в порядке спецификации",
+          [name for name, _ in web_state.PHASES]
+          == ["describe", "prompt", "generate", "frame"],
+          str([name for name, _ in web_state.PHASES]))
+    check("в очереди все фазы ждут",
+          web_state.phase_states([], "queued") == ["pending"] * 4,
+          str(web_state.phase_states([], "queued")))
+
+    events = [_event("start"), _event("describe"), _event("unload"),
+              _event("subject"), _event("prompt"), _event("comfy"),
+              _event("generate"), _event("variant")]
+    states = web_state.phase_states(events, "running")
+    check("идёт генерация: описание и промпт пройдены",
+          states == ["done", "done", "on", "pending"], str(states))
+    check("готовое задание закрывает все четыре фазы",
+          web_state.phase_states(events + [_event("save"), _event("done")], "done")
+          == ["done"] * 4,
+          str(web_state.phase_states(events + [_event("done")], "done")))
+    check("описание без генерации не закрывает генерацию",
+          web_state.phase_states([_event("describe"), _event("prompt"),
+                                  _event("described")], "described")
+          == ["done", "done", "pending", "pending"],
+          str(web_state.phase_states([_event("described")], "described")))
+    check("ошибка красит фазу, где упало, и не идёт дальше",
+          web_state.phase_states([_event("describe"), _event("prompt"),
+                                  _event("comfy")], "failed")
+          == ["done", "done", "err", "pending"],
+          str(web_state.phase_states([_event("comfy")], "failed")))
+    check("частичный сбой — предупреждение на фазе кадра",
+          web_state.phase_states([_event("sampling"), _event("save")], "partial")
+          == ["done", "done", "done", "warn"],
+          str(web_state.phase_states([_event("save")], "partial")))
+
+    samplers = ["13", "17"]
+    pre = _event("sampling", node="3", value=0, max=1)
+    first = _event("sampling", node="13", value=7, max=30)
+    second = _event("sampling", node="17", value=3, max=15)
+    check("шаг препроцессора (max=1) не считается шагом прохода",
+          pass_steps([first, pre], samplers) is first
+          and pass_steps([pre], samplers) is None
+          and pass_steps([pre], ()) is None,
+          str(pass_steps([first, pre], samplers)))
+    check("подпись шага: шаг и проход из meta.samplers",
+          web_state.step_text(first, samplers) == "Шаг 7/30 · проход 1/2",
+          web_state.step_text(first, samplers))
+    check("второй сэмплер — проход 2/2",
+          web_state.step_text(second, samplers) == "Шаг 3/15 · проход 2/2",
+          web_state.step_text(second, samplers))
+    check("без meta.samplers прохода нет",
+          web_state.step_text(first, ()) == "Шаг 7/30",
+          web_state.step_text(first, ()))
+    check("узел вне meta.samplers прохода не получает",
+          "проход" not in web_state.step_text(
+              _event("sampling", node="99", value=1, max=20), samplers),
+          web_state.step_text(_event("sampling", node="99", value=1, max=20), samplers))
+    check("новый вариант сбрасывает шаг прошлого прохода",
+          pass_steps([first, _event("variant")], samplers) is None,
+          str(pass_steps([first, _event("variant")], samplers)))
+    check("доля шага для полоски",
+          abs(web_state.step_fraction(first) - 7 / 30) < 1e-9
+          and web_state.step_fraction(None) is None,
+          str(web_state.step_fraction(first)))
+    check("шага нет — пустая подпись", web_state.step_text(None, samplers) == "")
+
+
+def test_stage_panels():
+    print("\n32) сцена V2: кадр, параметры, промпт, история, ошибка")
+    frame = {
+        "file": "out\\photo_ab\\07_photo_thepit_00001_.png", "folder": "out\\photo_ab",
+        "seed": 12345, "workflow": "07_photo_thepit", "denoise": 0.75,
+        "cn_strength": 0.6, "style_weight": 0.9, "refined": False,
+        "positive": "comic book illustration, theofficialpit style, adult woman",
+        "negative": "photo, photorealistic, child, loli, shota, young, underage",
+        "cfg": 6.0, "sampler": "euler_ancestral", "scheduler": "normal",
+        "passes": [{"denoise": 0.75, "steps": 30}, {"denoise": 0.3, "steps": 15}],
+        "outcome": "unknown", "subject": "adult woman",
+    }
+    values = params_panel.values_of(frame, {})
+    check("параметры — из кадра, а не из формы",
+          values["seed"] == "12345" and values["cfg"] == "6" and values["denoise"] == "0.75"
+          and values["sampler"] == "euler_ancestral"
+          and values["workflow"] == "07_photo_thepit", str(values))
+    check("оба прохода кадра в одной строке",
+          values["passes"] == "0.75/30 → 0.3/15", values["passes"])
+    request_only = params_panel.values_of(None, {"workflow": "08_photo_gta",
+                                                 "seed": 5, "denoise": None,
+                                                 "overrides": {"fields": {"steps": 20}}})
+    check("пока кадра нет — значения из запроса",
+          request_only["workflow"] == "08_photo_gta" and request_only["seed"] == "5"
+          and request_only["denoise"] == "по умолчанию"
+          and "steps=20" in request_only["overrides"], str(request_only))
+    check("null не превращается в ноль", request_only["denoise"] == "по умолчанию")
+
+    records = [
+        comic_run.migrate({"file": "07_photo_thepit_00001_.png", "seed": 1,
+                           "denoise": 0.75, "workflow": "07_photo_thepit",
+                           "passes": [{"denoise": 0.75, "steps": 30}],
+                           "outcome": "accepted"}),
+        comic_run.migrate({"file": "07_photo_thepit_00002_.png", "seed": 2,
+                           "workflow": "07_photo_thepit", "refined": True}),
+    ]
+    rows = history_panel.rows_of(records)
+    check("история — строки паспорта, имя кадра в ключе",
+          [r["file"] for r in rows]
+          == ["07_photo_thepit_00001_.png", "07_photo_thepit_00002_.png"]
+          and rows[0]["seed"] == 1 and rows[0]["outcome"].startswith("07_photo_thepit"),
+          str(rows))
+    check("уточнённый кадр и проходы видны в исходе",
+          "уточнённый" in rows[1]["outcome"] and "0.75/30" in rows[0]["outcome"],
+          str([r["outcome"] for r in rows]))
+
+    sources = _v2_sources()
+    check("промпт кадра не собирается заново",
+          "build_payload" not in sources["prompt_panel.py"]
+          and "PromptBuilder" not in sources["prompt_panel.py"]
+          and '.get("positive")' in sources["prompt_panel.py"]
+          and '.get("negative")' in sources["prompt_panel.py"],
+          "prompt_panel.py собирает промпт сам")
+    check("история читает run.json через comic.run",
+          "from comic import run" in sources["history_panel.py"]
+          and "comic_run.read(" in sources["history_panel.py"]
+          and "snap" not in sources["history_panel.py"],
+          "history_panel.py смотрит в память страницы")
+    check("полоса кадров не вызывает clear() и ключ — имя файла",
+          ".clear()" not in sources["frame_strip.py"]
+          and "Path(str(frame.get(\"file\") or \"\")).name" in sources["frame_strip.py"],
+          "frame_strip.py пересобирает полосу")
+    check("зона ошибки обрезает один раз и показывает полный текст",
+          sources["error_zone.py"].count("short(") == 1
+          and "self.text.set_text(text)" in sources["error_zone.py"]
+          and "ui.dialog(" in sources["error_zone.py"],
+          str(sources["error_zone.py"].count("short(")))
+    check("вкладки построены один раз, а не пересобираются",
+          ".clear()" not in sources["stage_tabs.py"]
+          and "set_visibility" in sources["stage_tabs.py"])
+    check("шаг подписан проходом из state, а не из варианта",
+          "state.step_text" in sources["phase_timeline.py"]
+          and "pass_steps" in sources["phase_timeline.py"])
+
+
 def test_rail_and_badges():
     print("\n33) рельс без вложенной прокрутки, бейдж с точкой")
     css = theme.css()
@@ -1849,6 +2000,8 @@ def main():
         test_collect_form()
         test_labels_same_as_old_page()
         test_push_from_job()
+        test_phases_and_step()
+        test_stage_panels()
         test_rail_and_badges()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

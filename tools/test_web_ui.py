@@ -677,7 +677,192 @@ def main():
                   and "Задание не запущено" not in body(v2))
             v2.screenshot(path=str(shots / "v2-done.png"), full_page=True)
 
-            print("\n13е) узкий экран: требование 1280 вместо раскладки")
+            print("\n13ж) фазы задания и шаг текущего прохода")
+            v2.set_input_files('input[type="file"]', str(photo_a))
+            wait_v2_upload(v2)
+            control(comfy, delay=3)
+            v2.get_by_role("button", name="Старт").click()
+            v2.wait_for_function("() => document.body.innerText.includes('Шаг')",
+                                 timeout=40000)
+            phases = v2.evaluate("""() => {
+                const rows = [...document.querySelectorAll('.cp-phase')];
+                return {
+                    names: rows.map(r => r.innerText.trim()),
+                    done: rows.filter(r => r.classList.contains('cp-phase--done')).length,
+                    on: rows.filter(r => r.classList.contains('cp-phase--on')).length,
+                    step: document.querySelector('.cp-step').innerText,
+                    dots: rows.map(r => getComputedStyle(r.querySelector('.cp-dot'))
+                        .backgroundColor),
+                    bar: (() => { const b = document.querySelector('.cp-step__bar');
+                        return b ? Math.round(b.getBoundingClientRect().width) : 0; })(),
+                };
+            }""")
+            check("четыре фазы в порядке спецификации",
+                  phases["names"] == ["Описание", "Промпт", "Генерация", "Кадр"],
+                  str(phases["names"]))
+            check("шаг сэмплера с номером прохода",
+                  phases["step"].startswith("Шаг ")
+                  and " · проход 1/2" in phases["step"], phases["step"])
+            check("пройденные фазы отмечены, текущая одна",
+                  phases["done"] >= 2 and phases["on"] == 1, str(phases))
+            check("цвет состояния несут точки фаз",
+                  rgb(tw.theme.DARK["--ok"]) in phases["dots"]
+                  and rgb(tw.theme.DARK["--accent-fill"]) in phases["dots"],
+                  str(phases["dots"]))
+            check("полоска шага видна", phases["bar"] > 0, str(phases["bar"]))
+            v2.screenshot(path=str(shots / "v2-running.png"), full_page=True)
+            wait_text(v2, "Готово", 60000)
+            control(comfy, delay=1)
+            v2.wait_for_timeout(400)
+            check("готовое задание закрывает все четыре фазы",
+                  v2.evaluate("() => document.querySelectorAll('.cp-phase--done').length") == 4)
+
+            print("\n13з) вкладки переключают панели и переживают перезагрузку")
+            v2.locator(".cp-tab").nth(2).click()
+            v2.wait_for_timeout(400)
+            panels = v2.evaluate("""() => [...document.querySelectorAll('.cp-panel')]
+                .filter(p => getComputedStyle(p).display !== 'none').map(p => p.innerText)""")
+            check("вкладка «Промпт» показывает ровно одну панель",
+                  len(panels) == 1, str(len(panels)))
+            frames = api_job(port, job_from_url(v2))["frames"]
+            check("промпт кадра — фактический, из паспорта",
+                  bool(frames) and frames[0]["positive"] in panels[0]
+                  and frames[0]["negative"] in panels[0], panels[0][:80])
+            check("выбрана ровно одна вкладка",
+                  v2.evaluate("() => document.querySelectorAll('.cp-tab--on').length") == 1)
+            v2.screenshot(path=str(shots / "v2-prompt.png"), full_page=True)
+            v2.reload()
+            v2.wait_for_function("() => document.querySelector('.cp-app') !== null",
+                                 timeout=20000)
+            wait_text(v2, "Готово", 20000)
+            v2.wait_for_timeout(600)
+            check("перезагрузка вернула вкладку «Промпт»",
+                  v2.evaluate("""() => [...document.querySelectorAll('.cp-tab')]
+                      .find(t => t.classList.contains('cp-tab--on'))
+                      .innerText.trim()""") == "Промпт")
+
+            print("\n13и) полоса кадров: выбор по имени файла, без пересборки")
+            v2.locator(".cp-tab").nth(0).click()
+            v2.wait_for_timeout(300)
+            v2.set_input_files('input[type="file"]', str(photo_a))
+            wait_v2_upload(v2)
+            fill_field(v2, "Вариантов", 2)
+            control(comfy, delay=3)
+            previous_job = job_from_url(v2)
+            v2.get_by_role("button", name="Старт").click()
+            v2.wait_for_function("old => location.search !== old", arg=previous_job,
+                                 timeout=20000)
+            # Новое задание начинается с пустой полосы: иначе «первой» окажется
+            # миниатюра прошлого задания, и метка уедет вместе с ней.
+            v2.wait_for_function(
+                "() => document.querySelectorAll('.cp-thumb').length === 0",
+                timeout=20000)
+            v2.wait_for_function(
+                "() => document.querySelectorAll('.cp-thumb').length >= 1", timeout=60000)
+            v2.evaluate("() => document.querySelector('.cp-thumb')"
+                        ".setAttribute('data-probe', 'kept')")
+            v2.locator(".cp-thumb").first.click()
+            v2.wait_for_timeout(300)
+            v2.wait_for_function(
+                "() => document.querySelectorAll('.cp-thumb').length >= 2", timeout=60000)
+            kept = v2.evaluate("""() => ({
+                probe: document.querySelectorAll('.cp-thumb')[0].getAttribute('data-probe'),
+                on: [...document.querySelectorAll('.cp-thumb')]
+                    .findIndex(t => t.classList.contains('cp-thumb--on')),
+                count: document.querySelectorAll('.cp-thumb').length,
+            })""")
+            check("новая миниатюра не пересобрала полосу",
+                  kept["probe"] == "kept" and kept["count"] == 2, str(kept))
+            check("выбор человека не сбит новым кадром", kept["on"] == 0, str(kept))
+            wait_text(v2, "Готово", 60000)
+            control(comfy, delay=1)
+            v2.wait_for_timeout(400)
+            frames = api_job(port, job_from_url(v2))["frames"]
+            check("в задании два кадра", len(frames) == 2, str(len(frames)))
+            big = v2.evaluate(
+                "() => document.querySelector('.cp-frame__img--on')"
+                "?.getAttribute('src') || ''")
+            check("большой кадр — выбранный", big.endswith(frames[0]["file"]), big)
+            v2.locator(".cp-thumb").nth(1).click()
+            v2.wait_for_timeout(400)
+            big = v2.evaluate(
+                "() => document.querySelector('.cp-frame__img--on')"
+                "?.getAttribute('src') || ''")
+            check("клик по миниатюре меняет кадр", big.endswith(frames[1]["file"]), big)
+            v2.screenshot(path=str(shots / "v2-strip.png"), full_page=True)
+            v2.reload()
+            v2.wait_for_function("() => document.querySelector('.cp-app') !== null",
+                                 timeout=20000)
+            wait_text(v2, "Готово", 20000)
+            v2.wait_for_timeout(800)
+            chosen = v2.evaluate("""() => ({
+                on: [...document.querySelectorAll('.cp-thumb')]
+                    .findIndex(t => t.classList.contains('cp-thumb--on')),
+                big: document.querySelector('.cp-frame__img--on')
+                    ?.getAttribute('src') || '',
+            })""")
+            check("выбранный кадр пережил перезагрузку",
+                  chosen["on"] == 1 and chosen["big"].endswith(frames[1]["file"]),
+                  str(chosen))
+
+            print("\n13и2) история читает паспорт кадра")
+            v2.locator(".cp-tab").nth(3).click()
+            v2.wait_for_timeout(900)
+            rows = v2.evaluate("""() => {
+                const table = document.querySelector('.cp-history .q-table');
+                if (!table) return [];
+                return [...table.querySelectorAll('tbody tr')]
+                    .map(r => r.innerText.replace(/\\s+/g, ' ').trim());
+            }""")
+            check("в истории строки паспорта, свежий кадр сверху",
+                  bool(rows) and frames[-1]["file"] in rows[0], str(rows[:2]))
+            check("история не из памяти страницы: паспорт копится по фото",
+                  len(rows) >= 2, str(len(rows)))
+            v2.screenshot(path=str(shots / "v2-history.png"), full_page=True)
+            v2.locator(".cp-tab").nth(0).click()
+            v2.wait_for_timeout(300)
+
+            print("\n13к) ошибка в одном месте, журнал в диалоге")
+            v2.set_input_files('input[type="file"]', str(photo_b))
+            wait_v2_upload(v2)
+            control(comfy, prompt_fail=True)
+            previous_job = job_from_url(v2)
+            v2.get_by_role("button", name="Старт").click()
+            v2.wait_for_function("old => location.search !== old", arg=previous_job,
+                                 timeout=20000)
+            v2.wait_for_function(
+                "() => { const e = document.querySelector('.cp-error');"
+                " return e && getComputedStyle(e).display !== 'none'; }", timeout=60000)
+            control(comfy, prompt_fail=False)
+            v2.wait_for_timeout(300)
+            err = v2.evaluate("""() => ({
+                zones: document.querySelectorAll('.cp-error').length,
+                title: document.querySelector('.cp-error__head').innerText,
+                text: document.querySelector('.cp-error__text').innerText,
+                wrap: getComputedStyle(document.querySelector('.cp-error__text')).whiteSpace,
+            })""")
+            job_error = (api_job(port, job_from_url(v2)).get("error") or "").strip()
+            check("зона ошибки одна на странице", err["zones"] == 1, str(err["zones"]))
+            check("ошибка видна целиком, без обрезки",
+                  bool(job_error) and err["text"].strip() == job_error
+                  and err["wrap"] == "pre-wrap", str(err))
+            check("в заголовке — фаза, где упало", "Генерация" in err["title"], err["title"])
+            v2.screenshot(path=str(shots / "v2-error.png"), full_page=True)
+            v2.get_by_role("button", name="Журнал").click()
+            v2.wait_for_timeout(600)
+            journal = v2.evaluate("""() => {
+                const log = document.querySelector('.cp-log');
+                return {open: !!log && log.getBoundingClientRect().width > 0,
+                        text: log ? log.innerText : ''};
+            }""")
+            check("журнал задания открылся в диалоге",
+                  journal["open"] and "промпт" in journal["text"].lower(),
+                  journal["text"][:80])
+            v2.screenshot(path=str(shots / "v2-journal.png"))
+            v2.keyboard.press("Escape")
+            v2.wait_for_timeout(400)
+
+            print("\n13л) узкий экран: требование 1280 вместо раскладки")
             # Плашки `ui.notify` висят несколько секунд и попадают в текст страницы.
             v2.wait_for_function(
                 "() => document.querySelectorAll('.q-notification').length === 0",

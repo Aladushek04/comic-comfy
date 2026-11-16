@@ -69,3 +69,9 @@ def short(value, limit=70):
     """Одна строка не длиннее limit: текст ошибки не должен рвать раскладку."""
     text = " ".join(str(value or "").split())
     return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def fmt_time(seconds):
+    """Секунды в «м:сс»: таймер и журнал считают одно и то же."""
+    seconds = int(max(0, float(seconds or 0)))
+    return f"{seconds // 60}:{seconds % 60:02d}"

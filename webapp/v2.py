@@ -11,18 +11,23 @@
 - номер задания живёт в адресе (`/v2?job=…`), поэтому новая вкладка не
   подхватывает чужую работу (грабли 0.14 №7).
 
-Сцена пока пустая: фазы, вкладки и кадр — следующие фазы, каждая добавит свой
-модуль в `webapp/components`.
+Сцена ничего не считает сама: фазы, шаг прохода, кадры, параметры, промпт и
+история приходят из `service.snapshot()` и `comic.run`. Страница только решает,
+какая запись выбрана и какая вкладка открыта; и то, и другое живёт в
+`app.storage.tab`, поэтому перезагрузка вкладки возвращает тот же кадр.
 """
 import asyncio
+from pathlib import Path
 
 import comfy_launch as cl
 import photo_prompt as pp
-from nicegui import Event, core, ui
+from nicegui import Event, app, core, ui
 
 from . import catalog, labels, push, theme
 from .collect import collect_form
-from .components import photo_slot, run_controls, start_action, style_picker, topbar
+from .components import (error_zone, frame_stage, frame_strip, history_panel,
+                        params_panel, phase_timeline, photo_slot, prompt_panel,
+                        run_controls, stage_tabs, start_action, style_picker, topbar)
 from .labels import STAGE_LABEL, short
 from .service import UploadError
 from .ui import service
@@ -30,6 +35,11 @@ from .ui import service
 # Состояния сервиса и состояния страницы — разные словари: «ошибка» сервиса
 # показывается как «failed», а «истёкшее задание» сервис вообще не знает.
 SERVICE_STATUS = {"error": "failed"}
+
+# Ключи выбора в `app.storage.tab`: вкладка и кадр переживают перезагрузку.
+TAB_KEY = "v2_tab"
+FRAME_KEY = "v2_frame"
+USER_KEY = "v2_user_frame"
 
 
 class V2Page:
@@ -48,6 +58,11 @@ class V2Page:
             "reason": "",
             "photo": False,
             "styles_ok": any(not s["problems"] for s in styles),
+            "samplers": [],
+            "samplers_wf": None,
+            "frames_job": None,
+            "selected": None,
+            "user_selected": False,
         }
         self.dark = None
         self.push_event = None
@@ -57,6 +72,14 @@ class V2Page:
         self.picker = None
         self.controls = None
         self.start = None
+        self.timeline = None
+        self.tabs = None
+        self.frame = None
+        self.strip = None
+        self.params = None
+        self.prompt = None
+        self.history = None
+        self.error = None
 
     # ------------------------------------------------------------ разметка
     def build(self, dark):
@@ -81,22 +104,25 @@ class V2Page:
                     # Своей прокрутки у рельса нет: список стилей не обрезается,
                     # прокручивается страница, а «Старт» липнет к низу окна.
                     self.photo = photo_slot.PhotoSlot(self.svc, self.on_photo).build()
-                    self.picker = style_picker.StylePicker(
-                        self.styles, self.on_style).build()
+                    self.picker = style_picker.StylePicker(self.styles, self.on_style).build()
                     self.controls = run_controls.RunControls().build()
                     self.start = start_action.StartAction(self.submit).build()
                 with ui.element("main") as stage:
                     theme.mark(stage, "stage")
-                    self.empty_stage()
+                    self.timeline = phase_timeline.PhaseTimeline().build()
+                    self.error = error_zone.ErrorZone().build()
+                    self.tabs = stage_tabs.StageTabs(self.on_tab).build()
+                    with self.tabs.panel("frame"):
+                        self.frame = frame_stage.FrameStage().build()
+                        self.strip = frame_strip.FrameStrip(self.select_frame).build()
+                    with self.tabs.panel("params"):
+                        self.params = params_panel.ParamsPanel().build()
+                    with self.tabs.panel("prompt"):
+                        self.prompt = prompt_panel.PromptPanel().build()
+                    with self.tabs.panel("history"):
+                        self.history = history_panel.HistoryPanel().build()
         self.watchdog = ui.timer(2.0, self.tick, active=False)
         self.sync()
-
-    def empty_stage(self):
-        """Сцена до появления кадра: рамка в высоту будущего кадра."""
-        with ui.element("section") as card:
-            theme.mark(card, "card")
-            theme.mark(ui.label("Кадр"), "title")
-            theme.mark(ui.label("Кадр появится здесь после «Старта»."), "stage-empty")
 
     # ------------------------------------------------------------ связь
     def subscribe(self):
@@ -120,8 +146,8 @@ class V2Page:
     def on_push(self, rev, job_id):
         """Патч задания: rev монотонен, разрыв значит «пропустил шаг — догоняй».
 
-        Догон здесь один и тот же путь — полный снапшот; поля патча появятся
-        вместе с PhaseTimeline, когда рисовать станет больше, чем состояние.
+        Догон здесь один и тот же путь — полный снапшот: полей в патче немного,
+        а рисовать по ним фазы, шаг и кадры пришлось бы вторым путём отрисовки.
         """
         if job_id == self.state["job_id"]:
             if rev and rev <= self.state["last_rev"]:
@@ -132,6 +158,7 @@ class V2Page:
     async def on_connect(self, client=None):
         self.subscribe()
         self.topbar.set_link(True)
+        self.restore_tab()
         self.sync()
         await self.refresh_health()
 
@@ -144,6 +171,44 @@ class V2Page:
         if self.push_event is not None:
             self.push_event.unsubscribe(self.on_push)
             self.push_event = None
+
+    # ------------------------------------------------------------ выбор вкладки и кадра
+    def tab_storage(self):
+        """Хранилище вкладки браузера; до подключения его ещё нет."""
+        try:
+            return app.storage.tab
+        except (RuntimeError, AssertionError):
+            return {}
+
+    def restore_tab(self):
+        """Перезагрузка вкладки возвращает ту же панель и тот же кадр."""
+        data = self.tab_storage()
+        name = data.get(TAB_KEY)
+        if name in stage_tabs.NAMES:
+            self.tabs.select(name, notify=False)
+        self.state["selected"] = data.get(FRAME_KEY) or None
+        self.state["user_selected"] = bool(data.get(USER_KEY))
+
+    def on_tab(self, name):
+        """Смена вкладки: запоминаем и, если надо, читаем паспорт кадра."""
+        self.tab_storage()[TAB_KEY] = name
+        if name == "history":
+            self.history.refresh(*self.history_key())
+
+    def history_key(self, snap=None):
+        """Папка кадра и число кадров задания: по ним видно, что паспорт изменился."""
+        snap = snap or self.state["snap"] or {}
+        frame = self.selected_frame(snap)
+        return (str((frame or {}).get("folder") or ""), len(snap.get("frames") or ()))
+
+    def select_frame(self, key):
+        """Выбор миниатюры: дальше автовыбор не перебивает выбор человека."""
+        self.state["selected"] = key
+        self.state["user_selected"] = True
+        data = self.tab_storage()
+        data[FRAME_KEY] = key
+        data[USER_KEY] = True
+        self.render_frames(self.state["snap"])
 
     # ------------------------------------------------------------ сервисы
     async def refresh_health(self):
@@ -240,6 +305,7 @@ class V2Page:
         self.start.update(status=status, queue=(snap or {}).get("queue") or 0,
                           detail=detail, styles=self.state["styles_ok"])
         self.topbar.set_queue(*self._queue(snap))
+        self.render(snap, status)
         active = bool(snap and snap["running"])
         if active != self.state["active"] and self.watchdog is not None:
             self.state["active"] = active
@@ -247,6 +313,61 @@ class V2Page:
                 self.watchdog.activate()
             else:
                 self.watchdog.deactivate()
+
+    def render(self, snap, status):
+        """Сцена: фазы, ошибка и кадры. Всё остальное — по выбору кадра."""
+        self.timeline.set(snap, status, self.samplers(snap))
+        self.error.set(snap, status)
+        self.render_frames(snap, status)
+
+    def render_frames(self, snap, status=None):
+        """Полоса и выбранный кадр. Выбор человека главнее автовыбора."""
+        snap = snap or {}
+        frames = snap.get("frames") or []
+        job_id = snap.get("id") or ""
+        if job_id != self.state["frames_job"]:
+            previous = self.state["frames_job"]
+            self.state["frames_job"] = job_id
+            self.strip.reset()
+            if previous:
+                # Другое задание: прежний выбор к нему не относится.
+                self.state["selected"] = None
+                self.state["user_selected"] = False
+        keys = [Path(str(f.get("file") or "")).name for f in frames]
+        if frames and not self.state["user_selected"]:
+            refined = [k for k, f in zip(keys, frames) if f.get("refined")]
+            self.state["selected"] = refined[-1] if refined else keys[0]
+        elif self.state["selected"] not in keys:
+            self.state["selected"] = keys[0] if keys else None
+        self.strip.set(frames, job_id, self.state["selected"])
+        frame = self.selected_frame(snap)
+        hint = labels.EXPIRED_HINT if status == "expired" else ""
+        self.frame.set(frame, job_id, hint)
+        self.params.set(frame, snap.get("request") or {})
+        self.prompt.set(frame)
+        if self.tabs.current == "history":
+            self.history.refresh(*self.history_key(snap))
+
+    def selected_frame(self, snap=None):
+        """Запись выбранного кадра по имени файла: номера в списке не годятся."""
+        frames = (snap or self.state["snap"] or {}).get("frames") or []
+        key = self.state["selected"]
+        for frame in frames:
+            if Path(str(frame.get("file") or "")).name == key:
+                return frame
+        return None
+
+    def samplers(self, snap):
+        """Узлы-сэмплеры сборки задания: шаг без них не отличить от препроцессора."""
+        workflow = ((snap or {}).get("request") or {}).get("workflow") or ""
+        if workflow != self.state["samplers_wf"]:
+            self.state["samplers_wf"] = workflow
+            try:
+                meta = catalog.load_meta(workflow) if workflow else {}
+            except catalog.CatalogError:
+                meta = {}
+            self.state["samplers"] = [str(x) for x in (meta.get("samplers") or [])]
+        return self.state["samplers"]
 
     @staticmethod
     def _queue(snap):

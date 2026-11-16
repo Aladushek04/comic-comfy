@@ -927,8 +927,13 @@ COMPONENTS = """
 }
 
 .cp-history .q-table__bottom {
+  background: transparent;
   color: var(--ink-2);
   font-size: var(--cp-fs-1);
+}
+
+.cp-history .q-table__middle {
+  background: transparent;
 }
 
 /* ПК только: ниже 1280 страница не перестраивается, а показывает требование.
