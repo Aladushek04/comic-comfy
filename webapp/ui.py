@@ -1006,6 +1006,11 @@ def register_page():
         styles = catalog.style_list()
         ComicPage(styles).build()
 
+    # Второй интерфейс рядом со старым: своя страница, тот же сервис заданий.
+    # Импорт внутри функции — чтобы v2 мог взять `service()` из этого модуля.
+    from .v2 import register_page as register_v2
+    register_v2()
+
 
 def start(host="127.0.0.1", port=8080, show=True, reload=False):
     register_routes()

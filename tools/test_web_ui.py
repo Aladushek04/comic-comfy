@@ -162,6 +162,30 @@ def http_ok(url):
         return False
 
 
+def fetch(url):
+    """Статус и текст страницы: /v2 проверяется и без браузера."""
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except Exception as e:
+        return 0, str(e)
+
+
+def rgb(hex_value):
+    """#7c3aed → rgb(124, 58, 237): так браузер отдаёт вычисленный цвет."""
+    h = hex_value.lstrip("#")
+    return "rgb(%d, %d, %d)" % (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def wait_v2_upload(page, timeout=20000):
+    """Загрузка на /v2: рамка скрыта, превью с картинкой на месте."""
+    page.wait_for_function(
+        "() => { const i = Array.from(document.querySelectorAll('img'))"
+        ".find(x => (x.getAttribute('src') || '').includes('/media/upload/'));"
+        " return !!i && i.naturalWidth > 0; }", timeout=timeout)
+    page.wait_for_timeout(300)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots", help="куда складывать скриншоты")
@@ -468,6 +492,201 @@ def main():
             check("истёкшее задание объясняет себя",
                   "Задание не запущено" not in body(page3))
             page3.close()
+
+            print("\n13) страница /v2 рядом со старой")
+            status, html = fetch(f"http://127.0.0.1:{port}/v2")
+            check("/v2 отдаёт 200", status == 200, str(status))
+            names = [s["label"] for s in tw.catalog.style_list()]
+            check("в HTML есть названия стилей из каталога",
+                  bool(names) and all(n in html for n in names),
+                  str([n for n in names if n not in html]))
+            check("в HTML есть требование 1280",
+                  "Нужен экран от 1280 px" in html)
+            check("старая страница на / по-прежнему жива", "comic-comfy" in fetch(
+                f"http://127.0.0.1:{port}/")[1])
+
+            v2 = ctx.new_page()
+            v2.set_viewport_size({"width": 1440, "height": 900})
+            v2.goto(f"http://127.0.0.1:{port}/v2")
+            v2.wait_for_function(
+                "() => !document.body.innerText.includes('проверяю')", timeout=30000)
+
+            print("\n13а) оба токена темы и один акцент")
+            dark = v2.evaluate("""() => ({
+                dark: document.body.classList.contains('body--dark'),
+                app: getComputedStyle(document.querySelector('.cp-app')).backgroundColor,
+                ink: getComputedStyle(document.querySelector('.cp-app')).color,
+                card: getComputedStyle(document.querySelector('.cp-card')).backgroundColor,
+                start: getComputedStyle(document.querySelector('.cp-btn--fill')).backgroundColor,
+                mono: getComputedStyle(document.querySelector('.cp-num')).fontVariantNumeric,
+                field: getComputedStyle(
+                    document.querySelector('.cp-app .q-field__control'), ':before').borderColor,
+            })""")
+            check("тёмная тема: фон, текст и поверхность из токенов",
+                  dark["dark"] is True
+                  and dark["app"] == rgb(tw.theme.DARK["--bg"])
+                  and dark["ink"] == rgb(tw.theme.DARK["--ink"])
+                  and dark["card"] == rgb(tw.theme.DARK["--surface"]), str(dark))
+            check("рамка поля ввода из токена --line",
+                  dark["field"] == rgb(tw.theme.DARK["--line"]), dark["field"])
+            check("кнопка Старт — акцентная заливка",
+                  dark["start"] == rgb(tw.theme.DARK["--accent-fill"]), dark["start"])
+            check("числа моноширинные и табличные",
+                  "tabular-nums" in (dark["mono"] or ""), dark["mono"])
+            v2.locator(".cp-icon").click()
+            v2.wait_for_function(
+                "() => !document.body.classList.contains('body--dark')", timeout=10000)
+            # Рамка поля перекрашивается переходом Quasar, поэтому ждём конечное
+            # значение, а не «прошло 300 мс».
+            v2.wait_for_function(
+                "line => getComputedStyle(document.querySelector("
+                "'.cp-app .q-field__control'), ':before').borderColor === line",
+                arg=rgb(tw.theme.LIGHT["--line"]), timeout=5000)
+            light = v2.evaluate("""() => ({
+                app: getComputedStyle(document.querySelector('.cp-app')).backgroundColor,
+                card: getComputedStyle(document.querySelector('.cp-card')).backgroundColor,
+                start: getComputedStyle(document.querySelector('.cp-btn--fill')).backgroundColor,
+                field: getComputedStyle(
+                    document.querySelector('.cp-app .q-field__control'), ':before').borderColor,
+            })""")
+            check("светлая тема: те же блоки из токенов",
+                  light["app"] == rgb(tw.theme.LIGHT["--bg"])
+                  and light["card"] == rgb(tw.theme.LIGHT["--surface"])
+                  and light["start"] == rgb(tw.theme.LIGHT["--accent-fill"])
+                  and light["field"] == rgb(tw.theme.LIGHT["--line"]), str(light))
+            v2.reload()
+            v2.wait_for_function(
+                "() => document.querySelector('.cp-app') !== null", timeout=20000)
+            v2.wait_for_timeout(400)
+            check("выбор темы пережил перезагрузку вкладки",
+                  v2.evaluate(
+                      "() => !document.body.classList.contains('body--dark')"))
+            v2.locator(".cp-icon").click()
+            v2.wait_for_function(
+                "() => document.body.classList.contains('body--dark')", timeout=10000)
+
+            print("\n13б) стиль выбирается списком, вес виден")
+            styles = v2.evaluate("""() => {
+                const rows = Array.from(document.querySelectorAll('.cp-style'));
+                return {
+                    count: rows.length,
+                    weights: rows.map(r => r.querySelector('.cp-style__weight').innerText),
+                    pressed: rows.map(r => r.getAttribute('aria-pressed')),
+                    weightColor: getComputedStyle(
+                        document.querySelector('.cp-style--on .cp-style__weight')).color,
+                    select: document.querySelectorAll('.cp-select, select').length,
+                };
+            }""")
+            check("список, а не выпадающий список",
+                  styles["count"] == len(names) and styles["select"] == 0,
+                  str(styles))
+            check("вес LoRA справа у каждого стиля",
+                  styles["weights"] == ["0.6", "0.9", "0.9", "0.9", "0.85"],
+                  str(styles["weights"]))
+            check("выбран ровно один, и он помечен",
+                  styles["pressed"].count("true") == 1
+                  and styles["weightColor"] == rgb(tw.theme.DARK["--accent"]),
+                  str(styles["pressed"]))
+            v2.locator(".cp-style").nth(4).click()
+            v2.wait_for_timeout(400)
+            chosen = v2.evaluate("""() => {
+                const row = document.querySelector('.cp-style--on');
+                return {text: row.innerText, pressed: row.getAttribute('aria-pressed')};
+            }""")
+            check("клик по стилю выделяет его",
+                  chosen["pressed"] == "true" and "GTA" in chosen["text"], str(chosen))
+
+            print("\n13в) Старт в поле зрения при прокрутке кадра")
+            sticky = v2.evaluate("""() => {
+                const rail = document.querySelector('.cp-rail');
+                const scroll = document.querySelector('.cp-rail__scroll');
+                const start = document.querySelector('.cp-start');
+                const box = start.getBoundingClientRect();
+                return {rail: getComputedStyle(rail).position,
+                        width: Math.round(rail.getBoundingClientRect().width),
+                        overflow: scroll.scrollHeight - scroll.clientHeight,
+                        bottom: Math.round(box.bottom),
+                        top: Math.round(box.top),
+                        inner: window.innerHeight,
+                        pageScroll: document.documentElement.scrollHeight - window.innerHeight};
+            }""")
+            check("рельс липкий, Старт — его нижняя карточка",
+                  sticky["rail"] == "sticky"
+                  and sticky["top"] >= 0 and sticky["bottom"] <= sticky["inner"],
+                  str(sticky))
+            check("рельс 400 px до 1600", sticky["width"] == 400, str(sticky["width"]))
+            v2.set_viewport_size({"width": 1600, "height": 900})
+            v2.wait_for_timeout(400)
+            wide = v2.evaluate("() => Math.round("
+                               "document.querySelector('.cp-rail').getBoundingClientRect().width)")
+            check("рельс 420 px после 1600", wide == 420, str(wide))
+            v2.set_viewport_size({"width": 1440, "height": 900})
+            v2.wait_for_timeout(400)
+            v2.evaluate("""() => {
+                const scroll = document.querySelector('.cp-rail__scroll');
+                scroll.scrollTop = scroll.scrollHeight;
+            }""")
+            v2.wait_for_timeout(300)
+            after = v2.evaluate("""() => {
+                const b = document.querySelector('.cp-start').getBoundingClientRect();
+                return {top: Math.round(b.top), bottom: Math.round(b.bottom),
+                        inner: window.innerHeight};
+            }""")
+            check("после прокрутки Старт на месте",
+                  after["top"] >= 0 and after["bottom"] <= after["inner"], str(after))
+            v2.screenshot(path=str(shots / "v2-dark.png"), full_page=True)
+
+            print("\n13г) проверка сервисов не стирает ввод")
+            scene = v2.locator(".cp-card .q-field input").first
+            scene.fill("тестовая сцена v2")
+            v2.get_by_role("button", name="Проверить сервисы").click()
+            v2.wait_for_function(
+                "() => !document.body.innerText.includes('проверяю')", timeout=30000)
+            check("сцена на месте после health-check",
+                  scene.input_value() == "тестовая сцена v2", scene.input_value())
+
+            print("\n13д) задание V2: старт, адрес и перезагрузка")
+            v2.set_input_files('input[type="file"]', str(photo_a))
+            wait_v2_upload(v2)
+            caption = v2.locator(".cp-frame").locator("..").inner_text()
+            check("размер фото из заголовка", "588×860" in caption or "×" in caption,
+                  caption[:80])
+            v2.get_by_role("button", name="Старт").click()
+            wait_text(v2, "Готово", 60000)
+            job_v2 = v2.evaluate("() => location.search")
+            check("номер задания в адресе /v2",
+                  job_v2.startswith("?job=") and len(job_v2) == 15, job_v2)
+            check("очередь снова свободна", "очередь: свободна" in body(v2))
+            v2.reload()
+            v2.wait_for_function("() => document.querySelector('.cp-app') !== null",
+                                 timeout=20000)
+            wait_text(v2, "Готово", 20000)
+            check("перезагрузка вкладки вернула то же задание",
+                  v2.evaluate("() => location.search") == job_v2
+                  and "Задание не запущено" not in body(v2))
+            v2.screenshot(path=str(shots / "v2-done.png"), full_page=True)
+
+            print("\n13е) узкий экран: требование 1280 вместо раскладки")
+            v2.set_viewport_size({"width": 1279, "height": 800})
+            v2.wait_for_timeout(500)
+            narrow = v2.evaluate("""() => ({
+                app: getComputedStyle(document.querySelector('.cp-app')).display,
+                note: getComputedStyle(document.querySelector('.cp-narrow')).display,
+                text: document.body.innerText.trim(),
+                scroll: document.documentElement.scrollWidth,
+                inner: window.innerWidth,
+            })""")
+            check("на 1279 видно только требование",
+                  narrow["app"] == "none" and narrow["note"] == "flex"
+                  and narrow["text"] == "Нужен экран от 1280 px"
+                  and narrow["scroll"] <= narrow["inner"], str(narrow))
+            v2.set_viewport_size({"width": 1280, "height": 800})
+            v2.wait_for_timeout(500)
+            check("на 1280 раскладка возвращается",
+                  v2.evaluate("() => getComputedStyle("
+                              "document.querySelector('.cp-app')).display") != "none")
+            v2.screenshot(path=str(shots / "v2-narrow.png"))
+            v2.close()
             browser.close()
 
         print(f"\nскриншоты: {shots}")
