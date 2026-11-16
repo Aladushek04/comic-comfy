@@ -81,7 +81,9 @@ class StartAction:
         comfy = bool(self.state["comfy"] or self.state["launchable"])
         self.start_button.set_enabled(has_photo and has_style and comfy)
         self.describe_button.set_enabled(has_photo and has_style)
-        self.note.set_text(self._note(has_photo, has_style, comfy))
+        note = self._note(has_photo, has_style, comfy)
+        self.note.set_text(note)
+        self.note.set_visibility(bool(note))
 
     def _note(self, has_photo, has_style, comfy):
         if not has_style:

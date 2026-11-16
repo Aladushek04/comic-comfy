@@ -78,12 +78,12 @@ class V2Page:
                 theme.mark(layout, "layout")
                 with ui.element("aside") as rail:
                     theme.mark(rail, "rail")
-                    with ui.element("div") as scroll:
-                        theme.mark(scroll, "rail-scroll")
-                        self.photo = photo_slot.PhotoSlot(self.svc, self.on_photo).build()
-                        self.picker = style_picker.StylePicker(
-                            self.styles, self.on_style).build()
-                        self.controls = run_controls.RunControls().build()
+                    # Своей прокрутки у рельса нет: список стилей не обрезается,
+                    # прокручивается страница, а «Старт» липнет к низу окна.
+                    self.photo = photo_slot.PhotoSlot(self.svc, self.on_photo).build()
+                    self.picker = style_picker.StylePicker(
+                        self.styles, self.on_style).build()
+                    self.controls = run_controls.RunControls().build()
                     self.start = start_action.StartAction(self.submit).build()
                 with ui.element("main") as stage:
                     theme.mark(stage, "stage")

@@ -128,15 +128,20 @@ CLASSES = {
     "badge-ok": "cp-badge--ok",
     "badge-warn": "cp-badge--warn",
     "badge-err": "cp-badge--err",
+    "badge-text": "cp-badge__text",
+    "dot": "cp-dot",
     "icon": "cp-icon",
     "layout": "cp-layout",
     "rail": "cp-rail",
-    "rail-scroll": "cp-rail__scroll",
     "stage": "cp-stage",
     "card": "cp-card",
     "title": "cp-title",
     "meta": "cp-meta",
     "num": "cp-num",
+    "row": "cp-row",
+    "link": "cp-link",
+    "links": "cp-links",
+    "empty": "cp-empty",
     "drop": "cp-drop",
     "drop-title": "cp-drop-title",
     "upload": "cp-upload",
@@ -156,6 +161,40 @@ CLASSES = {
     "warn": "cp-warn",
     "err": "cp-err",
     "stage-empty": "cp-stage__empty",
+    "phases": "cp-phases",
+    "phase-head": "cp-phase__head",
+    "phase-row": "cp-phase__row",
+    "phase": "cp-phase",
+    "phase-name": "cp-phase__name",
+    "phase-done": "cp-phase--done",
+    "phase-on": "cp-phase--on",
+    "phase-warn": "cp-phase--warn",
+    "phase-err": "cp-phase--err",
+    "step": "cp-step",
+    "step-bar": "cp-step__bar",
+    "tabs": "cp-tabs",
+    "tab": "cp-tab",
+    "tab-on": "cp-tab--on",
+    "panels": "cp-panels",
+    "panel": "cp-panel",
+    "frame-box": "cp-frame__box",
+    "frame-img": "cp-frame__img",
+    "frame-img-on": "cp-frame__img--on",
+    "strip": "cp-strip",
+    "thumb": "cp-thumb",
+    "thumb-on": "cp-thumb--on",
+    "error": "cp-error",
+    "error-head": "cp-error__head",
+    "error-text": "cp-error__text",
+    "kv": "cp-kv",
+    "kv-row": "cp-kv__row",
+    "kv-key": "cp-kv__key",
+    "kv-value": "cp-kv__value",
+    "prompt": "cp-prompt",
+    "prompt-label": "cp-prompt__label",
+    "prompt-text": "cp-prompt__text",
+    "history": "cp-history",
+    "log": "cp-log",
 }
 
 
@@ -244,7 +283,7 @@ COMPONENTS = """
 .cp-badge {
   display: inline-flex;
   align-items: center;
-  gap: var(--cp-sp-1);
+  gap: var(--cp-sp-2);
   min-height: var(--cp-sp-6);
   padding: 0 var(--cp-sp-3);
   border: 1px solid var(--line);
@@ -255,19 +294,31 @@ COMPONENTS = """
   white-space: nowrap;
 }
 
-.cp-badge--ok {
-  color: var(--ok);
-  border-color: var(--ok);
+.cp-badge__text {
+  color: inherit;
+  font-size: inherit;
 }
 
-.cp-badge--warn {
-  color: var(--warn);
-  border-color: var(--warn);
+/* Цвет несёт только точка: пилюля остаётся нейтральной в обеих темах, иначе
+   зелёная рамка читается как «нажатая кнопка», а не как состояние. */
+.cp-dot {
+  flex: 0 0 auto;
+  width: var(--cp-sp-2);
+  height: var(--cp-sp-2);
+  border-radius: var(--cp-radius-full);
+  background: var(--ink-2);
 }
 
-.cp-badge--err {
-  color: var(--err);
-  border-color: var(--err);
+.cp-badge--ok .cp-dot {
+  background: var(--ok);
+}
+
+.cp-badge--warn .cp-dot {
+  background: var(--warn);
+}
+
+.cp-badge--err .cp-dot {
+  background: var(--err);
 }
 
 .cp-icon {
@@ -286,28 +337,18 @@ COMPONENTS = """
   padding: var(--cp-gutter);
   max-width: 1800px;
   margin: 0 auto;
-  align-items: start;
+  /* Рельс тянется на высоту сцены: «Старт» липнет к низу окна, пока видна
+     сцена, а не только пока виден сам рельс. */
+  align-items: stretch;
 }
 
+/* Своей прокрутки у рельса нет: список стилей не обрезается, прокручивается
+   страница целиком. Поэтому здесь нет ни max-height, ни overflow. */
 .cp-rail {
   display: flex;
   flex-direction: column;
   gap: var(--cp-gutter);
-  position: sticky;
-  top: calc(var(--cp-topbar) + var(--cp-gutter));
-  max-height: calc(100vh - var(--cp-topbar) - var(--cp-gutter) * 2);
-}
-
-/* Прокручивается только содержимое рельса: «Старт» — сосед, а не накладка,
-   иначе липкая карточка закрывала бы список стилей. */
-.cp-rail__scroll {
-  display: flex;
-  flex: 0 1 auto;
-  flex-direction: column;
-  gap: var(--cp-gutter);
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: var(--cp-sp-1);
+  min-width: 0;
 }
 
 .cp-stage {
@@ -497,6 +538,12 @@ COMPONENTS = """
   flex-direction: column;
   gap: var(--cp-sp-2);
   width: 100%;
+  /* Липнет к низу окна, пока сцена прокручивается. Поверхность непрозрачная:
+     иначе карточки стилей и фото просвечивали бы сквозь кнопки. */
+  position: sticky;
+  bottom: var(--cp-gutter);
+  z-index: 5;
+  margin-top: auto;
   padding: var(--cp-card-pad);
   background: var(--surface);
   border: 1px solid var(--line);
@@ -555,6 +602,333 @@ COMPONENTS = """
   color: var(--ink-2);
   font-size: var(--cp-fs-2);
   text-align: center;
+}
+
+.cp-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--cp-sp-3);
+  flex-wrap: wrap;
+}
+
+.cp-link {
+  color: var(--accent);
+  font-size: var(--cp-fs-2);
+  text-decoration: none;
+}
+
+.cp-link:hover {
+  text-decoration: underline;
+}
+
+.cp-links {
+  display: flex;
+  align-items: baseline;
+  gap: var(--cp-sp-3);
+}
+
+.cp-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--cp-drop);
+  padding: var(--cp-sp-4);
+  border: 1px dashed var(--line);
+  border-radius: var(--cp-radius);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: var(--cp-fs-2);
+  text-align: center;
+}
+
+/* ------------------------------------------------------------- фазы */
+.cp-phases {
+  gap: var(--cp-sp-2);
+}
+
+.cp-phase__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--cp-sp-3);
+  flex-wrap: wrap;
+}
+
+.cp-phase__row {
+  display: flex;
+  gap: var(--cp-sp-2);
+}
+
+.cp-phase {
+  display: flex;
+  align-items: center;
+  gap: var(--cp-sp-2);
+  flex: 1 1 0;
+  min-width: 0;
+  padding: var(--cp-sp-1) var(--cp-sp-2);
+  border: 1px solid var(--line);
+  border-radius: var(--cp-radius-sm);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--cp-fs-1);
+}
+
+.cp-phase__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cp-phase--done {
+  color: var(--ink);
+}
+
+.cp-phase--done .cp-dot {
+  background: var(--ok);
+}
+
+.cp-phase--on {
+  border-color: var(--accent-fill);
+  color: var(--accent);
+}
+
+.cp-phase--on .cp-dot {
+  background: var(--accent-fill);
+}
+
+.cp-phase--warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.cp-phase--warn .cp-dot {
+  background: var(--warn);
+}
+
+.cp-phase--err {
+  border-color: var(--err);
+  color: var(--err);
+}
+
+.cp-phase--err .cp-dot {
+  background: var(--err);
+}
+
+.cp-step {
+  color: var(--ink-2);
+}
+
+.cp-step__bar {
+  height: var(--cp-sp-1);
+  border-radius: var(--cp-radius-full);
+  background: var(--surface-2);
+}
+
+/* ------------------------------------------------------------- вкладки */
+.cp-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: var(--cp-sp-1);
+  height: var(--cp-tabs);
+  border-bottom: 1px solid var(--line);
+}
+
+.cp-tab {
+  display: inline-flex;
+  align-items: center;
+  height: var(--cp-tabs);
+  padding: 0 var(--cp-sp-3);
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: var(--cp-fs-2);
+  text-transform: none;
+  cursor: pointer;
+}
+
+.cp-tab:hover {
+  color: var(--ink);
+}
+
+.cp-tab--on {
+  border-bottom-color: var(--accent-fill);
+  color: var(--accent);
+}
+
+.cp-panels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cp-gutter);
+}
+
+.cp-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cp-sp-3);
+}
+
+/* ------------------------------------------------------------- кадр */
+.cp-frame__box {
+  position: relative;
+  height: var(--cp-frame);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--cp-radius);
+  background: var(--surface-2);
+}
+
+/* Два <img> друг над другом: новый кадр проявляется поверх прежнего, поэтому
+   при выборе миниатюры картинка не мигает пустым местом. */
+.cp-frame__img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity 160ms linear;
+}
+
+.cp-frame__img--on {
+  opacity: 1;
+}
+
+.cp-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--cp-sp-2);
+  flex-wrap: wrap;
+  min-height: var(--cp-strip);
+}
+
+.cp-thumb {
+  width: var(--cp-strip);
+  height: var(--cp-strip);
+  border: 1px solid var(--line);
+  border-radius: var(--cp-radius-sm);
+  background: var(--surface-2);
+  object-fit: cover;
+  cursor: pointer;
+}
+
+.cp-thumb--on {
+  border-color: var(--accent-fill);
+  outline: 1px solid var(--accent-fill);
+}
+
+/* ------------------------------------------------------------- ошибка */
+.cp-error {
+  gap: var(--cp-sp-2);
+  border-color: var(--err);
+}
+
+.cp-error__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cp-sp-3);
+  flex-wrap: wrap;
+}
+
+.cp-error__text {
+  color: var(--ink);
+  font-size: var(--cp-fs-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cp-log {
+  width: min(720px, 80vw);
+  height: 320px;
+  padding: var(--cp-sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--cp-radius-sm);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-family: var(--cp-font-mono);
+  font-size: var(--cp-fs-1);
+}
+
+/* ------------------------------------------------------------- параметры */
+.cp-kv {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cp-sp-1);
+}
+
+.cp-kv__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--cp-sp-3);
+  font-size: var(--cp-fs-2);
+}
+
+.cp-kv__key {
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.cp-kv__value {
+  color: var(--ink);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------- промпт */
+.cp-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cp-sp-2);
+}
+
+.cp-prompt__label {
+  color: var(--ink-2);
+  font-size: var(--cp-fs-1);
+  text-transform: uppercase;
+}
+
+.cp-prompt__text {
+  padding: var(--cp-sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--cp-radius-sm);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: var(--cp-fs-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------- история */
+.cp-history {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cp-sp-2);
+}
+
+.cp-history .q-table__container {
+  background: transparent;
+  box-shadow: none;
+  color: var(--ink);
+}
+
+.cp-history .q-table thead tr {
+  background: var(--surface-2);
+}
+
+.cp-history .q-table th,
+.cp-history .q-table td {
+  color: var(--ink);
+  font-size: var(--cp-fs-1);
+  border-color: var(--line);
+}
+
+.cp-history .q-table__bottom {
+  color: var(--ink-2);
+  font-size: var(--cp-fs-1);
 }
 
 /* ПК только: ниже 1280 страница не перестраивается, а показывает требование.

@@ -1768,6 +1768,50 @@ def test_push_from_job():
         svc.shutdown()
 
 
+def test_rail_and_badges():
+    print("\n33) рельс без вложенной прокрутки, бейдж с точкой")
+    css = theme.css()
+    rail = _rule(css, ".cp-rail")
+    check("у рельса нет своей прокрутки и липкости",
+          "overflow" not in rail and "max-height" not in rail
+          and "position" not in rail, rail)
+    check("внутреннего контейнера прокрутки больше нет",
+          ".cp-rail__scroll" not in css and "rail-scroll" not in theme.CLASSES
+          and "rail-scroll" not in (V2 / "v2.py").read_text(encoding="utf-8"))
+    check("рельс тянется на высоту сцены",
+          "align-items: stretch" in _rule(css, ".cp-layout"),
+          _rule(css, ".cp-layout"))
+    start = _rule(css, ".cp-start")
+    check("Старт липнет к низу окна на непрозрачной поверхности",
+          "position: sticky" in start and "bottom: var(--cp-gutter)" in start
+          and "background: var(--surface)" in start, start)
+    badge = _rule(css, ".cp-badge")
+    check("бейдж — нейтральная пилюля",
+          "border: 1px solid var(--line)" in badge
+          and "background: var(--surface-2)" in badge
+          and "color: var(--ink-2)" in badge, badge)
+    check("цвет состояния несёт только точка",
+          _rule(css, ".cp-badge--ok") == "" and _rule(css, ".cp-badge--warn") == ""
+          and _rule(css, ".cp-badge--err") == ""
+          and "background: var(--ok)" in _rule(css, ".cp-badge--ok .cp-dot")
+          and "background: var(--warn)" in _rule(css, ".cp-badge--warn .cp-dot")
+          and "background: var(--err)" in _rule(css, ".cp-badge--err .cp-dot"),
+          _rule(css, ".cp-badge--ok"))
+    topbar_src = (V2 / "components" / "topbar.py").read_text(encoding="utf-8")
+    check("в разметке бейджа есть точка",
+          'theme.mark(ui.element("span"), "dot")' in topbar_src
+          and 'theme.mark(label, "badge-text")' in topbar_src)
+
+
+def _rule(css, selector):
+    """Тело правила по селектору: `{...}` без вложенных блоков."""
+    head = f"{selector} {{"
+    start = css.find(head)
+    if start < 0:
+        return ""
+    return css[start + len(head): css.find("}", start)]
+
+
 
 def main():
     try:
@@ -1805,6 +1849,7 @@ def main():
         test_collect_form()
         test_labels_same_as_old_page()
         test_push_from_job()
+        test_rail_and_badges()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

@@ -596,25 +596,28 @@ def main():
             check("клик по стилю выделяет его",
                   chosen["pressed"] == "true" and "GTA" in chosen["text"], str(chosen))
 
-            print("\n13в) Старт в поле зрения при прокрутке кадра")
-            sticky = v2.evaluate("""() => {
+            print("\n13в) рельс прокручивается страницей, Старт липкий")
+            rail = v2.evaluate("""() => {
                 const rail = document.querySelector('.cp-rail');
-                const scroll = document.querySelector('.cp-rail__scroll');
                 const start = document.querySelector('.cp-start');
-                const box = start.getBoundingClientRect();
-                return {rail: getComputedStyle(rail).position,
-                        width: Math.round(rail.getBoundingClientRect().width),
-                        overflow: scroll.scrollHeight - scroll.clientHeight,
-                        bottom: Math.round(box.bottom),
-                        top: Math.round(box.top),
-                        inner: window.innerHeight,
-                        pageScroll: document.documentElement.scrollHeight - window.innerHeight};
+                const cs = getComputedStyle(rail);
+                const ss = getComputedStyle(start);
+                return {overflow: cs.overflowY, maxHeight: cs.maxHeight,
+                        position: cs.position,
+                        inner: document.querySelector('.cp-rail__scroll') !== null,
+                        start: ss.position, bottom: ss.bottom,
+                        background: ss.backgroundColor,
+                        page: document.documentElement.scrollHeight - window.innerHeight,
+                        width: Math.round(rail.getBoundingClientRect().width)};
             }""")
-            check("рельс липкий, Старт — его нижняя карточка",
-                  sticky["rail"] == "sticky"
-                  and sticky["top"] >= 0 and sticky["bottom"] <= sticky["inner"],
-                  str(sticky))
-            check("рельс 400 px до 1600", sticky["width"] == 400, str(sticky["width"]))
+            check("у рельса нет собственной прокрутки",
+                  rail["overflow"] in ("visible", "clip") and rail["inner"] is False
+                  and rail["position"] == "static" and rail["maxHeight"] == "none",
+                  str(rail))
+            check("Старт липнет к низу окна на непрозрачной поверхности",
+                  rail["start"] == "sticky" and rail["bottom"] == "16px"
+                  and rail["background"] == rgb(tw.theme.DARK["--surface"]), str(rail))
+            check("рельс 400 px до 1600", rail["width"] == 400, str(rail["width"]))
             v2.set_viewport_size({"width": 1600, "height": 900})
             v2.wait_for_timeout(400)
             wide = v2.evaluate("() => Math.round("
@@ -622,18 +625,26 @@ def main():
             check("рельс 420 px после 1600", wide == 420, str(wide))
             v2.set_viewport_size({"width": 1440, "height": 900})
             v2.wait_for_timeout(400)
-            v2.evaluate("""() => {
-                const scroll = document.querySelector('.cp-rail__scroll');
-                scroll.scrollTop = scroll.scrollHeight;
-            }""")
+            check("список стилей целиком в рельсе, без обрезки",
+                  v2.evaluate("""() => {
+                      const rows = document.querySelectorAll('.cp-style');
+                      const rail = document.querySelector('.cp-rail');
+                      return rows.length === 5
+                          && rail.scrollHeight <= rail.clientHeight + 1;
+                  }"""))
+            v2.evaluate("() => window.scrollTo(0, 400)")
             v2.wait_for_timeout(300)
-            after = v2.evaluate("""() => {
+            box = v2.evaluate("""() => {
                 const b = document.querySelector('.cp-start').getBoundingClientRect();
                 return {top: Math.round(b.top), bottom: Math.round(b.bottom),
-                        inner: window.innerHeight};
+                        inner: window.innerHeight,
+                        scroll: Math.round(window.scrollY)};
             }""")
-            check("после прокрутки Старт на месте",
-                  after["top"] >= 0 and after["bottom"] <= after["inner"], str(after))
+            check("после прокрутки страницы Старт на месте",
+                  box["scroll"] > 0 and box["top"] >= 0 and box["bottom"] <= box["inner"],
+                  str(box))
+            v2.evaluate("() => window.scrollTo(0, 0)")
+            v2.wait_for_timeout(200)
             v2.screenshot(path=str(shots / "v2-dark.png"), full_page=True)
 
             print("\n13г) проверка сервисов не стирает ввод")
@@ -667,6 +678,10 @@ def main():
             v2.screenshot(path=str(shots / "v2-done.png"), full_page=True)
 
             print("\n13е) узкий экран: требование 1280 вместо раскладки")
+            # Плашки `ui.notify` висят несколько секунд и попадают в текст страницы.
+            v2.wait_for_function(
+                "() => document.querySelectorAll('.q-notification').length === 0",
+                timeout=20000)
             v2.set_viewport_size({"width": 1279, "height": 800})
             v2.wait_for_timeout(500)
             narrow = v2.evaluate("""() => ({
