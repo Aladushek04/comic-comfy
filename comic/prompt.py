@@ -49,6 +49,10 @@ NEG_CORE = ("photorealistic, 3d render, bad anatomy, bad hands, extra fingers, "
 SKIN_TONES = ("dark skin", "brown skin", "ebony", "tan skin", "olive skin",
               "pale skin", "fair skin", "light skin")
 
+# Цвета радужки, которые VLM называет по закрытым глазам (AGENTS 0.18).
+EYE_COLOURS = ("blue eyes", "green eyes", "brown eyes", "hazel eyes", "grey eyes",
+               "gray eyes", "amber eyes", "red eyes", "violet eyes", "black eyes")
+
 
 def names_skin(text):
     """Субъект уже называет тон кожи: `dark skin`, `ebony`, `pale skin` и т. п."""
@@ -64,6 +68,19 @@ def names_skin(text):
                 r"(?<![a-z])" + re.escape(words[0]) + r"[\s\-]+skinned(?![a-z])", low):
             return True
     return False
+
+
+def drop_eye_colour(subject):
+    """Убирает цвет радужки из субъекта: по закрытым глазам его не видно.
+
+    VLM на фото с закрытыми глазами всё равно называет цвет (на деле сказал
+    `green eyes` по опущенным векам), а база потом рисует выдуманный цвет.
+    Список цветов закрытый: `EYE_COLOURS`, иначе `eye makeup` и `eye contact`
+    попали бы под нож.
+    """
+    parts = [p.strip() for p in str(subject or "").split(",")]
+    kept = [p for p in parts if p and p.lower() not in EYE_COLOURS]
+    return ", ".join(kept)
 
 
 def join_tags(*chunks):

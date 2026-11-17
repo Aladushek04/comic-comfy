@@ -33,11 +33,19 @@ REPOS = {
 
 BASE_MODEL = "swinv2"
 SIZE_MODEL = "eva02-large"
-VERSION = "swin+eva/1"
+# /2 — состояние глаз: закрытые глаза проверяются теггером, а не верой модели.
+VERSION = "swin+eva/2"
 
 BASE_THRESHOLD = 0.25     # на этом пороге swinv2 даёт ~32 тега на фото
 SIZE_THRESHOLD = 0.35
 MAX_ADDONS = 12
+
+# Закрытые глаза: VLM называет цвет радужки наугад, когда её не видно (на фото
+# с закрытыми глазами сказал `green eyes`). swinv2 ловит это слабо (0.18 против
+# 0.00 на открытых), eva02 — уверенно (0.45 против 0.00), поэтому вторая модель
+# зовётся только по намёку первой. Порог 0.3 отделяет случаи с запасом.
+EYES_HINT = 0.10
+EYES_CLOSED = 0.30
 
 # Порядок важен: берём первый найденный размер, двойных в subject быть не должно.
 SIZES = ("huge breasts", "large breasts", "medium breasts", "small breasts")
@@ -316,7 +324,7 @@ def confident(tag, score):
 
 
 def read_image_tags(image_path):
-    """Теги фото двумя моделями: список для промпта и размер груди отдельно."""
+    """Теги фото двумя моделями: список для промпта, размер груди и состояние глаз."""
     base = infer(BASE_MODEL, image_path, BASE_THRESHOLD)
     scores = {name: score for name, score in base}
     tags = [name for name, score in base if keep(name) and confident(name, score)]
@@ -331,38 +339,50 @@ def read_image_tags(image_path):
             seen_slots.add(slot)
     tags = unique
 
+    # eva02 нужна редко: размер груди или подозрение на закрытые глаза. На фото
+    # с открытыми глазами swinv2 даёт `closed_eyes` 0.00, поэтому вторая модель
+    # в обычном случае не зовётся вовсе.
+    hint_breast = any(hint in norm(name) for name, _ in base for hint in BREAST_HINT)
+    hint_eyes = scores.get("closed_eyes", 0.0) >= EYES_HINT
+    eva = dict(infer(SIZE_MODEL, image_path, 0.05)) if (hint_breast or hint_eyes) else {}
+
     sizes = [name for name, _ in base if norm(name) in SIZES]
-    if any(hint in norm(name) for name, _ in base for hint in BREAST_HINT):
-        # Размер — единственная причина звать вторую, тяжёлую модель.
-        eva = [(name, score) for name, score in infer(SIZE_MODEL, image_path, SIZE_THRESHOLD)
-               if norm(name) in SIZES]
+    if hint_breast:
+        eva_sizes = [(name, score) for name, score in eva.items()
+                     if norm(name) in SIZES and score >= SIZE_THRESHOLD]
         if sizes:
             # Перебить уверенный ответ swinv2 eva может только уверенно сам:
             # `huge breasts` от него меняет телосложение в кадре сильнее, чем стоит.
-            eva = [(name, score) for name, score in eva if score >= 0.5]
-        sizes = [name for name, _ in eva] or sizes
+            eva_sizes = [(name, score) for name, score in eva_sizes if score >= 0.5]
+        sizes = [name for name, _ in eva_sizes] or sizes
     sizes = sorted({norm(s) for s in sizes}, key=SIZES.index) if sizes else []
+
+    eyes = "closed" if eva.get("closed_eyes", 0.0) >= EYES_CLOSED else ""
 
     tags = [t for t in tags if norm(t) not in SIZES]
     if sizes:
         tags.insert(0, sizes[0])
-    return {"tags": tags[:MAX_ADDONS], "size": sizes[0] if sizes else "", "version": VERSION}
+    return {"tags": tags[:MAX_ADDONS], "size": sizes[0] if sizes else "",
+            "eyes": eyes, "version": VERSION}
 
 
 def tags(image_path, warn=True):
     """То же, но без падений: нет модели или движка — пустой результат и причина."""
     if disabled():
-        return {"tags": [], "size": "", "version": VERSION, "skipped": "COMIC_TAGGER=off"}
+        return {"tags": [], "size": "", "eyes": "", "version": VERSION,
+                "skipped": "COMIC_TAGGER=off"}
     if not available():
         if warn:
             print(f"   теггер выключен: нет моделей в {model_dir()}", file=sys.stderr)
-        return {"tags": [], "size": "", "version": VERSION, "skipped": "нет моделей"}
+        return {"tags": [], "size": "", "eyes": "", "version": VERSION,
+                "skipped": "нет моделей"}
     try:
         return read_image_tags(image_path)
     except Exception as e:                     # onnxruntime нет, битый файл, память
         if warn:
             print(f"   теггер не сработал: {e}", file=sys.stderr)
-        return {"tags": [], "size": "", "version": VERSION, "skipped": str(e)[:120]}
+        return {"tags": [], "size": "", "eyes": "", "version": VERSION,
+                "skipped": str(e)[:120]}
 
 
 def add_to_subject(subject, extra, removed=None):

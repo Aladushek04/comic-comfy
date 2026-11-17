@@ -1645,6 +1645,34 @@ def test_tagger_addon():
         check("без модели subject не тронут", subject4 == "adult woman, plain dress", subject4)
         check("без модели метка не ставится", not desc4.get("addons"), str(desc4.get("addons")))
 
+        # Закрытые глаза: цвет радужки по ним не видно, а VLM его всё равно
+        # называет (на живом фото сказал `green eyes` по опущенным векам).
+        pp.tagger.tags = lambda image_path, warn=True: {
+            "tags": ["thighhighs"], "size": "", "eyes": "closed",
+            "version": pp.tagger.VERSION}
+        desc5 = {"subject": "adult woman, green eyes, heavy black eyeliner, bare breasts"}
+        subject5 = pp.enrich_subject(desc5, str(img))
+        check("закрытые глаза: цвет радужки убран", "green eyes" not in subject5, subject5)
+        check("закрытые глаза: сказано прямо, что они закрыты",
+              "closed eyes" in subject5, subject5)
+        check("закрытые глаза: отмечено в записи",
+              desc5.get("eye_colour_dropped") == "closed eyes",
+              str(desc5.get("eye_colour_dropped")))
+        check("закрытые глаза: остальное описание цело",
+              "heavy black eyeliner" in subject5 and "bare breasts" in subject5, subject5)
+
+        pp.tagger.tags = lambda image_path, warn=True: {
+            "tags": ["thighhighs"], "size": "", "eyes": "", "version": pp.tagger.VERSION}
+        desc6 = {"subject": "adult woman, green eyes, bare breasts"}
+        subject6 = pp.enrich_subject(desc6, str(img))
+        check("открытые глаза: цвет остался", "green eyes" in subject6, subject6)
+        check("открытые глаза: «closed eyes» не появились", "closed eyes" not in subject6,
+              subject6)
+        check("drop_eye_colour не трогает макияж",
+              pp.drop_eye_colour("adult woman, green eyes, eye makeup") ==
+              "adult woman, eye makeup",
+              pp.drop_eye_colour("adult woman, green eyes, eye makeup"))
+
         pp.tagger.tags = real_tags
         os.environ["COMIC_TAGGER"] = "off"
         empty = real_tags(str(img))

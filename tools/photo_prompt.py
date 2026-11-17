@@ -44,7 +44,8 @@ from comic.guard import (  # noqa: E402
     AGE_WORDS, GENERIC_PERSON, ensure_guard, sanitize_subject, scrub_tags,
 )
 from comic.prompt import (  # noqa: E402
-    NEG_CORE, NEG_GUARD, SUBJECT_SLOT, PromptBuilder, join_tags, skin_anchor_state,
+    NEG_CORE, NEG_GUARD, SUBJECT_SLOT, PromptBuilder, drop_eye_colour, join_tags,
+    skin_anchor_state,
 )
 
 LM = settings.LM_URL or "http://127.0.0.1:1234"
@@ -401,9 +402,26 @@ def enrich_subject(desc, image_path, warn=True):
     if found.get("skipped"):
         print(f"   теги не добавлены: {found['skipped']}")
         return desc.get("subject", "")
-    before = [p.strip() for p in str(desc.get("subject", "")).split(",") if p.strip()]
+    subject = desc.get("subject", "")
+    extra = list(found["tags"])
+    if found.get("eyes") == "closed":
+        # Цвет радужки, названный по закрытым глазам, — выдумка: модель видит
+        # закрытое веко и всё равно говорит `green eyes` (AGENTS 0.18). Убираем
+        # цвет и говорим прямо, что глаза закрыты: иначе база нарисует открытые
+        # с случайным насыщенным цветом, а это хуже.
+        cleaned = drop_eye_colour(subject)
+        if cleaned != subject:
+            desc["eye_colour_dropped"] = "closed eyes"
+            subject = cleaned
+        # В subject, а не в теги: `add_to_subject` пропускает только теги своих
+        # полок, а это факт о фото, и `--no-tags` его снимать не должен.
+        parts = [p.strip() for p in subject.split(",") if p.strip()]
+        if parts and "closed eyes" not in [p.lower() for p in parts]:
+            parts.insert(1 if parts[0].lower().startswith("adult ") else 0, "closed eyes")
+            subject = ", ".join(parts)
+    before = [p.strip() for p in subject.split(",") if p.strip()]
     removed = []
-    after = tagger.add_to_subject(desc.get("subject", ""), found["tags"], removed)
+    after = tagger.add_to_subject(subject, extra, removed)
     added = [p.strip() for p in after.split(",") if p.strip() and p.strip() not in before]
     desc["addon_tags"] = added
     desc["addons"] = tagger.VERSION
