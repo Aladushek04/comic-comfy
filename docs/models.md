@@ -189,3 +189,20 @@ ComfyUI показывает подпапки через обратный слэ
 | — | — | **добавлена** база `Z-Image-Turbo` int8 (6.20 ГБ) для 08z на новой базе |
 | — | — | **добавлена** NSFW-LoRA под Z-Image (`NSFW_master_ZIT`, 0.62 ГБ), слот с весом 0 |
 
+## Чего не берём (и почему)
+
+- **`Babes` (alexds9, Civitai 2220)** — чекпойнт Illustrious 1.2, 6.46 ГБ, **не LoRA**. Все
+  современные версии (`1.2i12`–`1.2i18`, Anima Turbo `1.2a19`, `Babes XL 3.0`) отдают
+  `401: the creator of this asset has disabled downloads on this file` — это пейволл, а не токен;
+  бесплатны только старые SD 1.5 версии, для нас бесполезные. Даже будь он открыт, брать не за
+  чем: та же семья, что у нас (Illustrious 1.2), то есть не новая возможность, а другая манера —
+  «smooth shading transitions, luminous skin, gentle sheen» против наших «bold black outlines,
+  flat colors, limited palette» (`STYLE.md`). У `1.2i18` к тому же 8 скачиваний за две недели.
+  Двигать базу проверяем на том, что уже лежит на диске: WAI HSWQ fp8 против WAI-17 (V2.1c).
+  Если понадобится «полированный цифровой рендер» — это стилевая LoRA на нашей базе, а не чужая
+  база целиком под всеми 07.
+- Любопытен в этой семье только `1.2a19 Anima Turbo` (3.9 ГБ, 8 шагов, CFG 1) — тот же приём,
+  что у Z-Image Turbo, но на 2B-базе. Закрыт так же, а у Anima нет depth-ControlNet в ядре
+  ComfyUI (нужен форк нод). Очередь не подошла: Z-Image Turbo уже есть, Apache-2.0 и с
+  официальным Fun ControlNet.
+
