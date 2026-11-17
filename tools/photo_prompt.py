@@ -341,15 +341,21 @@ def rewrite_scene(desc, scene, model):
 # поэтому старые описания переснимаются сами, а не живут с этой ошибкой.
 # Версия 3 — тон кожи: без него якорь 08z держался только на теггере WD14, и с
 # `--no-tags` тёмнокожая могла получить `pale skin` (AGENTS 0.22).
-DESCRIBE_VERSION = 3
+# Версия 4 — отказ от тона кожи в subject. v3 просила называть тон, и модель на всех
+# светлых фото сказала `tan skin`: это снимало якорь 08z (субъект «называет тон»)
+# и затемняло 07/08 (кадр 00075 против 00071 на том же сиде). Смягчение словаря
+# (v4-черновик) не помогло — модель настаивает на `tan` даже с запретом и с
+# «суди кожу, а не свет». Поэтому тон в промпт не идёт вообще: тёмную кожу называет
+# теггер (`dark-skinned_female`), а якорь 08z опирается на него (AGENTS 0.22).
+DESCRIBE_VERSION = 4
 
 SYSTEM = """You describe photographs for a text-to-image model.
 Return ONLY a JSON object with three string fields: subject, negative_extra, notes.
 
 Rules:
 - subject: English, comma-separated tags, 25-45 words. Cover: who, hair, eye colour,
-  skin tone, face details (eye makeup, lips), glasses/accessories, clothing, pose, hands,
-  framing, background, light.
+  face details (eye makeup, lips), glasses/accessories, clothing, pose, hands, framing,
+  background, light.
 - Always name the eye colour right after the hair: blue eyes, green eyes, brown eyes,
   hazel eyes, grey eyes. The image model has no default colour and paints a saturated
   random one when the colour is missing (red or glowing eyes most often). Here grey and
@@ -357,11 +363,6 @@ Rules:
   renders brown. So never write grey eyes or hazel eyes — for grey, grey-green, olive
   or hazel-looking irises write green eyes. If the eyes are closed, turned away or
   hidden, omit the colour instead of guessing.
-- Always name the skin tone right after the eye colour: fair skin, light skin, olive
-  skin, tan skin, brown skin, dark brown skin, dark skin. Say it plainly and do not
-  soften it — dark skin is not tan skin, and brown skin is not olive skin. The image
-  model drifts light skin to dark brown and dark skin to pale when the tone is not
-  named. If the skin is not visible at all, omit it instead of guessing.
 - Name the eye makeup when it is visible and say how heavy it is: heavy black eyeliner,
   smokey eyeshadow, light eye makeup, bare eyelids.
 - Bare skin is named plainly: topless, bare chest, bare breasts, bare legs. Do not soften
@@ -377,7 +378,7 @@ Rules:
 - notes: one short sentence in Russian about what is fragile in this photo.
 
 Example output:
-{"subject":"adult woman, early 30s, long wavy blonde hair, blue eyes, fair skin, black framed glasses, light eye makeup, red sleeveless dress, thin gold necklace, arms spread wide, neutral grey studio background, soft frontal light","negative_extra":"white lenses, opaque glasses, missing necklace","notes":"главное — сохранить очки и цепочку."}"""
+{"subject":"adult woman, early 30s, long wavy blonde hair, blue eyes, black framed glasses, light eye makeup, red sleeveless dress, thin gold necklace, arms spread wide, neutral grey studio background, soft frontal light","negative_extra":"white lenses, opaque glasses, missing necklace","notes":"главное — сохранить очки и цепочку."}"""
 
 
 def with_adult(subject):
