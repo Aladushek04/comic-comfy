@@ -2,7 +2,7 @@
 
 Здесь только механика превращения описания в два файла: `<name>.json` (граф для
 интерфейса) и `<name>.api.json` (`prompt` для `/prompt` плюс `meta` для формы и
-CLI). Сами 14 сборок — данные в `comic/builds.py`, а драйвер, который пишет
+CLI). Сами 13 сборок — данные в `comic/builds.py`, а драйвер, который пишет
 файлы и гоняет их через API, — `tools/build_workflows.py`.
 
 Границы, которые нельзя сдвинуть:
@@ -53,6 +53,20 @@ DEFS = {
                               ["CONDITIONING", "CONDITIONING", "LATENT"]),
     "ImageScaleToTotalPixels": (["image"], ["upscale_method", "megapixels", "resolution_steps"], ["IMAGE"]),
     "ModelSamplingAuraFlow": (["model"], ["shift", "sampling"], ["MODEL"]),
+    # Z-Image Turbo (08z). Fun ControlNet — не CONTROL_NET, а патч модели:
+    # `ModelPatchLoader` читает раздел `model_patches`, а `QwenImageDiffsynthControlnet`
+    # надевает патч на модель. Порядок виджетов и сокетов сверен с /object_info 0.45.2
+    # и с официальным шаблоном `image_z_image_turbo_fun_union_controlnet.json`.
+    # `largest_size`, а не `size`: так называется виджет у узла (шаблон молчит).
+    "EmptySD3LatentImage": ([], ["width", "height", "batch_size"], ["LATENT"]),
+    "ModelPatchLoader": ([], ["name"], ["MODEL_PATCH"]),
+    "QwenImageDiffsynthControlnet": (["model", "model_patch", "vae", "image"],
+                                     ["strength", "start_percent", "end_percent"], ["MODEL"]),
+    "ImageScaleToMaxDimension": (["image"], ["upscale_method", "largest_size"], ["IMAGE"]),
+    # Негатив 08z остаётся CLIPTextEncode (на него опираются meta и форма), поэтому
+    # в графе этого узла нет. Он зарегистрирован, потому что он есть в шаблоне Z-Image
+    # (`ConditioningZeroOut` вместо негатива) и понадобится, если негатив заменят нулями.
+    "ConditioningZeroOut": (["conditioning"], [], ["CONDITIONING"]),
     # Глубина 07/08: нативные узлы Depth Anything 3. `mode` и `output` —
     # DynamicCombo: значение входа — ключ варианта строкой, а поля варианта —
     # отдельные входы с точкой (`output.normalization`). Так их видит и
@@ -114,6 +128,11 @@ _TITLES = {
     "CLIPVisionLoader": "CLIP Vision",
     "IPAdapterAdvanced": "IP-Adapter: применить",
     "ImageScaleToTotalPixels": "Масштаб до 1 МП",
+    "ImageScaleToMaxDimension": "Масштаб карты глубины",
+    "EmptySD3LatentImage": "Латент SD3",
+    "ModelPatchLoader": "Fun ControlNet (патч)",
+    "QwenImageDiffsynthControlnet": "Fun ControlNet: применить",
+    "ConditioningZeroOut": "Негатив: нули",
     "ImageScaleBy": "Апскейл",
     "VAEEncode": "В латент",
     "VAEDecode": "Из латента",
@@ -169,6 +188,7 @@ WIDGET_TYPES = {
 LORA_ROLES = (
     ("hands_xl", "hands"), ("sexy_detailer", "body"),
     ("p477y", "character"), ("p4m3l4", "character"),
+    ("nsfw_master", "nsfw"),
 )
 
 
@@ -221,7 +241,8 @@ def graph_fields(api, style_lora=""):
             if f:
                 fields[key] = f
     cn = next(((nid, n) for nid, n in nodes
-               if n["class_type"] == "ControlNetApplyAdvanced"), None)
+               if n["class_type"] in ("ControlNetApplyAdvanced",
+                                      "QwenImageDiffsynthControlnet")), None)
     if cn:
         for key, name in (("cn_strength", "strength"), ("cn_start", "start_percent"),
                           ("cn_end", "end_percent")):
@@ -308,6 +329,10 @@ def meta(spec, api):
         "style_lora": style_lora,
         "style_weight": style_weight,
     }
+    if spec.get("negative_effective") is False:
+        # CFG 1 не читает negative. Сборка говорит это меткой, а не молчанием:
+        # на неё опираются `--recheck` и строка предпросмотра в CLI.
+        out["negative_effective"] = False
     out.update(graph_fields(api, style_lora))
     return out
 
