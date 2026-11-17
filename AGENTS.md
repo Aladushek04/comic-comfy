@@ -498,6 +498,24 @@ ComfyUI не трогает. Без готового описания (кэш, `
    `0003` — 1216×832 и тоже светлая.
    Проверка: `python tools\test_photo_prompt.py`, пункты 46–49.
 
+0.23. **Контрольная матрица тона кожи (v4 принята 17.11.2026).** Четыре фото × шесть сборок
+   (`07_photo_{thepit,comic,jp,bimbo}`, `08_photo_gta`, `08z_photo_gta`), seed 1001, commit 39e5f40:
+   **24 кадра из 24**, 931.7 с, все записи с `denoise`/`cn_strength`/`style_weight` = `null`.
+   Результат: `tan skin` нет ни в одном subject; на трёх светлых фото кожа светлее, чем в v3;
+   на `diamond` тёмная сохранена, якорь `pale skin` пропущен по `dark-skinned_female`.
+   Горизонт 08z — 1216×832 на `0003` и `0004`; все 24 файла есть и в `out\matrix_v4\`, и в `OUTPUT_DIR`.
+   Набор: `out\matrix_v4\` — кадры, `run.json`, `manifest.json` (тайминги), `verify.json` (размеры
+   и наличие в `outputs`), `control.json` (seed, параметры, effective positive/negative, модели
+   с размерами), `report.md`, `sheets\` (v3|v4 по фото), `photos\`, `descriptions\`.
+   Старая матрица — `out\matrix_v3\`, её не трогать.
+   Известные отклонения v4: на `0004` платье читается crimson вместо маджента в пяти SDXL-сборках
+   (формулировка описания, не код); на `0004`/`08_gta` пропал диван справа; на `diamond`/`08z`
+   лишняя золотая цепочка. Кисти, локти и анатомия местами упрощены — это известное ограничение
+   генерации, а не следствие v4.
+   Пиксельный замер тона невалиден (см. 0.22, «Восьмое»): на `0003` эвристика нашла 47.5 % «кожи»
+   в v3 против 3.1 % в v4, то есть считала тёплую комнату. Тон доказывается кадрами и уровнем
+   промпта, а не яркостью.
+
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
    съезжают на позицию влево, панель Issues пишет «Invalid input: sampler_name / cfg».
@@ -626,7 +644,7 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 
 ## Проверки перед словом «готово»
 
-- `python tools\test_photo_prompt.py` — 704 проверки CLI и пайплайна (модели не нужны).
+- `python tools\test_photo_prompt.py` — 724 проверки CLI и пайплайна (модели не нужны).
 - `python tools\test_web_app.py` — 344 проверки заданий, очереди и веб-слоя на HTTP-заглушках
   (LM Studio и ComfyUI подменяются, GPU не нужен).
 - `python tools\test_web_ui.py` — 99 браузерных проверок Chromium на тех же заглушках:
