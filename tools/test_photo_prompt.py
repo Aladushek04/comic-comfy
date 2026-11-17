@@ -2699,6 +2699,116 @@ def test_denoise_inert():
           code == 0 and "denoise: 0.6" in text, text.strip()[-300:])
 
 
+def test_skin_anchor():
+    """49) якорь тона кожи 08z: первым в positive, но не против субъекта.
+
+    Замер (AGENTS 0.22): на 08z под GTA-палитрой светлая кожа уходила в тёмно-
+    коричневую. `pale skin, porcelain complexion` в самом начале positive
+    поднимает нормированную по белому дивану яркость кожи с 0.688 до 0.873;
+    `fair skin, light skin tone` после субъекта — 0.722, те же слова в начале —
+    0.661. Слабые слова не делают ничего, место важнее слов. Поэтому якорь
+    приходит из meta сборки, ставится перед шаблоном и отменяется, если субъект
+    сам называет тон: два противоположных указания в одном промпте — и победил
+    бы ранний токен, то есть ровно наоборот нужному.
+    """
+    from comic import prompt as cp
+
+    repo = Path(__file__).resolve().parent.parent
+    anchor = "pale skin, porcelain complexion"
+    metas = {p.name[:-len(".api.json")]: json.loads(p.read_text(encoding="utf-8")).get("meta") or {}
+             for p in (repo / "workflows").glob("*.api.json")}
+    check("якорь задаёт только 08z",
+          sorted(n for n, m in metas.items() if m.get("skin_anchor")) == ["08z_photo_gta"],
+          str(sorted(n for n, m in metas.items() if m.get("skin_anchor"))))
+    check("08z: значение якоря из замера",
+          metas["08z_photo_gta"].get("skin_anchor") == anchor,
+          str(metas["08z_photo_gta"].get("skin_anchor")))
+
+    builder = cp.PromptBuilder(metas["08z_photo_gta"])
+    built = builder.build("adult woman, green eyes, black dress")
+    check("08z: якорь первым в positive", built.positive.startswith(anchor + ", "),
+          built.positive[:140])
+    check("08z: шаблон идёт после якоря",
+          "GTA V loading screen artwork" in built.positive
+          and built.positive.index(anchor) < built.positive.index("GTA V"),
+          built.positive[:140])
+    check("08z: applied говорит «applied»",
+          built.applied.get("skin_anchor") == "applied", str(built.applied))
+
+    for words in cp.SKIN_TONES:
+        subject = f"adult woman, {words}, green eyes"
+        got = builder.build(subject)
+        check(f"08z: «{words}» отменяет якорь",
+              not got.positive.startswith(anchor)
+              and got.applied.get("skin_anchor") == "skipped: subject names skin tone",
+              got.positive[:120])
+        check(f"08z: «{words}» назван один раз",
+              got.positive.lower().count(words) == 1, got.positive[:160])
+
+    # `dark-skinned` называет тот же тон, что `dark skin`: якорь не ставится.
+    got = builder.build("adult woman, dark-skinned, green eyes")
+    check("08z: «dark-skinned» тоже отменяет якорь",
+          not got.positive.startswith(anchor)
+          and got.applied.get("skin_anchor") == "skipped: subject names skin tone",
+          got.positive[:120])
+
+    # Субъект уже сказал «pale skin»: слово одно, и второго якоря нет.
+    got = builder.build("adult woman, pale skin, green eyes")
+    check("08z: pale skin в субъекте не удваивается",
+          got.positive.lower().count("pale skin") == 1, got.positive[:160])
+    check("08z: porcelain complexion без pale skin не появляется",
+          "porcelain complexion" not in got.positive, got.positive[:160])
+
+    # Остальные 12 сборок: ключа нет ни в meta, ни в applied, ни в positive.
+    for name, meta in metas.items():
+        if name == "08z_photo_gta":
+            continue
+        check(f"{name}: в meta нет skin_anchor", "skin_anchor" not in meta, str(sorted(meta)))
+        if not meta.get("positive_template"):
+            continue
+        got = cp.PromptBuilder(meta).build("adult woman, green eyes")
+        check(f"{name}: якоря нет в positive", "porcelain complexion" not in got.positive,
+              got.positive[:120])
+        check(f"{name}: applied без skin_anchor", "skin_anchor" not in got.applied,
+              str(got.applied))
+
+    # Путь кадра: build_payload и паспорт говорят то же, что builder.
+    img = TMP / "anchor.png"
+    make(img, (11, 12, 13))
+    payload = pp.build_payload("08z_photo_gta", "adult woman, green eyes", "", seed=5)
+    check("build_payload: якорь первым", payload["positive"].startswith(anchor + ", "),
+          payload["positive"][:140])
+    check("build_payload: applied говорит «applied»",
+          (payload.get("applied") or {}).get("skin_anchor") == "applied",
+          str(payload.get("applied")))
+    over = pp.build_payload("08z_photo_gta", "adult woman", "",
+                            positive="adult woman, red dress")
+    check("переопределение positive: якоря нет и это записано",
+          "porcelain complexion" not in over["positive"]
+          and (over.get("applied") or {}).get("skin_anchor")
+          == "skipped: positive заменён целиком",
+          str(over.get("applied")))
+
+    saved = (pp.ROOT, pp.OUTPUT_DIR)
+    pp.ROOT = TMP / "root_anchor"
+    pp.OUTPUT_DIR = TMP / "out_anchor"
+    pp.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        frame = "08z_photo_gta_00001_.png"
+        (pp.OUTPUT_DIR / frame).write_bytes(b"png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            pp.save_run(str(img), "08z_photo_gta",
+                        {"subject": "adult woman, green eyes", "negative_extra": ""},
+                        5, None, frame, positive=payload["positive"],
+                        negative=payload["negative"], settings=payload["settings"])
+        folder = pp.ROOT / "out" / pp.image_tag(img)
+        rec = json.loads((folder / "run.json").read_text(encoding="utf-8"))["runs"][0]
+        check("паспорт: positive начинается с якоря",
+              rec["positive"].startswith(anchor + ", "), rec["positive"][:140])
+    finally:
+        pp.ROOT, pp.OUTPUT_DIR = saved
+
+
 def test_prompt_builder():
     """38) PromptBuilder: промпт кадра собирается побайтно, как в эталоне P0.
 
@@ -3040,6 +3150,7 @@ def main():
         test_zimage_build()
         test_negative_inert()
         test_denoise_inert()
+        test_skin_anchor()
         test_guard_overrides()
         test_image_tag_idempotent()
         test_panel_sync()

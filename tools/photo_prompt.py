@@ -44,7 +44,7 @@ from comic.guard import (  # noqa: E402
     AGE_WORDS, GENERIC_PERSON, ensure_guard, sanitize_subject, scrub_tags,
 )
 from comic.prompt import (  # noqa: E402
-    NEG_CORE, NEG_GUARD, SUBJECT_SLOT, PromptBuilder, join_tags,
+    NEG_CORE, NEG_GUARD, SUBJECT_SLOT, PromptBuilder, join_tags, skin_anchor_state,
 )
 
 LM = settings.LM_URL or "http://127.0.0.1:1234"
@@ -1058,6 +1058,11 @@ def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, la
                      else compose_positive(meta, subject, workflow))
     negative_text = (ensure_guard(negative) if negative is not None
                      else compose_negative(negative_extra, meta))
+    # Якорь тона кожи ставит builder первым в positive. Переопределение промпта
+    # заменяет текст целиком, поэтому там якоря нет, и записать это лучше, чем
+    # оставить предпросмотр и паспорт молчать (AGENTS 0.22).
+    anchor_state = ("skipped: positive заменён целиком" if positive is not None
+                    else skin_anchor_state(meta, subject))
 
     patched = 0
     samplers = []
@@ -1112,6 +1117,8 @@ def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, la
         main["inputs"]["denoise"] = float(denoise)
 
     applied = {}
+    if anchor_state:
+        applied["skin_anchor"] = anchor_state
     if overrides:
         applied.update(apply_fields(api, meta, overrides.get("fields")))
         applied["loras"] = apply_loras(api, meta, overrides.get("loras"))

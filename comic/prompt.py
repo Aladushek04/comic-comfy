@@ -11,6 +11,10 @@
   * `join_tags` склеивает без дублей и сохраняет порядок. Важное ставим в
     начало: ComfyUI режет текст на чанки по 77 токенов и кодирует их подряд,
     ничего не теряя, но дальние чанки влияют слабее (AGENTS 0.1);
+  * якорь тона кожи (`meta.skin_anchor`, сейчас только у 08z) идёт **перед**
+    шаблоном, а не в хвост: замер на одном фото показал, что те же слова после
+    субъекта не двигали ничего, а в начале — двигали (AGENTS 0.22). Субъект,
+    который сам называет тон, якорь отменяет (`names_skin`);
   * негатив всегда замыкается рамкой `NEG_GUARD` — она последнее, что попадает
     в строку. `join_tags` выкидывает уже сказанное, поэтому в хвосте остаётся
     «underage», а не весь блок;
@@ -24,6 +28,7 @@
 входят: это явная замена текста целиком, её делает вызывающий — `build_payload`
 пропускает их через `comic.guard`, чтобы рамка возраста не снималась.
 """
+import re
 from typing import NamedTuple
 
 # Плейсхолдер субъекта в шаблоне промпта из build_workflows.py.
@@ -36,6 +41,29 @@ NEG_GUARD = "child, loli, shota, underage"
 # негатив из графа (у GTA «night, rain, dark», у bimbo «white lenses, grey skin»).
 NEG_CORE = ("photorealistic, 3d render, bad anatomy, bad hands, extra fingers, "
             "watermark, text, signature, blurry, low quality")
+
+# Тон кожи, который субъект может назвать сам. Якорь сборки (`meta.skin_anchor`)
+# ставится только к субъекту без своего тона: два противоположных указания в
+# одном промпте — и ранний токен победил бы, то есть ровно наоборот нужному
+# (AGENTS 0.22). Слова сравниваются целиком: `tan skin` не ловится в `tanned`.
+SKIN_TONES = ("dark skin", "brown skin", "ebony", "tan skin", "olive skin",
+              "pale skin", "fair skin")
+
+
+def names_skin(text):
+    """Субъект уже называет тон кожи: `dark skin`, `ebony`, `pale skin` и т. п."""
+    low = str(text or "").lower()
+    for tone in SKIN_TONES:
+        words = tone.split()
+        body = r"[\s\-]+".join(re.escape(w) for w in words)
+        if re.search(r"(?<![a-z])" + body + r"(?![a-z])", low):
+            return True
+        # «dark-skinned» называет тот же тон, что и «dark skin»: пропустить его
+        # значило бы поставить светлый якорь тёмнокожему субъекту.
+        if len(words) == 2 and re.search(
+                r"(?<![a-z])" + re.escape(words[0]) + r"[\s\-]+skinned(?![a-z])", low):
+            return True
+    return False
 
 
 def join_tags(*chunks):
@@ -92,13 +120,31 @@ class PromptBuilder:
             return "в meta.fields нет привязки positive: собранный промпт некуда подставить"
         return None
 
+    def skin_anchor(self, subject):
+        """Якорь тона кожи: (текст в начало positive, что с ним стало).
+
+        Сборка задаёт его только там, где база уводит светлую кожу в тёмную
+        (08z под GTA-палитрой). Ставится в самое начало: ранние токены весят
+        больше (AGENTS 0.1), и замер это подтвердил — те же слова после
+        субъекта не двигали ничего, а в начале — двигали (AGENTS 0.22).
+        Субъект со своим тоном якорь отменяет: иначе промпт говорит две
+        противоположные вещи, и побеждает ранний токен.
+        """
+        anchor = str(self.meta.get("skin_anchor") or "").strip()
+        if not anchor:
+            return "", ""
+        if names_skin(subject):
+            return "", "skipped: subject names skin tone"
+        return anchor, "applied"
+
     def positive(self, subject):
-        """Шаблон сборки с подставленным субъектом."""
+        """Шаблон сборки с подставленным субъектом; якорь тона кожи — первым."""
         reason = self.refuse_reason()
         if reason:
             raise PromptError(reason)
         body = str(subject or "").strip().rstrip(",")
-        return join_tags(self.template().replace(SUBJECT_SLOT, body))
+        anchor, _ = self.skin_anchor(subject)
+        return join_tags(anchor, self.template().replace(SUBJECT_SLOT, body))
 
     def negative(self, negative_extra=""):
         """Сначала подавляемое на этом фото, потом негатив сборки, потом рамка."""
@@ -111,4 +157,19 @@ class PromptBuilder:
             "landscape": bool(landscape),
             "image_name": str(image_name or ""),
         }
+        # Что стало с якорем тона кожи — видно и в предпросмотре, и в паспорте
+        # кадра: молчание оставило бы их одинаковыми при разных промптах.
+        anchor_state = self.skin_anchor(subject)[1]
+        if anchor_state:
+            applied["skin_anchor"] = anchor_state
         return BuiltPrompt(self.positive(subject), self.negative(negative_extra), applied)
+
+
+def skin_anchor_state(meta, subject):
+    """Что стало с якорем тона кожи: `applied`, `skipped: …` или пусто.
+
+    Для тех, кто собирает positive не через `build()` (переопределение
+    промпта в `photo_prompt.build_payload`): якорь там не ставится, и записать
+    это честнее, чем промолчать.
+    """
+    return PromptBuilder(meta).skin_anchor(subject)[1]

@@ -451,7 +451,17 @@ ComfyUI не трогает. Без готового описания (кэш, `
    Шестое: промпт 08z — фраза, а не теги (Qwen3-4B обучен на естественном языке), но
    `PromptBuilder` склеивает её `join_tags`, который нормализует запятые: точку в конце
    фрагмента он превратит в «.,», поэтому шаблон пишется одной фразой через запятые.
-   Проверка: `python tools\test_photo_prompt.py`, пункты 46–47.
+   Седьмое: светлая кожа уезжала в тёмно-коричневую, и лечится это **местом**, а не
+   словами. Замер на пятне живота, нормированном по белому дивану: шаблон как есть —
+   0.688; `fair skin, light skin tone` после субъекта — 0.722; те же якоря в начале —
+   0.661; `pale skin, porcelain complexion` в начале — 0.873 при целой GTA-палитре.
+   Якорь живёт в `meta.skin_anchor` (`Build.skin_anchor`, только у 08z), `PromptBuilder`
+   ставит его **перед** шаблоном и пропускает, если субъект сам называет тон
+   (`dark skin`, `brown skin`, `ebony`, `tan skin`, `olive skin`, `pale skin`,
+   `fair skin`, в том числе `dark-skinned`): два противоположных указания в одном
+   промпте — и победил бы ранний токен, то есть ровно наоборот нужному.
+   `applied.skin_anchor` говорит «applied» или «skipped: …» в предпросмотре и паспорте.
+   Проверка: `python tools\test_photo_prompt.py`, пункты 46–49.
 
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
@@ -581,8 +591,8 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 
 ## Проверки перед словом «готово»
 
-- `python tools\test_photo_prompt.py` — 641 проверка CLI и пайплайна (модели не нужны).
-- `python tools\test_web_app.py` — 329 проверок заданий, очереди и веб-слоя на HTTP-заглушках
+- `python tools\test_photo_prompt.py` — 704 проверки CLI и пайплайна (модели не нужны).
+- `python tools\test_web_app.py` — 344 проверки заданий, очереди и веб-слоя на HTTP-заглушках
   (LM Studio и ComfyUI подменяются, GPU не нужен).
 - `python tools\test_web_ui.py` — 99 браузерных проверок Chromium на тех же заглушках:
   раскладка, тёмная тема и её переключение, расширенная панель, сохранение ввода после health-check, замена фото, второй кадр

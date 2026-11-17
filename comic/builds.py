@@ -78,6 +78,14 @@ GTAZ_PROMPT = ("GTA V loading screen artwork, gtav, painted with copic markers i
                "sunlight, saturated colors, palm trees, blue sky, beach, lens flare, bold black "
                "outlines, semi-realistic digital painting, advertising poster")
 
+# Якорь тона кожи 08z. Замер на одном фото (пятно живота, нормированное по белому
+# дивану): шаблон как есть — 0.688; `fair skin, light skin tone` после субъекта —
+# 0.722; те же якоря в самом начале — 0.661; `pale skin, porcelain complexion` в
+# начале — 0.873 при сохранной GTA-палитре. Слабые слова не делают ничего, место
+# важнее слов. Ставит его `PromptBuilder` (comic/prompt.py) первым в positive и
+# пропускает, если субъект сам назвал тон кожи.
+SKIN_ANCHOR = "pale skin, porcelain complexion"
+
 NOCT_PROMPT = ("An anime illustration of an adult woman in a leather jacket on a rainy city street at night, "
                "soft rim light, detailed background, cinematic composition")
 NOCT_NEG = "low quality, blurry, bad anatomy, extra fingers, watermark, text, child"
@@ -153,6 +161,9 @@ class Build:
     `denoise_effective` — есть ли в латенте картинка, которую уточняет denoise.
     У 08z латент пустой (`EmptySD3LatentImage`): denoise ниже 1 стартует с шума,
     за которым ничего нет, и кадр портится вместо уточнения.
+    `skin_anchor` — якорь тона кожи для начала positive (см. `comic/prompt.py`).
+    Ключ появляется в `meta` только у сборок, где он задан: у остальных `meta`
+    остаётся байт в байт прежней.
     """
     name: str
     title: str
@@ -163,6 +174,7 @@ class Build:
     style_weight: float | None = None
     negative_effective: bool = True
     denoise_effective: bool = True
+    skin_anchor: str = ""
 
     def spec(self):
         """Описание в том виде, в каком его читает `comic.workflow.build`."""
@@ -184,6 +196,10 @@ class Build:
             # Пустой латент нечего уточнять: denoise ниже 1 портит кадр.
             # Ключ, как и у негатива, появляется только у сборки с этой бедой.
             out["denoise_effective"] = False
+        if self.skin_anchor:
+            # Якорь тона кожи — тоже только у сборки, которая его задаёт:
+            # `meta` остальных 12 сборок не должна получить лишний ключ.
+            out["skin_anchor"] = self.skin_anchor
         return out
 
 
@@ -479,7 +495,8 @@ BUILDS = {b.name: b for b in [
           ],
           style={"sample": GTAZ_SAMPLE},
           style_lora=GTAZ.file, style_weight=GTAZ.weight,
-          negative_effective=False, denoise_effective=False),
+          negative_effective=False, denoise_effective=False,
+          skin_anchor=SKIN_ANCHOR),
 ]}
 
 # ---------------------------------------------------------------- одиночные формы

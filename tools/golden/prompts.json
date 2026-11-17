@@ -5,7 +5,8 @@
     "07_photo_comic: - theofficialpit style",
     "07_photo_jp: - theofficialpit style",
     "07_photo_bimbo: - theofficialpit style",
-    "08_photo_gta: без изменений"
+    "08_photo_gta: без изменений",
+    "08z_photo_gta: + pale skin, porcelain complexion в начале (якорь тона кожи)"
   ],
   "subject": "adult woman, large breasts, nipples, jewelry, ass, wavy brown hair, green eyes, heavy black eyeliner, glossy lips, pearl necklace, pearl bracelet, rings on fingers, pink nail polish, topless, bare chest, grey lace panties, black lace thigh-high stockings, standing pose, one hand touching necklace, one hand on hip, white sofa, white curtains background, soft indoor light",
   "negative_extra": "missing necklace, missing bracelet, missing rings, missing stockings, extra fingers, wrong eye color",
@@ -31,7 +32,7 @@
       "negative": "missing necklace, missing bracelet, missing rings, missing stockings, extra fingers, wrong eye color, photo, photorealistic, 3d render, dark, gloomy, desaturated, black and white, night, rain, blurry, low quality, bad anatomy, bad hands, watermark, text, signature, child, loli, shota, young, underage"
     },
     "08z_photo_gta": {
-      "positive": "GTA V loading screen artwork, gtav, painted with copic markers in a western comic style, adult woman, large breasts, nipples, jewelry, ass, wavy brown hair, green eyes, heavy black eyeliner, glossy lips, pearl necklace, pearl bracelet, rings on fingers, pink nail polish, topless, bare chest, grey lace panties, black lace thigh-high stockings, standing pose, one hand touching necklace, one hand on hip, white sofa, white curtains background, soft indoor light, Los Santos at golden hour with warm golden sunlight, saturated colors, palm trees, blue sky, beach, lens flare, bold black outlines, semi-realistic digital painting, advertising poster",
+      "positive": "pale skin, porcelain complexion, GTA V loading screen artwork, gtav, painted with copic markers in a western comic style, adult woman, large breasts, nipples, jewelry, ass, wavy brown hair, green eyes, heavy black eyeliner, glossy lips, pearl necklace, pearl bracelet, rings on fingers, pink nail polish, topless, bare chest, grey lace panties, black lace thigh-high stockings, standing pose, one hand touching necklace, one hand on hip, white sofa, white curtains background, soft indoor light, Los Santos at golden hour with warm golden sunlight, saturated colors, palm trees, blue sky, beach, lens flare, bold black outlines, semi-realistic digital painting, advertising poster",
       "negative": "missing necklace, missing bracelet, missing rings, missing stockings, extra fingers, wrong eye color, photo, photorealistic, 3d render, dark, gloomy, desaturated, black and white, night, rain, blurry, low quality, bad anatomy, bad hands, watermark, text, signature, child, loli, shota, young, underage"
     }
   }

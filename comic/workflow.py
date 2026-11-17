@@ -337,6 +337,11 @@ def meta(spec, api):
         # Пустой латент (08z): denoise ниже 1 не уточняет картинку, а портит её.
         # На метку опираются отказ задания и диалог расширенных параметров.
         out["denoise_effective"] = False
+    if spec.get("skin_anchor"):
+        # Якорь тона кожи: `PromptBuilder` ставит его первым в positive. Ключ
+        # появляется только у сборки, которая его задаёт (08z), — иначе `meta`
+        # остальных 12 сборок перестала бы быть байт в байт прежней.
+        out["skin_anchor"] = str(spec["skin_anchor"])
     out.update(graph_fields(api, style_lora))
     return out
 
