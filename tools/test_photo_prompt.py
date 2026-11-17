@@ -2652,6 +2652,53 @@ def test_negative_inert():
           "строка про negative_effective у 07")
 
 
+def test_denoise_inert():
+    """48) пустой латент 08z: --denoise ниже 1 отказывает, 1.0 и --dry-run проходят.
+
+    У 08z латент заданного размера (`EmptySD3LatentImage`), а не из фото:
+    denoise ниже 1 стартует с шума, за которым нет картинки, и кадр портится
+    вместо уточнения. Метка `denoise_effective=false` в meta — то же место, где
+    живёт `negative_effective`, и по ней же диалог прячет поле.
+    """
+    print("\n48) 08z: denoise ниже 1 не работает (пустой латент)")
+    repo = Path(__file__).resolve().parent.parent
+    meta = json.loads((repo / "workflows" / "08z_photo_gta.api.json")
+                      .read_text(encoding="utf-8"))["meta"]
+    check("08z: meta говорит, что denoise не действует",
+          meta.get("denoise_effective") is False, str(meta.get("denoise_effective")))
+    old_meta = [json.loads((repo / "workflows" / (n + ".api.json")).read_text(encoding="utf-8"))
+                .get("meta") or {} for n in ("07_photo_thepit", "08_photo_gta", "06_scene_noct")]
+    check("метку denoise получила только 08z",
+          all("denoise_effective" not in m for m in old_meta),
+          str([sorted(m) for m in old_meta]))
+
+    img = TMP / "zimage_denoise.png"
+    make(img, (9, 9, 9))
+    pp.write_cache(str(img), {"subject": "adult woman, black dress", "negative_extra": ""})
+
+    code, text = run_plain(["--image", str(img), "--workflow", "08z_photo_gta",
+                            "--denoise", "0.75", "--dry-run"])
+    check("--denoise 0.75 на 08z -> код 1", code not in (0, None), str(code))
+    check("отказ называет причину",
+          "denoise_effective" in text and "пустой" in text, text.strip()[-400:])
+    check("отказ не дошёл до генерации", "генерация в ComfyUI" not in text,
+          text.strip()[-200:])
+
+    code, text = run_plain(["--image", str(img), "--workflow", "08z_photo_gta",
+                            "--denoise", "1.0", "--dry-run"])
+    check("--denoise 1.0 на 08z -> код 0", code == 0, text.strip()[-300:])
+    check("1.0 не отказывает по denoise_effective", "denoise_effective" not in text,
+          text.strip()[-300:])
+
+    code, text = run_plain(["--image", str(img), "--workflow", "08z_photo_gta", "--dry-run"])
+    check("--dry-run 08z без denoise не затронут", code == 0, text.strip()[-300:])
+
+    code, text = run_plain(["--image", str(img), "--style", "thepit",
+                            "--denoise", "0.6", "--dry-run"])
+    check("на 07 --denoise по-прежнему работает",
+          code == 0 and "denoise: 0.6" in text, text.strip()[-300:])
+
+
 def test_prompt_builder():
     """38) PromptBuilder: промпт кадра собирается побайтно, как в эталоне P0.
 
@@ -2992,6 +3039,7 @@ def main():
         test_depth_from_da3()
         test_zimage_build()
         test_negative_inert()
+        test_denoise_inert()
         test_guard_overrides()
         test_image_tag_idempotent()
         test_panel_sync()

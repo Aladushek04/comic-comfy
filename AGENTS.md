@@ -429,6 +429,9 @@ ComfyUI не трогает. Без готового описания (кэш, `
    (CFG 1)», а `--recheck` на такой сборке отказывается — дописывать промахи в негатив,
    которого сэмплер не читает, значит врать себе. Возрастная рамка на 08z держится только
    позитивом (`with_adult`) и описанием VLM.
+   Там же `meta.denoise_effective=false`: латент пустой, за шумом нет картинки, поэтому
+   denoise ниже 1 портит кадр вместо уточнения. Задание отказывает (`--denoise 0.75` →
+   код 1, причина названа), 1.0 проходит, а диалог расширенных параметров поле прячет.
    Второе: Fun ControlNet Union — **патч модели**, а не ControlNet. Его грузит
    `ModelPatchLoader` из раздела `model_patches` и надевает `QwenImageDiffsynthControlnet`
    (`model, model_patch, vae, image, strength`). Файл, положенный в `controlnet`, 08z не
@@ -545,7 +548,8 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
   `--variants N` (несколько сидов на фото), `--scene "beach at sunset"` (переписать сцену, сохранив человека),
   `--dry-run` (показать промпт без загрузки модели — нужен кэш, `--preset`, `--from-json` или
   `--no-llm --subject`), `--from-json`, `--negative-extra` / `--negative-drop`,
-  `--denoise`, `--seed`, `--force`, `--cn-strength` (сила ControlNet: ниже — свободнее сцена,
+  `--denoise` (у 08z только 1.0: латент пустой, уточнять нечего), `--seed`, `--force`,
+  `--cn-strength` (сила ControlNet: ниже — свободнее сцена,
   выше — точнее повтор исходной геометрии). Описание кэшируется в `out\<фото>_<хэш>.prompt.json` (для `--scene`
   ещё и `__beach-at-sunset` в имени) и не затирается ручными режимами. `--no-llm --subject` тоже проходит
   через санитайзер возраста.

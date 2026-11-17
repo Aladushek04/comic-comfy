@@ -70,7 +70,8 @@
       "positive_template": "9f6fc76fa053577b1f625efbcb8990b3f51adbcf724559b0b5112b36f0aeebfd",
       "negative": "5d1f7b2f87f736dc480fc5ea1e7b5caa6455a75d0ab52a7a4201de24de7dd2d6",
       "samplers": "803ec8add3498ac66633e5fdbf8f47d69858594c8820ab43a85dd692fc73e5ba",
-      "negative_effective": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa"
+      "negative_effective": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+      "denoise_effective": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa"
     }
   }
 }

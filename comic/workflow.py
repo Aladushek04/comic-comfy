@@ -333,6 +333,10 @@ def meta(spec, api):
         # CFG 1 не читает negative. Сборка говорит это меткой, а не молчанием:
         # на неё опираются `--recheck` и строка предпросмотра в CLI.
         out["negative_effective"] = False
+    if spec.get("denoise_effective") is False:
+        # Пустой латент (08z): denoise ниже 1 не уточняет картинку, а портит её.
+        # На метку опираются отказ задания и диалог расширенных параметров.
+        out["denoise_effective"] = False
     out.update(graph_fields(api, style_lora))
     return out
 

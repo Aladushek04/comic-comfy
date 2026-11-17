@@ -191,6 +191,18 @@ def run_job(req, emit=None, cancel=None):
 
     try:
         # ---- 0. Готовое описание: пресет, файл, ручной ввод ------------------
+        if req.denoise is not None and float(req.denoise) != 1.0:
+            # 08z собирается из пустого латента (EmptySD3LatentImage): за шумом
+            # нет картинки, которую denoise мог бы уточнить, поэтому ниже 1 он
+            # портит кадр. Отказ до описания: незачем грузить VLM ради провала.
+            if pp.workflow_meta(req.workflow).get("denoise_effective") is False:
+                raise pp.PipelineError(
+                    f"--denoise {req.denoise} на {req.workflow} не работает: у сборки "
+                    f"denoise_effective=false — латент пустой (EmptySD3LatentImage), "
+                    f"за шумом нет картинки, и denoise ниже 1 портит кадр вместо "
+                    f"уточнения.\n"
+                    f"Оставь denoise 1.0 (или убери флаг): позу и композицию здесь "
+                    f"задаёт ControlNet, а не повторный проход по фото.")
         if req.recheck and not req.dry_run:
             # Повтор по кадру опирается на негатив сборки как на страховку, а у CFG 1
             # негатив не читается вовсе: «поправили» то, чего сэмплер не видит.

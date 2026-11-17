@@ -386,6 +386,9 @@ def test_catalog_fields():
     check("08z: форма знает, что негатив не действует",
           bool(zimage) and zimage["meta"].get("negative_effective") is False,
           str(zimage and zimage["meta"].get("negative_effective")))
+    check("08z: форма знает, что denoise не действует",
+          bool(zimage) and zimage["meta"].get("denoise_effective") is False,
+          str(zimage and zimage["meta"].get("denoise_effective")))
     check("снятые графы 03 форма не предлагает",
           not [n for n in names if n.startswith("03_")], str(names))
     check("снятых графов 03 нет и в папке",
@@ -2274,6 +2277,16 @@ def test_advanced_dialog():
           and "ui.expansion(" not in src)
     check("все три группы на месте в разметке",
           all(f'"{name}"' in src for name, _ in advanced_dialog.GROUPS))
+    zmeta = catalog.load_meta("08z_photo_gta")
+    check("у 08z denoise в диалоге не предлагается",
+          advanced_dialog.hidden_fields(zmeta) == {"denoise"},
+          str(advanced_dialog.hidden_fields(zmeta)))
+    check("у 07 скрытых полей нет",
+          advanced_dialog.hidden_fields(meta) == set(),
+          str(advanced_dialog.hidden_fields(meta)))
+    check("скрытое поле прячется и не уходит в задание",
+          "element.set_visibility(False)" in src and "key not in self.hidden" in src
+          and "self.hidden = hidden_fields" in src)
     other = advanced_dialog.defaults(catalog.load_meta("07_photo_bimbo"))
     check("другой стиль — другие дефолты из его meta",
           other["style_weight"] != hints["style_weight"]
@@ -2284,6 +2297,53 @@ def test_advanced_dialog():
           and "variants" in (V2 / "components" / "run_controls.py").read_text(
               encoding="utf-8"))
 
+
+def test_denoise_guard():
+    """36) 08z: задание с denoise < 1 отвергается до ComfyUI и до VLM.
+
+    Пустой латент нечего уточнять: denoise ниже 1 стартует с шума без картинки.
+    Задание говорит причину текстом, а не отправляет заведомо испорченный граф;
+    1.0 проходит и уходит в /prompt как есть.
+    """
+    print("\n36) 08z: denoise ниже 1 отвергается, 1.0 доходит до ComfyUI")
+    lm, comfy = lm_stub(), comfy_stub()
+    try:
+        with stand(lm, comfy) as root:
+            img = TMP / "zimage_denoise.png"
+            make(img, (11, 30, 11))
+            svc = JobService(jobs_root=root / "out" / "jobs")
+            try:
+                job = svc.submit(jobs.JobRequest(
+                    image="", workflow="08z_photo_gta", subject="adult woman, black dress",
+                    denoise=0.75, seed=1), source_path=str(img))
+                snap = svc.wait(job.id, timeout=60)
+                check("задание с denoise 0.75 провалено",
+                      snap["status"] == "error", str(snap["status"]))
+                check("причина названа в ошибке задания",
+                      "denoise_effective" in (snap.get("error") or "")
+                      and "пустой" in (snap.get("error") or ""),
+                      str(snap.get("error"))[-300:])
+                check("до ComfyUI дело не дошло",
+                      not comfy.state.prompts and not comfy.state.posts,
+                      str(comfy.state.posts))
+                check("LM Studio тоже не звали",
+                      lm.state.chat_call == 0, str(lm.state.chat_call))
+                check("паспорт кадра не создан", book_for(img) is None, str(book_for(img)))
+
+                job = svc.submit(jobs.JobRequest(
+                    image="", workflow="08z_photo_gta", subject="adult woman, black dress",
+                    denoise=1.0, seed=2), source_path=str(img))
+                snap = svc.wait(job.id, timeout=60)
+            finally:
+                svc.shutdown()
+            check("denoise 1.0 задание не отвергает",
+                  snap["status"] == "done", str(snap.get("error")) or str(snap["status"]))
+            ks = [n["inputs"]["denoise"] for n in comfy.state.prompts[-1]["prompt"].values()
+                  if n["class_type"] == "KSampler"]
+            check("в граф ушёл denoise 1.0", ks == [1.0], str(ks))
+    finally:
+        lm.stop()
+        comfy.stop()
 
 
 def main():
@@ -2328,6 +2388,7 @@ def main():
         test_cancel()
         test_start_action()
         test_advanced_dialog()
+        test_denoise_guard()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
     print(f"\nитого: ok {len(passed)}, провалов {len(failed)}")

@@ -150,6 +150,9 @@ class Build:
     `negative_effective` — читает ли сэмплер негатив вообще. У Turbo (CFG 1) нет:
     граф всё равно держит `CLIPTextEncode` (на него опираются `meta` и форма), но
     сборка помечает негатив недействующим, и CLI говорит об этом вслух.
+    `denoise_effective` — есть ли в латенте картинка, которую уточняет denoise.
+    У 08z латент пустой (`EmptySD3LatentImage`): denoise ниже 1 стартует с шума,
+    за которым ничего нет, и кадр портится вместо уточнения.
     """
     name: str
     title: str
@@ -159,6 +162,7 @@ class Build:
     style_lora: str = ""
     style_weight: float | None = None
     negative_effective: bool = True
+    denoise_effective: bool = True
 
     def spec(self):
         """Описание в том виде, в каком его читает `comic.workflow.build`."""
@@ -176,6 +180,10 @@ class Build:
             # Ключ появляется только там, где он что-то значит: у 12 старых
             # сборок `meta` остаётся байт в байт прежней.
             out["negative_effective"] = False
+        if not self.denoise_effective:
+            # Пустой латент нечего уточнять: denoise ниже 1 портит кадр.
+            # Ключ, как и у негатива, появляется только у сборки с этой бедой.
+            out["denoise_effective"] = False
         return out
 
 
@@ -410,6 +418,8 @@ BUILDS = {b.name: b for b in [
     # пустой (это text→image), геометрию задаёт Fun ControlNet по карте DA3.
     # Негатив в графе остаётся (на него опираются meta и форма), но сэмплер его
     # не читает: `negative_effective=False` говорит это CLI и `--recheck`.
+    # Пустой латент означает и `denoise_effective=False`: уточнять нечего, denoise
+    # ниже 1 стартует с шума без картинки и портит кадр.
     Build("08z_photo_gta", "08z Фото → арт GTA (Z-Image)",
           nodes=[
               node(1, "UNETLoader", {"unet_name": Z_IMAGE, "weight_dtype": "default"}),
@@ -469,7 +479,7 @@ BUILDS = {b.name: b for b in [
           ],
           style={"sample": GTAZ_SAMPLE},
           style_lora=GTAZ.file, style_weight=GTAZ.weight,
-          negative_effective=False),
+          negative_effective=False, denoise_effective=False),
 ]}
 
 # ---------------------------------------------------------------- одиночные формы

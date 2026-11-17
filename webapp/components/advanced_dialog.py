@@ -16,6 +16,9 @@
 
 «Вариантов» связан с полем рельса двусторонней привязкой: два независимых поля
 показывали бы два разных числа.
+
+Поля, которых у сборки нет по смыслу (`hidden_fields`), диалог не показывает:
+у 08z пустой латент, denoise ниже 1 там портит кадр, и задание его отвергает.
 """
 from nicegui import ui
 
@@ -48,6 +51,17 @@ TEXT_FIELDS = ("negative_extra",)
 
 # Подпись диалога: одно правило на все поля, чтобы не повторять его восемь раз.
 HINT = "Пусто — значение из графа. Ноль остаётся нулём."
+
+
+def hidden_fields(meta):
+    """Поля, которых у сборки нет по смыслу: их не показываем, а не отказываем.
+
+    У 08z латент пустой (`denoise_effective=false`): denoise ниже 1 портит кадр,
+    и задание такой запрос отвергает. Предлагать в диалоге то, что заведомо не
+    пройдёт, значит обещать настройку, которой нет (грабли 0.22).
+    """
+    meta = meta or {}
+    return {"denoise"} if meta.get("denoise_effective") is False else set()
 
 
 def defaults(meta):
@@ -117,6 +131,7 @@ class AdvancedDialog:
         self.variants = variants        # поле рельса: одно число на две подписи
         self.dialog = None
         self.fields = {}
+        self.hidden = set()             # поля, скрытые у выбранной сборки
 
     def build(self):
         with ui.dialog() as dialog, ui.element("div") as box:
@@ -161,7 +176,15 @@ class AdvancedDialog:
     def open(self, meta=None):
         """Открыть с подсказками текущей сборки: дефолты меняются вместе со стилем."""
         hints = defaults(meta or {})
+        self.hidden = hidden_fields(meta or {})
         for key, element in self.fields.items():
+            if key in self.hidden:
+                # Сборка такую настройку не принимает: поле прячется и
+                # обнуляется, иначе введённое раньше значение уехало бы в задание.
+                element.set_visibility(False)
+                element.set_value("" if key in TEXT_FIELDS else None)
+                continue
+            element.set_visibility(True)
             if key == "variants" and self.variants is not None:
                 continue
             element.props(f'placeholder="{placeholder(key, hints.get(key))}"')
@@ -175,5 +198,6 @@ class AdvancedDialog:
 
     @property
     def values(self):
-        """Фрагмент словаря `collect_form`: пустые поля не попадают вовсе."""
-        return flat({key: element.value for key, element in self.fields.items()})
+        """Фрагмент словаря `collect_form`: пустые и скрытые поля не попадают вовсе."""
+        return flat({key: element.value for key, element in self.fields.items()
+                     if key not in self.hidden})
