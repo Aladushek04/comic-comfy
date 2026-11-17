@@ -40,7 +40,9 @@ $items = @(
     @{ id = 1776335; file = 1677196; dir = "loras\style"; name = "thepit_comic.safetensors" },
     @{ id = 1829222; file = 1730159; dir = "loras\style"; name = "johnpersons_original.safetensors" },
     @{ id = 1442607; file = 1345170; dir = "loras\style"; name = "bimbofusion.safetensors" },
-    @{ id = 2140775; file = 2034567; dir = "loras"; name = "GTAV_IL_MIX.safetensors" }
+    @{ id = 2140775; file = 2034567; dir = "loras"; name = "GTAV_IL_MIX.safetensors" },
+    @{ id = 2513561; file = 2401425; dir = "loras"; name = "GTAV_ZImageTurbo.safetensors" },
+    @{ id = 2904324; file = 2782086; dir = "loras"; name = "NSFW_master_ZIT.safetensors" }
 )
 
 if ($Verify) {

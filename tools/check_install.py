@@ -40,6 +40,9 @@ LOADERS = {
     "UnetLoaderGGUF": ("diffusion_models", "unet"),
     "UpscaleModelLoader": ("upscale_models",),
     "IPAdapterModelLoader": ("ipadapter",),
+    # Fun ControlNet для Z-Image: отдельный раздел `model_patches`, а не
+    # `controlnet` — файл грузит `ModelPatchLoader`, а не `ControlNetLoader`.
+    "ModelPatchLoader": ("model_patches",),
     # Depth Anything 3: нативный узел, файл лежит в `geometry_estimation`
     # (раздел должен быть в extra_model_paths.yaml, иначе узел его не видит).
     "LoadDA3Model": ("geometry_estimation",),

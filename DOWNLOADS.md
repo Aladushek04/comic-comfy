@@ -1,6 +1,6 @@
 # Что скачать
 
-Две части: с Hugging Face (~49 ГБ) и с Civitai (~8.4 ГБ). Для всех 12 сборок нужно **~58 ГБ**.
+Две части: с Hugging Face (~62 ГБ) и с Civitai (~9.1 ГБ). Для всех 13 сборок нужно **~71 ГБ**.
 
 **С 17.11.2026 не всё из этого списка нужно.** Файлы, перечисленные в разделе «Что уехало
 на диск D» в `docs\models.md`, лежат в `D:\models_archive` и ни одной сборкой не
@@ -27,22 +27,27 @@ pornmaster и 15 LoRA. Скачивать их заново не нужно — 
 ```
 <модели>\
 ├── checkpoints       WAI (обязателен), NoobAI
-├── loras             thepit2, Sexy_Detailer, P477Y, GTAV_IL_MIX, Qwen-Lightning, MCNL
+├── loras             thepit2, Sexy_Detailer, P477Y, GTAV_IL_MIX, GTAV_ZImageTurbo, NSFW_master_ZIT
 │   ├── detail        hands_xl
 │   └── style         thepit_comic, johnpersons_original, bimbofusion
 ├── controlnet        Union SDXL promax
-├── geometry_estimation  Depth Anything 3 (глубина 07/08)
+├── model_patches     Fun ControlNet Union 2.1 lite (Z-Image)
+├── geometry_estimation  Depth Anything 3 (глубина 07/08/08z)
 ├── ipadapter         ip-adapter-plus
 ├── clip_vision       CLIP-ViT-H
 ├── upscale_models    4x-UltraSharp
-├── diffusion_models  Qwen-Edit Q4, NoctQA
-├── text_encoders     qwen_2.5_vl fp8, qwen3vl_8b int8
-└── vae               qwen_image_vae, qwen_image_2.1_vae
+├── diffusion_models  Qwen-Edit Q4, NoctQA, Z-Image Turbo
+├── text_encoders     qwen_2.5_vl fp8, qwen3vl_8b int8, qwen_3_4b fp8
+└── vae               qwen_image_vae, qwen_image_2.1_vae, ae (Z-Image)
 ```
 
 `geometry_estimation` должен быть прописан в `extra_model_paths.yaml`
 (`geometry_estimation: geometry_estimation`): узел `LoadDA3Model` ищет файл только там,
 а без строки в путях панель ругается «value not in list».
+
+`model_patches` — тоже отдельная строка (`model_patches: model_patches`), и это **не**
+`controlnet`: Fun ControlNet для Z-Image грузит `ModelPatchLoader`, а не `ControlNetLoader`,
+поэтому файл, положенный в `controlnet`, сборка 08z не увидит.
 
 ---
 
@@ -78,6 +83,14 @@ powershell -ExecutionPolicy Bypass -File tools\download-hf.ps1 -Verify
 | `NoctQA_V1_int8_convrot.safetensors` | diffusion_models | 6.76 |
 | `qwen3vl_8b_int8_convrot.safetensors` | text_encoders | 8.71 |
 | `qwen_image_2.1_vae_bf16.safetensors` | vae | 0.63 |
+| `z_image_turbo_int8_convrot.safetensors` | diffusion_models | 5.78 |
+| `qwen_3_4b_fp8_mixed.safetensors` | text_encoders | 5.25 |
+| `ae.safetensors` | vae | 0.31 |
+| `Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors` | model_patches | 1.88 |
+
+Последние четыре — база Z-Image Turbo, её текст-энкодер Qwen3-4B, VAE и Fun ControlNet Union
+(08z). Полный Union (`…-Union-2.1-2602-8steps`, 6.25 ГБ) рядом не нужен: lite оставляет
+память под базу на 16 ГБ, а разница — в количестве слоёв контроля, не в геометрии.
 
 Размеры в ГБ, как их отдаёт сервер (`-Verify` печатает то же самое).
 
@@ -95,7 +108,7 @@ powershell -ExecutionPolicy Bypass -File tools\download-hf.ps1 -Verify
 ## Часть 2. Civitai — скриптом
 
 Нужен токен: `%USERPROFILE%\.civitai\token` или переменная `CIVITAI_TOKEN`.
-Все девять файлов нужны сборкам, ссылки и ID проверены через API Civitai.
+Все одиннадцать файлов нужны сборкам, ссылки и ID проверены через API Civitai.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\download-civitai.ps1
@@ -117,6 +130,13 @@ powershell -ExecutionPolicy Bypass -File tools\download-civitai.ps1 -Verify   # 
 | `johnpersons_original.safetensors` | loras\style | 0.21 | 1829222 / 1730159 | https://civitai.com/models/1616311?modelVersionId=1829222 |
 | `bimbofusion.safetensors` | loras\style | 0.21 | 1442607 / 1345170 | https://civitai.com/models/1273315?modelVersionId=1442607 |
 | `GTAV_IL_MIX.safetensors` | loras | 0.05 | 2140775 / 2034567 | https://civitai.com/models/1891318?modelVersionId=2140775 |
+| `GTAV_ZImageTurbo.safetensors` | loras | 0.16 | 2513561 / 2401425 | https://civitai.com/api/download/models/2513561?fileId=2401425 |
+| `NSFW_master_ZIT.safetensors` | loras | 0.58 | 2904324 / 2782086 | https://civitai.com/api/download/models/2904324?fileId=2782086 |
+
+У двух последних в колонке «Страница» — прямая ссылка на файл, а не страница модели: ID
+версии и файла сверены через API (`/api/v1/model-versions/<id>`), а страницу модели
+`civitai-dl.ps1` не спрашивает. `GTAV_ZImageTurbo` — порт GTAV-стиля на базу Z-Image
+(для 08z), `NSFW_master_ZIT` — NSFW-LoRA под ту же базу (слот с весом 0).
 
 **Важно про имена.** На Civitai файлы называются иначе, чем в графах; скрипт сохраняет их под
 именами из таблицы (`-OutName`), иначе сборки не найдут LoRA:
@@ -146,7 +166,7 @@ powershell -ExecutionPolicy Bypass -File tools\download-civitai.ps1 -Verify   # 
 python tools\check_install.py
 ```
 
-Скрипт сверяет 17 моделей из всех 12 сборок с папкой моделей и с этим файлом: покажет, чего
+Скрипт сверяет 23 модели из всех 13 сборок с папкой моделей и с этим файлом: покажет, чего
 нет на диске и что не описано. Код возврата 1, если чего-то не хватает. Чужую машину можно
 проверить так: `python tools\check_install.py --models D:\models`.
 

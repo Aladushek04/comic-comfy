@@ -75,11 +75,40 @@ ComfyUI показывает подпапки через обратный слэ
 - `loras\qwen\qwen4play_aio.safetensors` — **новый**: all-in-one NSFW для Qwen-редактора, конкурент MCNL.
 - `loras\Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors` — 4 шага для Qwen.
 
-## Глубина (ControlNet 07/08)
+## Z-Image Turbo (08z)
 
 | Файл | Раздел | Размер | Для чего |
 |---|---|---|---|
-| `geometry_estimation\depth_anything_3_mono_large.safetensors` | geometry_estimation | 1.34 | **новый**: глубина 07/08, узлы `LoadDA3Model` → `DA3Inference` → `DA3Render` (нативные, `comfy_extras\nodes_depth_anything_3.py`) |
+| `diffusion_models\z_image_turbo_int8_convrot.safetensors` | diffusion_models | 5.78 | база 08z: Turbo, 8 шагов, int8-репак |
+| `text_encoders\qwen_3_4b_fp8_mixed.safetensors` | text_encoders | 5.25 | текст-энкодер Qwen3-4B; в `CLIPLoader` тип **`lumina2`**, не `qwen_image` |
+| `vae\ae.safetensors` | vae | 0.31 | VAE базы (тот же, что у Flux-семейства) |
+| `model_patches\Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors` | model_patches | 1.88 | Fun ControlNet Union **lite**: глубина для 08z |
+| `loras\GTAV_ZImageTurbo.safetensors` | loras | 0.16 | GTA-стиль на Z-Image, вес 0.85 — порт `GTAV_IL_MIX` |
+| `loras\NSFW_master_ZIT.safetensors` | loras | 0.58 | NSFW-LoRA под Z-Image; в 08z слот с весом 0 |
+
+`08z_photo_gta` стоит **рядом** с `08_photo_gta`, а не вместо: SDXL-ветка остаётся с рабочим
+негативом и полной возрастной рамкой. Что у 08z устроено иначе:
+
+- **CFG 1, негатива нет.** `CLIPTextEncode` с негативом в графе остаётся (на него опираются
+  `meta` и форма), но сэмплер его не читает: `meta.negative_effective=false`, CLI пишет об этом,
+  `--recheck` отказывается. Рамку возраста держат позитив (`with_adult`) и описание VLM.
+- **Fun ControlNet — патч модели**, а не ControlNet: `ModelPatchLoader` (раздел `model_patches`)
+  → `QwenImageDiffsynthControlnet` (`model, model_patch, vae, image, strength`). Полный Union
+  (`…-Union-2.1-2602-8steps`, 6.25 ГБ) лежит рядом как эталон и в сборку не поставлен: lite
+  оставляет память под базу на 16 ГБ.
+- **Промпт — фраза, а не теги.** Qwen3-4B обучен на естественном языке, поэтому шаблон 08z
+  написан предложением с предлогами, а субъект VLM встаёт на место `sample` (как в 07).
+- **Латент пустой** (`EmptySD3LatentImage` 832×1216), это text→image с геометрией из глубины
+  DA3, а не img2img. Горизонтальное фото получает 1216×832 — `build_payload` меняет стороны
+  местами, как в 01.
+- **Масштаб карты глубины** — `ImageScaleToMaxDimension` 1024 по большей стороне. Виджет
+  называется `largest_size`, а не `size`.
+
+## Глубина (ControlNet 07/08/08z)
+
+| Файл | Раздел | Размер | Для чего |
+|---|---|---|---|
+| `geometry_estimation\depth_anything_3_mono_large.safetensors` | geometry_estimation | 1.34 | **новый**: глубина 07/08/08z, узлы `LoadDA3Model` → `DA3Inference` → `DA3Render` (нативные, `comfy_extras\nodes_depth_anything_3.py`) |
 | `geometry_estimation\depth_anything_3_small.safetensors` | geometry_estimation | 0.14 | запасной вариант, быстрее и грубее; в сборках не стоит |
 | `depth_anything_v2_vitl.pth` | качает `controlnet_aux` | 1.25 | **запасной путь**: DA2 для старого графа из истории git, ни одна сборка его больше не грузит |
 
@@ -148,12 +177,12 @@ ComfyUI показывает подпапки через обратный слэ
 | `WAI-Nsfw-Illustrious-17` | база всех 07/08 | **не меняется.** Кандидат на A/B — fp8-репак `WAI-illustrious-HSWQ` (4.75 ГБ) только если упрёмся в скорость загрузки |
 | `thepit2_1768210` | стиль 07_thepit | **не меняется.** A/B с Plankton v3 (243 МБ, без триггера) |
 | `style\thepit_comic`, `style\johnpersons_original`, `style\bimbofusion` | стили 07 | не меняются: портов на другие базы нет |
-| `GTAV_IL_MIX` | стиль 08 | остаётся для SDXL; **добавится** порт `ZImageTurbo` (162 МБ, v2513561) |
-| `controlnet-union-sdxl-promax` | глубина/поза 07/08 | остаётся; для Z-Image **добавится** `Fun ControlNet Union 2.1` (1.9 ГБ lite или 6.71 ГБ) |
+| `GTAV_IL_MIX` | стиль 08 | остаётся для SDXL; **добавлен** порт `GTAV_ZImageTurbo` (0.16 ГБ) — сборка 08z |
+| `controlnet-union-sdxl-promax` | глубина/поза 07/08 | остаётся; для Z-Image **добавлен** `Fun ControlNet Union 2.1` lite (1.88 ГБ) в `model_patches` |
 | `depth_anything_v2_vitl` | глубина 07/08 | **заменён** на Depth Anything 3 (V2.1a); остаётся запасным путём, пока старый граф лежит в истории git |
 | `NoctQA_V1_int8_convrot` + `qwen3vl_8b_int8` + `qwen_image_2.1_vae` | сцена 06 | не меняются |
 | `CLIP-ViT-H-14`, `ip-adapter-plus`, `4x-UltraSharp` | референс, апскейл | не меняются |
 | WD14 `swinv2` + `eva02-large` | теггер | не меняются; кандидат на A/B — pixai-tagger-v1.0 (только GPU) |
-| — | — | **добавится** база `Z-Image-Turbo` AIO FP8 10 ГБ для 08 на новой базе |
-| — | — | **добавится** NSFW-LoRA под Z-Image (`NSFW MASTER`, 237 тыс. загрузок) |
+| — | — | **добавлена** база `Z-Image-Turbo` int8 (6.20 ГБ) для 08z на новой базе |
+| — | — | **добавлена** NSFW-LoRA под Z-Image (`NSFW_master_ZIT`, 0.62 ГБ), слот с весом 0 |
 

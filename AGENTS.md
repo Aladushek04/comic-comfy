@@ -37,9 +37,9 @@
   `...\ComfyUI\user\default\workflows` (её обновляет `tools\sync_panel.py`, только из репозитория;
   папка панели — `COMFY_PANEL` или `panel`/`main` в `comfy_launch.json`).
   Что открывать в какой ситуации — `G:\AI\comic-comfy\INDEX.md`.
-  Двенадцать сборок, схема имени `номер_назначение_стиль`: 01_scene_{thepit,comic,jp}, 02_edit_mask,
+  Тринадцать сборок, схема имени `номер_назначение_стиль`: 01_scene_{thepit,comic,jp}, 02_edit_mask,
   04_pose_reference, 05_style_return, 06_scene_noct,
-  07_photo_{thepit,comic,jp,bimbo}, 08_photo_gta.
+  07_photo_{thepit,comic,jp,bimbo}, 08_photo_gta, 08z_photo_gta.
 - Каталог моделей и план тестов: `G:\AI\comic-comfy\docs\models.md`.
   Новые файлы раскладываются по подпапкам (`loras\detail`, `loras\comic`, `loras\style`, `loras\qwen`,
   `checkpoints\alt`), ComfyUI отдаёт их как `detail\hands_xl.safetensors`.
@@ -50,7 +50,7 @@
   в том числе для переопределений), `run.py` (паспорт кадра, схема 2), `workflow.py`, `builds.py`.
   `tools\settings.py` — тонкий адаптер над `comic\config.py`.
 - Загрузка: `tools\download-hf.ps1` (HF), `tools\download-civitai.ps1` (все нужные LoRA),
-  `tools\check_install.py` (сверяет 17 моделей из сборок с диском и с `DOWNLOADS.md`).
+  `tools\check_install.py` (сверяет 23 модели из сборок с диском и с `DOWNLOADS.md`).
 - Правила стиля: `G:\AI\comic-comfy\STYLE.md`.
 - Дизайн и тайминги: `G:\AI\comic-comfy\docs\2026-11-12-comic-stack-design.md`.
 - Оркестрация задания: `tools\jobs.py` — общий код CLI и страницы: описание, сцена, выгрузка VLM,
@@ -279,7 +279,9 @@ ComfyUI не трогает. Без готового описания (кэш, `
    поверх «Параметров запуска» (так и вышло на 1440×900). Рельс подобран по высоте
    окна 900 px — фото 160, строка стиля 32, поля параметров по 32, кнопки запуска в
    одну строку, — и ниже 900 px высоты не липнет, иначе «Старт» уехал бы под нижний
-   край. Бейдж — нейтральная пилюля, цвет несёт только `.cp-dot`. Проверка:
+   край. Шесть стилей (08z) влезают только без зазора между строками: `gap` списка
+   равен нулю, седьмой стиль потребует пересчёта рельса. Бейдж — нейтральная пилюля,
+   цвет несёт только `.cp-dot`. Проверка:
    `python tools\test_web_ui.py`, раздел 13в.
 
 0.15. **Обрывы и мусор: четыре правила, которые нельзя терять.**
@@ -417,6 +419,34 @@ ComfyUI не трогает. Без готового описания (кэш, `
    и DA3 (`v2_style`, 504) на одном фото коррелируют **+0.927** (при перевёрнутой
    полярности знак был бы минус). Кадр на DA3 — 48.0 с против 45.2 с на DA2.
 
+0.22. **Z-Image Turbo (08z): негатива нет, патч — не ControlNet, латент пустой.**
+   Первое: Turbo работает на CFG 1, ветки негатива нет вовсе. Граф всё равно держит
+   `CLIPTextEncode` с негативом (иначе `meta`, форма и паспорт кадра теряют опору), но
+   `meta.negative_effective=false` говорит это вслух: CLI печатает «негатив не действует
+   (CFG 1)», а `--recheck` на такой сборке отказывается — дописывать промахи в негатив,
+   которого сэмплер не читает, значит врать себе. Возрастная рамка на 08z держится только
+   позитивом (`with_adult`) и описанием VLM.
+   Второе: Fun ControlNet Union — **патч модели**, а не ControlNet. Его грузит
+   `ModelPatchLoader` из раздела `model_patches` и надевает `QwenImageDiffsynthControlnet`
+   (`model, model_patch, vae, image, strength`). Файл, положенный в `controlnet`, 08z не
+   увидит; `check_install.py` знает про `model_patches`, `extra_model_paths.yaml` — тоже.
+   Третье: виджет масштаба карты глубины называется `largest_size`, а не `size`; у
+   `QwenImageDiffsynthControlnet` три виджета (`strength`, `start_percent`, `end_percent`),
+   хотя в официальном шаблоне в `widgets_values` записано только `[1]` — `check_widgets.py`
+   ждёт все три, и граф с одним значением он назвал бы расхождением.
+   Четвёртое: `EmptySD3LatentImage` — заданный размер, а не латент из фото. Горизонтальное
+   фото должно получить 1216×832 вместо 832×1216, иначе кадр выйдет квадратным/портретным
+   при горизонтальном исходнике (грабли 0). `build_payload` меняет `width`/`height` местами
+   у `EmptyLatentImage` **и** `EmptySD3LatentImage`.
+   Пятое: официальный шаблон надевает патч на голую модель и только потом AuraFlow; у нас
+   наоборот (`model=3`, AuraFlow → патч). `ZImageControlPatch` берёт `percent_to_sigma` у той
+   модели, к которой его прицепили, поэтому при `start_percent 0 / end_percent 1` разницы нет,
+   а при сужении диапазона — есть, и тогда порядок менять нельзя.
+   Шестое: промпт 08z — фраза, а не теги (Qwen3-4B обучен на естественном языке), но
+   `PromptBuilder` склеивает её `join_tags`, который нормализует запятые: точку в конце
+   фрагмента он превратит в «.,», поэтому шаблон пишется одной фразой через запятые.
+   Проверка: `python tools\test_photo_prompt.py`, пункты 46–47.
+
 1. **`control_after_generate`.** В UI-формате у seed-виджета есть скрытый седьмой элемент
    `widgets_values` (`"randomize"`), которого нет в API-формате. Забудешь — все значения KSampler
    съезжают на позицию влево, панель Issues пишет «Invalid input: sampler_name / cfg».
@@ -524,9 +554,12 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 - Результаты: каждый кадр копируется в `out\<фото>_<хэш>\` рядом с `run.json`
   (workflow, seed, denoise, `cn_strength`, `style_weight`, промпт). `null` в настройке
   значит «как в сборке» — поэтому два кадра с одинаковым seed всегда различимы.
-- `--recheck` — после генерации VLM смотрит кадр, дописывает промахи в негатив и делает один повторный проход.
-  Стоит +1 описание и +1 генерацию, поэтому по умолчанию выключен.
-- Ориентация: горизонтальные фото автоматически получают 1216×832 вместо 832×1216 (в сборках `01_*`).
+- `--recheck` — после генерации VLM смотрит кадр, дописывает промахи в промпт и делает один повторный проход.
+  Стоит +1 описание и +1 генерацию, поэтому по умолчанию выключен. На сборке с
+  `meta.negative_effective=false` (08z, CFG 1) он **отказывается**: негатива, куда дописывать
+  промахи, там нет.
+- Ориентация: горизонтальные фото автоматически получают 1216×832 вместо 832×1216 (в сборках `01_*`
+  и `08z_photo_gta`: у них латент заданного размера).
 
 ## Роли LoRA
 
@@ -534,12 +567,14 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
 - GTA-постер: `GTAV_IL_MIX` (триггер `gtav, copic-makers, western comics (style), copic_markers_painting`) — только в 08.
   Альтернативы лежат рядом (`GTA_style_XL`, `GTA6_KeyArt_NoobAI`, `gta_style_illustrious`), но по сравнению
   на одном кадре IL-версия чище: нет типографики на одежде и водяного знака.
+- GTA на Z-Image: `GTAV_ZImageTurbo` (вес 0.85) — только в `08z_photo_gta`; триггер `gtav` тот же.
+  Рядом слот `NSFW_master_ZIT` с весом 0 (поднимать вручную по кадру).
 - Тело: `Sexy_Detailer`, по умолчанию вес 0.
 - Персонажи: `P477Y` (Patty), `P4M3L4` (Pamela).
 
 ## Проверки перед словом «готово»
 
-- `python tools\test_photo_prompt.py` — 521 проверка CLI и пайплайна (модели не нужны).
+- `python tools\test_photo_prompt.py` — 641 проверка CLI и пайплайна (модели не нужны).
 - `python tools\test_web_app.py` — 329 проверок заданий, очереди и веб-слоя на HTTP-заглушках
   (LM Studio и ComfyUI подменяются, GPU не нужен).
 - `python tools\test_web_ui.py` — 99 браузерных проверок Chromium на тех же заглушках:
@@ -551,7 +586,7 @@ powershell -ExecutionPolicy Bypass -File tools\civitai-search.ps1 `
   Это про `tools\*`: `webapp\run.py` поднимается из `.cmd`/`.ps1` со своим окружением, а
   `test_web_ui.py` сам задаёт `PYTHONIOENCODING` дочернему серверу — браузерная проверка
   работу сервера без переменной не доказывает.
-- `python tools\check_install.py` — все 17 моделей из сборок на диске и описаны в `DOWNLOADS.md`.
+- `python tools\check_install.py` — все 23 модели из сборок на диске и описаны в `DOWNLOADS.md`.
 - `python build_workflows.py` без ошибок, затем `python tools\check_widgets.py` — сверка
   `widgets_values` с `/object_info` (поднимает headless ComfyUI на 8199 и гасит его).
 - `python tools\sync_panel.py --check` — копия графов для панели ComfyUI совпадает с репозиторием.

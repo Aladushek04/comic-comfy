@@ -62,7 +62,16 @@ $pairs = @(
     # ---- Layer 3: Noct Q Anime (Qwen-Image 2.1) ----
     @{ url = "https://huggingface.co/Noctaluna/Noct-Q-Anime-Uncensored-Qwen-Image-2.1/resolve/main/NoctQA_V1_int8_convrot.safetensors"; dir = "diffusion_models"; name = "NoctQA_V1_int8_convrot.safetensors" },
     @{ url = "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_int8_convrot.safetensors"; dir = "text_encoders"; name = "qwen3vl_8b_int8_convrot.safetensors" },
-    @{ url = "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors"; dir = "vae"; name = "qwen_image_2.1_vae_bf16.safetensors" }
+    @{ url = "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors"; dir = "vae"; name = "qwen_image_2.1_vae_bf16.safetensors" },
+
+    # ---- Layer 4: Z-Image Turbo (08z) ----
+    # Base, text encoder and VAE are the Comfy-Org split files. The Fun ControlNet
+    # Union is a model patch, not a ControlNet: it goes to model_patches and is
+    # loaded by ModelPatchLoader. The lite file leaves room for the base on 16 GB.
+    @{ url = "https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/diffusion_models/z_image_turbo_int8_convrot.safetensors"; dir = "diffusion_models"; name = "z_image_turbo_int8_convrot.safetensors" },
+    @{ url = "https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/text_encoders/qwen_3_4b_fp8_mixed.safetensors"; dir = "text_encoders"; name = "qwen_3_4b_fp8_mixed.safetensors" },
+    @{ url = "https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/vae/ae.safetensors"; dir = "vae"; name = "ae.safetensors" },
+    @{ url = "https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1/resolve/main/Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors"; dir = "model_patches"; name = "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors" }
 )
 
 # Authors' example workflows go to their own folder, not next to our builds.

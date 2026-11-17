@@ -24,3 +24,6 @@ comic_shared:
   # Depth Anything 3 (нативные узлы ComfyUI) — без этой строки LoadDA3Model
   # не увидит файл и граф упадёт на «value not in list».
   geometry_estimation: geometry_estimation
+  # Fun ControlNet для Z-Image лежит не в controlnet, а в model_patches:
+  # его грузит `ModelPatchLoader`, а не `ControlNetLoader`.
+  model_patches: model_patches
