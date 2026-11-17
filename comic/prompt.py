@@ -47,7 +47,7 @@ NEG_CORE = ("photorealistic, 3d render, bad anatomy, bad hands, extra fingers, "
 # одном промпте — и ранний токен победил бы, то есть ровно наоборот нужному
 # (AGENTS 0.22). Слова сравниваются целиком: `tan skin` не ловится в `tanned`.
 SKIN_TONES = ("dark skin", "brown skin", "ebony", "tan skin", "olive skin",
-              "pale skin", "fair skin")
+              "pale skin", "fair skin", "light skin")
 
 
 def names_skin(text):

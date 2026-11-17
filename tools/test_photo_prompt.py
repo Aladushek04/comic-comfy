@@ -2811,6 +2811,16 @@ def test_skin_anchor():
           == "skipped: tags not counted",
           str(untagged_payload.get("applied")))
 
+    # Тон кожи: SYSTEM требует называть его всегда, и словарь якоря обязан знать
+    # те же слова. Иначе описание скажет `light skin`, якорь всё равно добавит
+    # `pale skin`, и промпт начнёт спорить сам с собой (AGENTS 0.22).
+    check("SYSTEM требует называть тон кожи", "name the skin tone" in pp.SYSTEM,
+          pp.SYSTEM[:160])
+    for tone in ("fair skin", "light skin", "olive skin", "tan skin",
+                 "brown skin", "dark brown skin", "dark skin"):
+        check(f"SYSTEM знает «{tone}»", tone in pp.SYSTEM, tone)
+        check(f"якорь узнаёт «{tone}»", cp.names_skin(f"adult woman, {tone}"), tone)
+
     saved = (pp.ROOT, pp.OUTPUT_DIR)
     pp.ROOT = TMP / "root_anchor"
     pp.OUTPUT_DIR = TMP / "out_anchor"
