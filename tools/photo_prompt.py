@@ -347,7 +347,11 @@ def rewrite_scene(desc, scene, model):
 # (v4-черновик) не помогло — модель настаивает на `tan` даже с запретом и с
 # «суди кожу, а не свет». Поэтому тон в промпт не идёт вообще: тёмную кожу называет
 # теггер (`dark-skinned_female`), а якорь 08z опирается на него (AGENTS 0.22).
-DESCRIBE_VERSION = 4
+# Версия 5 — одежда четырьмя тегами: цвет вплотную к существительному, тип, длина, вырез.
+# v4 сжала платье на 0004 до `deep plunging magenta halter dress`, и пять SDXL-сборок
+# нарисовали crimson вместо маджента (матрица v4, известное отклонение). Пример ответа
+# тоже был сжат (`red sleeveless dress`), то есть учил ровно этой форме.
+DESCRIBE_VERSION = 5
 
 SYSTEM = """You describe photographs for a text-to-image model.
 Return ONLY a JSON object with three string fields: subject, negative_extra, notes.
@@ -356,6 +360,11 @@ Rules:
 - subject: English, comma-separated tags, 25-45 words. Cover: who, hair, eye colour,
   face details (eye makeup, lips), glasses/accessories, clothing, pose, hands, framing,
   background, light.
+- Clothing: give colour, garment, length and neckline as separate tags, with the colour
+  right before the garment noun: `magenta mini dress, halter neck, deep V-neck`. Never put
+  a neckline word between the colour and the garment (`deep plunging magenta dress` reads
+  as a plain red dress), and never drop length or neckline when they are visible. Name the
+  garment before the bare-skin tags, not after them.
 - Always name the eye colour right after the hair: blue eyes, green eyes, brown eyes,
   hazel eyes, grey eyes. The image model has no default colour and paints a saturated
   random one when the colour is missing (red or glowing eyes most often). Here grey and
@@ -378,7 +387,7 @@ Rules:
 - notes: one short sentence in Russian about what is fragile in this photo.
 
 Example output:
-{"subject":"adult woman, early 30s, long wavy blonde hair, blue eyes, black framed glasses, light eye makeup, red sleeveless dress, thin gold necklace, arms spread wide, neutral grey studio background, soft frontal light","negative_extra":"white lenses, opaque glasses, missing necklace","notes":"главное — сохранить очки и цепочку."}"""
+{"subject":"adult woman, early 30s, long wavy blonde hair, blue eyes, black framed glasses, light eye makeup, teal mini dress, square neck, thin gold necklace, arms spread wide, neutral grey studio background, soft frontal light","negative_extra":"white lenses, opaque glasses, missing necklace","notes":"главное — сохранить очки и цепочку."}"""
 
 
 def with_adult(subject):

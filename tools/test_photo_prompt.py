@@ -3156,6 +3156,88 @@ def test_image_tag_idempotent():
           f"{pp.cache_path(same).name} / {pp.cache_path(img).name}")
 
 
+def test_garment_attributes():
+    """50) одежда четырьмя тегами: цвет, тип, длина, вырез — и ничего лишнего.
+
+    На 0004 описание v4 сжало платье до `deep plunging magenta halter dress`, и пять
+    SDXL-сборок нарисовали crimson вместо маджента. Правка живёт в SYSTEM, поэтому
+    проверяем и правило, и то, что соседние правила (глаза, нагота, аксессуары,
+    запрет тона кожи) остались дословно на месте.
+    """
+    print("\n50) одежда: цвет, тип, длина, вырез")
+    from comic import cache as cc
+    from comic import prompt as cp
+
+    check("SYSTEM требует четыре атрибута одежды",
+          "colour, garment, length and neckline" in pp.SYSTEM, pp.SYSTEM[:200])
+    check("SYSTEM ставит цвет вплотную к существительному",
+          "right before the garment noun" in pp.SYSTEM)
+    check("SYSTEM запрещает вырез между цветом и платьем",
+          "Never put" in pp.SYSTEM and "neckline word between" in pp.SYSTEM)
+    check("SYSTEM требует не терять длину и вырез",
+          "never drop length or neckline" in pp.SYSTEM)
+    check("SYSTEM ставит одежду до тегов наготы",
+          "garment before the bare-skin tags" in pp.SYSTEM)
+    check("в примере одежда с цветом, типом, длиной и вырезом",
+          "teal mini dress" in pp.SYSTEM and "square neck" in pp.SYSTEM)
+    check("сжатого примера с красным платьем больше нет",
+          "red sleeveless dress" not in pp.SYSTEM)
+
+    # Соседние правила не должны поехать от правки одежды.
+    check("цвет глаз по-прежнему требуется", "eye colour" in pp.SYSTEM)
+    check("запрет серых и ореховых глаз на месте",
+          "never write grey eyes or hazel eyes" in pp.SYSTEM)
+    check("нагота называется прямо", "topless" in pp.SYSTEM)
+    check("возрастные слова запрещены",
+          "Never write age words" in pp.SYSTEM and "schoolgirl" in pp.SYSTEM)
+    check("аксессуары перечислены",
+          "glasses, lenses, jewellery" in pp.SYSTEM)
+    check("тон кожи в subject не просится",
+          "name the skin tone" not in pp.SYSTEM and "tan skin" not in pp.SYSTEM)
+
+    # Кэш: запись v4 обязана пересняться, v5 — читаться.
+    folder = TMP / "garment"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "p.prompt.json"
+    cc.write(path, cc.from_desc({"subject": "adult woman, magenta mini dress",
+                                 "negative_extra": ""}, sha1="a" * 12, source="p.png",
+                                describe_version=4))
+    rec = cc.read(path)
+    check("версия описания поднята до 5", pp.DESCRIBE_VERSION == 5, str(pp.DESCRIBE_VERSION))
+    check("запись v4 отклоняется как старая",
+          cc.check(rec, describe_version=pp.DESCRIBE_VERSION, sha1=lambda: "a" * 12)
+          == cc.DESCRIBE,
+          str(cc.check(rec, describe_version=pp.DESCRIBE_VERSION, sha1=lambda: "a" * 12)))
+    cc.write(path, cc.from_desc({"subject": "adult woman, magenta mini dress",
+                                 "negative_extra": ""}, sha1="a" * 12, source="p.png",
+                                describe_version=pp.DESCRIBE_VERSION))
+    fresh = cc.read(path)
+    check("запись v5 читается",
+          cc.check(fresh, describe_version=pp.DESCRIBE_VERSION, sha1=lambda: "a" * 12) == "")
+
+    # Теггер не дописывает второй цвет одежды и не трогает глаза/аксессуары.
+    img = TMP / "garment" / "photo.png"
+    make(img, (10, 20, 30))
+    real_tags = pp.tagger.tags
+    try:
+        pp.tagger.tags = lambda image_path, warn=True: {
+            "tags": ["large breasts", "pink_dress", "cleavage", "glasses", "no_bra"],
+            "size": "large breasts", "eyes": "", "version": pp.tagger.VERSION}
+        desc = {"subject": "adult woman, magenta mini dress, halter neck, deep V-neck, "
+                            "green eyes, clear framed glasses, pearl necklace"}
+        subject = pp.enrich_subject(desc, str(img))
+        check("второй цвет одежды не добавлен", "pink_dress" not in subject, subject)
+        check("маджента на месте", "magenta mini dress" in subject, subject)
+        check("вырез на месте", "deep V-neck" in subject, subject)
+        check("глаза и аксессуары целы",
+              "green eyes" in subject and "clear framed glasses" in subject
+              and "pearl necklace" in subject, subject)
+        check("тон кожи не появился",
+              not cp.names_skin(subject), subject)
+    finally:
+        pp.tagger.tags = real_tags
+
+
 def main():
     patch_roots()
     try:
@@ -3212,6 +3294,7 @@ def main():
         test_skin_anchor()
         test_guard_overrides()
         test_image_tag_idempotent()
+        test_garment_attributes()
         test_panel_sync()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
