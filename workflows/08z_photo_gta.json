@@ -1,0 +1,1071 @@
+{
+  "last_node_id": 26,
+  "last_link_id": 21,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "UNETLoader",
+      "pos": [
+        80,
+        60
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UNETLoader"
+      },
+      "widgets_values": [
+        "z_image_turbo_int8_convrot.safetensors",
+        "default"
+      ],
+      "title": "Модель"
+    },
+    {
+      "id": 20,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        80,
+        320
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "NSFW_master_ZIT.safetensors",
+        0.0
+      ],
+      "title": "LoRA · NSFW_master_ZIT"
+    },
+    {
+      "id": 2,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        80,
+        580
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "GTAV_ZImageTurbo.safetensors",
+        0.85
+      ],
+      "title": "LoRA · GTAV_ZImageTurbo"
+    },
+    {
+      "id": 3,
+      "type": "ModelSamplingAuraFlow",
+      "pos": [
+        80,
+        840
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            11
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ModelSamplingAuraFlow"
+      },
+      "widgets_values": [
+        3.0,
+        "flow"
+      ],
+      "title": "AuraFlow shift"
+    },
+    {
+      "id": 4,
+      "type": "CLIPLoader",
+      "pos": [
+        500,
+        60
+      ],
+      "size": [
+        380,
+        210
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            4,
+            5
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPLoader"
+      },
+      "widgets_values": [
+        "qwen_3_4b_fp8_mixed.safetensors",
+        "lumina2",
+        "default"
+      ],
+      "title": "Текстовый энкодер"
+    },
+    {
+      "id": 5,
+      "type": "CLIPTextEncode",
+      "pos": [
+        500,
+        320
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            16
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "GTA V loading screen artwork, gtav, painted with copic markers in a western comic style, a woman in the foreground, Los Santos at golden hour with warm golden sunlight, saturated colors, palm trees, blue sky, beach, lens flare, bold black outlines, semi-realistic digital painting, advertising poster"
+      ],
+      "title": "Промпт"
+    },
+    {
+      "id": 6,
+      "type": "CLIPTextEncode",
+      "pos": [
+        500,
+        580
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            17
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "photo, photorealistic, 3d render, dark, gloomy, desaturated, black and white, night, rain, blurry, low quality, bad anatomy, bad hands, extra fingers, watermark, text, signature, child, loli, shota, young"
+      ],
+      "title": "Негатив"
+    },
+    {
+      "id": 7,
+      "type": "LoadImage",
+      "pos": [
+        500,
+        840
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            6
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "photo.png"
+      ],
+      "title": "Изображение · photo.png"
+    },
+    {
+      "id": 8,
+      "type": "ImageScaleToTotalPixels",
+      "pos": [
+        920,
+        60
+      ],
+      "size": [
+        380,
+        210
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            8
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageScaleToTotalPixels"
+      },
+      "widgets_values": [
+        "lanczos",
+        1.0,
+        1
+      ],
+      "title": "Масштаб до 1 МП"
+    },
+    {
+      "id": 21,
+      "type": "LoadDA3Model",
+      "pos": [
+        920,
+        320
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "DA3_MODEL",
+          "type": "DA3_MODEL",
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadDA3Model"
+      },
+      "widgets_values": [
+        "depth_anything_3_mono_large.safetensors",
+        "default"
+      ],
+      "title": "Глубина DA3: модель"
+    },
+    {
+      "id": 22,
+      "type": "DA3Inference",
+      "pos": [
+        920,
+        580
+      ],
+      "size": [
+        380,
+        210
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "da3_model",
+          "type": "DA3_MODEL",
+          "link": 7
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "DA3_GEOMETRY",
+          "type": "DA3_GEOMETRY",
+          "links": [
+            9
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DA3Inference"
+      },
+      "widgets_values": [
+        504,
+        "upper_bound_resize",
+        "mono"
+      ],
+      "title": "Глубина DA3"
+    },
+    {
+      "id": 23,
+      "type": "DA3Render",
+      "pos": [
+        920,
+        840
+      ],
+      "size": [
+        380,
+        210
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "da3_geometry",
+          "type": "DA3_GEOMETRY",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            10
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DA3Render"
+      },
+      "widgets_values": [
+        "depth",
+        "v2_style",
+        false
+      ],
+      "title": "Карта глубины"
+    },
+    {
+      "id": 24,
+      "type": "ImageScaleToMaxDimension",
+      "pos": [
+        1340,
+        60
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            14
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageScaleToMaxDimension"
+      },
+      "widgets_values": [
+        "lanczos",
+        1024
+      ],
+      "title": "Масштаб карты глубины"
+    },
+    {
+      "id": 25,
+      "type": "ModelPatchLoader",
+      "pos": [
+        1340,
+        320
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL_PATCH",
+          "type": "MODEL_PATCH",
+          "links": [
+            12
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ModelPatchLoader"
+      },
+      "widgets_values": [
+        "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors"
+      ],
+      "title": "Fun ControlNet (патч)"
+    },
+    {
+      "id": 9,
+      "type": "VAELoader",
+      "pos": [
+        1340,
+        580
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            13,
+            20
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "ae.safetensors"
+      ],
+      "title": "VAE"
+    },
+    {
+      "id": 26,
+      "type": "QwenImageDiffsynthControlnet",
+      "pos": [
+        1340,
+        840
+      ],
+      "size": [
+        380,
+        210
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 11
+        },
+        {
+          "name": "model_patch",
+          "type": "MODEL_PATCH",
+          "link": 12
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 13
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            15
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "QwenImageDiffsynthControlnet"
+      },
+      "widgets_values": [
+        1.0,
+        0.0,
+        1.0
+      ],
+      "title": "Fun ControlNet: применить"
+    },
+    {
+      "id": 12,
+      "type": "EmptySD3LatentImage",
+      "pos": [
+        1760,
+        60
+      ],
+      "size": [
+        380,
+        210
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            18
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "EmptySD3LatentImage"
+      },
+      "widgets_values": [
+        832,
+        1216,
+        1
+      ],
+      "title": "Латент SD3"
+    },
+    {
+      "id": 13,
+      "type": "KSampler",
+      "pos": [
+        1760,
+        320
+      ],
+      "size": [
+        380,
+        300
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 15
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 16
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 17
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 18
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            19
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        12345,
+        "randomize",
+        8,
+        1.0,
+        "res_multistep",
+        "simple",
+        1.0
+      ],
+      "title": "Сэмплер · denoise 1"
+    },
+    {
+      "id": 14,
+      "type": "VAEDecode",
+      "pos": [
+        1760,
+        580
+      ],
+      "size": [
+        380,
+        120
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 19
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 20
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            21
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": [],
+      "title": "Из латента"
+    },
+    {
+      "id": 19,
+      "type": "SaveImage",
+      "pos": [
+        1760,
+        840
+      ],
+      "size": [
+        380,
+        150
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 21
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "comic/08z_photo_gta"
+      ],
+      "title": "Сохранение"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      20,
+      0,
+      "MODEL"
+    ],
+    [
+      2,
+      20,
+      0,
+      2,
+      0,
+      "MODEL"
+    ],
+    [
+      3,
+      2,
+      0,
+      3,
+      0,
+      "MODEL"
+    ],
+    [
+      4,
+      4,
+      0,
+      5,
+      0,
+      "CLIP"
+    ],
+    [
+      5,
+      4,
+      0,
+      6,
+      0,
+      "CLIP"
+    ],
+    [
+      6,
+      7,
+      0,
+      8,
+      0,
+      "IMAGE"
+    ],
+    [
+      7,
+      21,
+      0,
+      22,
+      0,
+      "DA3_MODEL"
+    ],
+    [
+      8,
+      8,
+      0,
+      22,
+      1,
+      "IMAGE"
+    ],
+    [
+      9,
+      22,
+      0,
+      23,
+      0,
+      "DA3_GEOMETRY"
+    ],
+    [
+      10,
+      23,
+      0,
+      24,
+      0,
+      "IMAGE"
+    ],
+    [
+      11,
+      3,
+      0,
+      26,
+      0,
+      "MODEL"
+    ],
+    [
+      12,
+      25,
+      0,
+      26,
+      1,
+      "MODEL_PATCH"
+    ],
+    [
+      13,
+      9,
+      0,
+      26,
+      2,
+      "VAE"
+    ],
+    [
+      14,
+      24,
+      0,
+      26,
+      3,
+      "IMAGE"
+    ],
+    [
+      15,
+      26,
+      0,
+      13,
+      0,
+      "MODEL"
+    ],
+    [
+      16,
+      5,
+      0,
+      13,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      17,
+      6,
+      0,
+      13,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      18,
+      12,
+      0,
+      13,
+      3,
+      "LATENT"
+    ],
+    [
+      19,
+      13,
+      0,
+      14,
+      0,
+      "LATENT"
+    ],
+    [
+      20,
+      9,
+      0,
+      14,
+      1,
+      "VAE"
+    ],
+    [
+      21,
+      14,
+      0,
+      19,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7,
+      "offset": [
+        0,
+        0
+      ]
+    },
+    "linearData": {
+      "inputs": [
+        [
+          "7",
+          "image",
+          {
+            "description": "исходное фото"
+          }
+        ],
+        [
+          "5",
+          "text",
+          {
+            "description": "сцена: город, пляж, пальмы, время суток"
+          }
+        ],
+        [
+          "2",
+          "strength_model",
+          {
+            "description": "сила GTA-стиля, вес 0.85"
+          }
+        ],
+        [
+          "20",
+          "strength_model",
+          {
+            "description": "NSFW LoRA (0 = выкл)"
+          }
+        ],
+        [
+          "26",
+          "strength",
+          {
+            "description": "жёсткость позы и композиции"
+          }
+        ],
+        [
+          "12",
+          "width",
+          {
+            "description": "832 для портрета; горизонталь меняет местами"
+          }
+        ],
+        [
+          "12",
+          "height",
+          {
+            "description": "1216 для портрета; горизонталь меняет местами"
+          }
+        ],
+        [
+          "13",
+          "seed",
+          {
+            "description": "сид: randomize = каждый раз новый"
+          }
+        ],
+        [
+          "13",
+          "steps",
+          {
+            "description": "8 шагов — весь бюджет Turbo"
+          }
+        ],
+        [
+          "13",
+          "cfg",
+          {
+            "description": "1.0 — Turbo, негатив не читается"
+          }
+        ]
+      ],
+      "outputs": [
+        "19"
+      ]
+    }
+  },
+  "version": 0.4
+}

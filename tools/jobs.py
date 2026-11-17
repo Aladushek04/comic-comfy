@@ -191,6 +191,15 @@ def run_job(req, emit=None, cancel=None):
 
     try:
         # ---- 0. Готовое описание: пресет, файл, ручной ввод ------------------
+        if req.recheck and not req.dry_run:
+            # Повтор по кадру опирается на негатив сборки как на страховку, а у CFG 1
+            # негатив не читается вовсе: «поправили» то, чего сэмплер не видит.
+            if pp.workflow_meta(req.workflow).get("negative_effective") is False:
+                raise pp.PipelineError(
+                    f"--recheck на {req.workflow} не работает: у сборки "
+                    f"negative_effective=false — CFG 1 не читает негатив, то есть "
+                    f"страховки, на которую опирается повтор по кадру, там нет.\n"
+                    f"Поправь описание или промпт вручную и повтори без --recheck.")
         if req.description is not None:
             desc = dict(req.description)
             out("cache", f"0) описание из {req.description_source or 'готового источника'}")
@@ -329,6 +338,11 @@ def run_job(req, emit=None, cancel=None):
         result.negative = payload["negative"]
         out("prompt", "", positive=payload["positive"], negative=payload["negative"],
             applied=payload.get("applied") or {})
+        if payload["meta"].get("negative_effective") is False:
+            # Негатив в графе есть (на него опираются meta и форма), но CFG 1 его
+            # не читает. Молчать об этом — значит обещать страховку, которой нет.
+            out("negative_inert",
+                "   негатив не действует (CFG 1): текст в графе остаётся, сэмплер его не читает")
 
         if req.dry_run:
             out("preview", "\nитоговый промпт:\n  " + payload["positive"]

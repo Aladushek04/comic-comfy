@@ -1068,11 +1068,15 @@ def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, la
                 node["inputs"]["strength_model"] = float(style_weight)
                 weight_set = True
                 print(f"   вес стилевой LoRA {style_lora}: {old} -> {style_weight}")
-        if node["class_type"] == "ControlNetApplyAdvanced" and cn_strength is not None:
+        if node["class_type"] in ("ControlNetApplyAdvanced", "QwenImageDiffsynthControlnet") \
+                and cn_strength is not None:
             old = node["inputs"].get("strength")
             node["inputs"]["strength"] = float(cn_strength)
             print(f"   сила ControlNet: {old} -> {cn_strength}")
-        if node["class_type"] == "EmptyLatentImage" and landscape:
+        # Ориентация: у 01 и 08z латент пустой и заданного размера, поэтому
+        # горизонтальное фото получает 1216x832, а не квадрат (грабли 0).
+        # У 07/08 латент приходит из VAE-энкода фото и уже нужной ориентации.
+        if node["class_type"] in ("EmptyLatentImage", "EmptySD3LatentImage") and landscape:
             w = node["inputs"].get("width")
             h = node["inputs"].get("height")
             if w and h and w < h:

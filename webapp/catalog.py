@@ -10,7 +10,10 @@ import urllib.request
 import photo_prompt as pp
 
 PHOTO_PREFIXES = ("07_",)
-PHOTO_EXACT = ("08_photo_gta",)
+# 08z — тоже фото-сборка (Z-Image), но имя не начинается с 08_photo_, поэтому
+# перечислена точно. `--style gta` по-прежнему ведёт на 08_photo_gta: у 08z
+# короткого имени нет, она выбирается по имени сборки.
+PHOTO_EXACT = ("08_photo_gta", "08z_photo_gta")
 
 
 class CatalogError(RuntimeError):

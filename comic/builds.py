@@ -1,4 +1,4 @@
-"""Все 12 сборок — данные: база, LoRA с ролями и триггерами, промпты, сэмплеры.
+"""Все 13 сборок — данные: база, LoRA с ролями и триггерами, промпты, сэмплеры.
 
 Здесь нет ни одной операции над словарями графа. Сборка описывается строкой
 таблицы: какой стиль (роль `style`, вес, триггер), какое тело, кисти и
@@ -61,6 +61,23 @@ GTA_NEG = ("photo, photorealistic, 3d render, dark, gloomy, desaturated, black a
            "night, rain, blurry, low quality, bad anatomy, bad hands, extra fingers, "
            "watermark, text, signature, child, loli, shota, young")
 
+# Z-Image Turbo (08z). База, энкодер, VAE и патч — четыре разных раздела моделей;
+# Fun ControlNet грузит `ModelPatchLoader` из `model_patches`, а не `ControlNetLoader`
+# из `controlnet`. Lite-версия (1.88 ГБ) выбрана по памяти: 16 ГБ на карте.
+Z_IMAGE = "z_image_turbo_int8_convrot.safetensors"
+Z_IMAGE_TE = "qwen_3_4b_fp8_mixed.safetensors"
+Z_IMAGE_VAE = "ae.safetensors"
+Z_IMAGE_PATCH = "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors"
+
+# Промпт 08z — фраза, а не теги: текст-энкодер Qwen3-4B обучен на естественном
+# языке. `{{subject}}` встаёт на место `GTAZ_SAMPLE`, как в 07 (`sample`).
+# `gtav` оставлен триггером LoRA: порт тот же, что у GTAV_IL_MIX.
+GTAZ_SAMPLE = "a woman in the foreground"
+GTAZ_PROMPT = ("GTA V loading screen artwork, gtav, painted with copic markers in a western "
+               "comic style, " + GTAZ_SAMPLE + ", Los Santos at golden hour with warm golden "
+               "sunlight, saturated colors, palm trees, blue sky, beach, lens flare, bold black "
+               "outlines, semi-realistic digital painting, advertising poster")
+
 NOCT_PROMPT = ("An anime illustration of an adult woman in a leather jacket on a rainy city street at night, "
                "soft rim light, detailed background, cinematic composition")
 NOCT_NEG = "low quality, blurry, bad anatomy, extra fingers, watermark, text, child"
@@ -117,6 +134,9 @@ BIMBO = Lora("style\\bimbofusion.safetensors", "style", 0.6,
 GTA = Lora("GTAV_IL_MIX.safetensors", "style", 0.85,
            trigger="gtav, copic-makers, western comics (style), copic_markers_painting",
            label="GTAV IL")
+GTAZ = Lora("GTAV_ZImageTurbo.safetensors", "style", 0.85,
+            trigger="gtav", label="GTAV Z-Image Turbo")
+NSFW_Z = Lora("NSFW_master_ZIT.safetensors", "nsfw", 0.0)
 
 BODY = Lora("Sexy_Detailer.safetensors", "body", 0.0)
 HANDS = Lora("detail\\hands_xl.safetensors", "hands", 0.0)
@@ -125,7 +145,12 @@ PATTY = Lora("P477Y.safetensors", "character", 0.0)
 
 @dataclass
 class Build:
-    """Собранное описание сборки: узлы, поля App Mode, место субъекта в промпте."""
+    """Собранное описание сборки: узлы, поля App Mode, место субъекта в промпте.
+
+    `negative_effective` — читает ли сэмплер негатив вообще. У Turbo (CFG 1) нет:
+    граф всё равно держит `CLIPTextEncode` (на него опираются `meta` и форма), но
+    сборка помечает негатив недействующим, и CLI говорит об этом вслух.
+    """
     name: str
     title: str
     nodes: list
@@ -133,6 +158,7 @@ class Build:
     style: dict | None = None
     style_lora: str = ""
     style_weight: float | None = None
+    negative_effective: bool = True
 
     def spec(self):
         """Описание в том виде, в каком его читает `comic.workflow.build`."""
@@ -146,6 +172,10 @@ class Build:
         if self.style_lora:
             out["style_lora"] = self.style_lora
             out["style_weight"] = self.style_weight
+        if not self.negative_effective:
+            # Ключ появляется только там, где он что-то значит: у 12 старых
+            # сборок `meta` остаётся байт в байт прежней.
+            out["negative_effective"] = False
         return out
 
 
@@ -333,7 +363,7 @@ def photo(*, name, title, style, body, hands=None, character=None,
                  style_lora=style.file, style_weight=style.weight)
 
 
-# ---------------------------------------------------------------- 12 сборок
+# ---------------------------------------------------------------- 13 сборок
 
 BUILDS = {b.name: b for b in [
     scene(name="01_scene_thepit", title="01 Сцена · ThePit V2",
@@ -375,6 +405,71 @@ BUILDS = {b.name: b for b in [
           text_desc="сцена: город, пляж, пальмы, время суток",
           denoise_desc="0.80–0.90: чем выше, тем сильнее стиль",
           cn_desc="жёсткость позы и композиции"),
+
+    # 08z — та же задача, другая база: Z-Image Turbo, 8 шагов и CFG 1. Латент
+    # пустой (это text→image), геометрию задаёт Fun ControlNet по карте DA3.
+    # Негатив в графе остаётся (на него опираются meta и форма), но сэмплер его
+    # не читает: `negative_effective=False` говорит это CLI и `--recheck`.
+    Build("08z_photo_gta", "08z Фото → арт GTA (Z-Image)",
+          nodes=[
+              node(1, "UNETLoader", {"unet_name": Z_IMAGE, "weight_dtype": "default"}),
+              # 20 — слот NSFW до стиля: вес 0, поднимать вручную по кадру.
+              lora_node(20, NSFW_Z, (1, 0)),
+              lora_node(2, GTAZ, (20, 0)),
+              node(3, "ModelSamplingAuraFlow", {"shift": 3.0, "sampling": "flow"},
+                   model=(2, 0)),
+              node(4, "CLIPLoader", {"clip_name": Z_IMAGE_TE, "type": "lumina2",
+                                     "device": "default"}),
+              clip_text(5, GTAZ_PROMPT, (4, 0)),
+              clip_text(6, GTA_NEG, (4, 0)),
+              node(7, "LoadImage", {"image": "photo.png"}),
+              node(8, "ImageScaleToTotalPixels",
+                   {"upscale_method": "lanczos", "megapixels": 1.0, "resolution_steps": 1},
+                   image=(7, 0)),
+              # Глубина — тот же DA3, что в 07/08: 21 → 22 → 23.
+              node(21, "LoadDA3Model", {"model_name": DA3, "weight_dtype": "default"}),
+              node(22, "DA3Inference",
+                   {"resolution": 504, "resize_method": "upper_bound_resize",
+                    "mode": "mono"},
+                   da3_model=(21, 0), image=(8, 0)),
+              node(23, "DA3Render",
+                   {"output": "depth", "output.normalization": "v2_style",
+                    "output.apply_sky_clip": False},
+                   da3_geometry=(22, 0)),
+              # 1024 по большей стороне: карту глубины VAE сжимает сам, но не
+              # бесконечно — лишние пиксели только жгут память.
+              node(24, "ImageScaleToMaxDimension",
+                   {"upscale_method": "lanczos", "largest_size": 1024}, image=(23, 0)),
+              node(25, "ModelPatchLoader", {"name": Z_IMAGE_PATCH}),
+              node(9, "VAELoader", {"vae_name": Z_IMAGE_VAE}),
+              # Патч надевается после AuraFlow: `ZImageControlPatch` берёт
+              # `percent_to_sigma` у той модели, к которой его прицепили.
+              node(26, "QwenImageDiffsynthControlnet",
+                   {"strength": 1.0, "start_percent": 0.0, "end_percent": 1.0},
+                   model=(3, 0), model_patch=(25, 0), vae=(9, 0), image=(24, 0)),
+              node(12, "EmptySD3LatentImage",
+                   {"width": 832, "height": 1216, "batch_size": 1}),
+              sampler(13, model=(26, 0), positive=(5, 0), negative=(6, 0), latent=(12, 0),
+                      steps=8, cfg=1.0, denoise=1.0,
+                      sampler_name="res_multistep", scheduler="simple"),
+              decode(14, (13, 0), (9, 0)),
+              save(19, (14, 0)),
+          ],
+          app=[
+              (7, "image", LABELS["image"]),
+              (5, "text", "сцена: город, пляж, пальмы, время суток"),
+              (2, "strength_model", "сила GTA-стиля, вес 0.85"),
+              (20, "strength_model", "NSFW LoRA (0 = выкл)"),
+              (26, "strength", "жёсткость позы и композиции"),
+              (12, "width", "832 для портрета; горизонталь меняет местами"),
+              (12, "height", "1216 для портрета; горизонталь меняет местами"),
+              (13, "seed", LABELS["seed"]),
+              (13, "steps", "8 шагов — весь бюджет Turbo"),
+              (13, "cfg", "1.0 — Turbo, негатив не читается"),
+          ],
+          style={"sample": GTAZ_SAMPLE},
+          style_lora=GTAZ.file, style_weight=GTAZ.weight,
+          negative_effective=False),
 ]}
 
 # ---------------------------------------------------------------- одиночные формы
@@ -503,8 +598,8 @@ BUILDS["06_scene_noct"] = Build(
 # Порядок как в прежней таблице: от него зависит порядок печати драйвера.
 ORDER = [
     "01_scene_thepit", "02_edit_mask",
-    "07_photo_thepit", "08_photo_gta", "04_pose_reference", "05_style_return",
-    "06_scene_noct", "01_scene_comic", "01_scene_jp",
+    "07_photo_thepit", "08_photo_gta", "08z_photo_gta", "04_pose_reference",
+    "05_style_return", "06_scene_noct", "01_scene_comic", "01_scene_jp",
     "07_photo_comic", "07_photo_jp", "07_photo_bimbo",
 ]
 if sorted(ORDER) != sorted(BUILDS):

@@ -374,7 +374,18 @@ def test_catalog_fields():
     names = [s["workflow"] for s in styles]
     check("в списке только фото-сборки",
           names == ["07_photo_bimbo", "07_photo_comic", "07_photo_jp",
-                    "07_photo_thepit", "08_photo_gta"], str(names))
+                    "07_photo_thepit", "08_photo_gta", "08z_photo_gta"], str(names))
+    check("--style gta по-прежнему ведёт на 08_photo_gta",
+          pp.STYLE_ALIAS["gta"] == "08_photo_gta", pp.STYLE_ALIAS["gta"])
+    zimage = next((s for s in styles if s["workflow"] == "08z_photo_gta"), None)
+    check("08z есть в списке стилей своей строкой",
+          zimage is not None and "Z-Image" in zimage["label"],
+          str(zimage and zimage["label"]))
+    check("у 08z нет короткого имени, как у 08",
+          bool(zimage) and zimage["style"] == "", str(zimage and zimage["style"]))
+    check("08z: форма знает, что негатив не действует",
+          bool(zimage) and zimage["meta"].get("negative_effective") is False,
+          str(zimage and zimage["meta"].get("negative_effective")))
     check("снятые графы 03 форма не предлагает",
           not [n for n in names if n.startswith("03_")], str(names))
     check("снятых графов 03 нет и в папке",

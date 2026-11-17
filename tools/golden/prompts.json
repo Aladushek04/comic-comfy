@@ -29,6 +29,10 @@
     "08_photo_gta": {
       "positive": "GTA V loading screen artwork, gtav, copic-makers, western comics (style), copic_markers_painting, digital painting, warm golden sunlight, saturated colors, adult woman, large breasts, nipples, jewelry, ass, wavy brown hair, green eyes, heavy black eyeliner, glossy lips, pearl necklace, pearl bracelet, rings on fingers, pink nail polish, topless, bare chest, grey lace panties, black lace thigh-high stockings, standing pose, one hand touching necklace, one hand on hip, white sofa, white curtains background, soft indoor light, bold black outlines, semi-realistic, Los Santos, palm trees, blue sky, beach, lens flare, advertising poster",
       "negative": "missing necklace, missing bracelet, missing rings, missing stockings, extra fingers, wrong eye color, photo, photorealistic, 3d render, dark, gloomy, desaturated, black and white, night, rain, blurry, low quality, bad anatomy, bad hands, watermark, text, signature, child, loli, shota, young, underage"
+    },
+    "08z_photo_gta": {
+      "positive": "GTA V loading screen artwork, gtav, painted with copic markers in a western comic style, adult woman, large breasts, nipples, jewelry, ass, wavy brown hair, green eyes, heavy black eyeliner, glossy lips, pearl necklace, pearl bracelet, rings on fingers, pink nail polish, topless, bare chest, grey lace panties, black lace thigh-high stockings, standing pose, one hand touching necklace, one hand on hip, white sofa, white curtains background, soft indoor light, Los Santos at golden hour with warm golden sunlight, saturated colors, palm trees, blue sky, beach, lens flare, bold black outlines, semi-realistic digital painting, advertising poster",
+      "negative": "missing necklace, missing bracelet, missing rings, missing stockings, extra fingers, wrong eye color, photo, photorealistic, 3d render, dark, gloomy, desaturated, black and white, night, rain, blurry, low quality, bad anatomy, bad hands, watermark, text, signature, child, loli, shota, young, underage"
     }
   }
 }

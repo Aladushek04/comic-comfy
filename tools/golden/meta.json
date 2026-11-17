@@ -61,6 +61,16 @@
       "positive_template": "ea093320ef4ab02e2b710a52421fbdfe09a6622091ad9f44a7d251c1b67be6ed",
       "negative": "5d1f7b2f87f736dc480fc5ea1e7b5caa6455a75d0ab52a7a4201de24de7dd2d6",
       "samplers": "5ca159b3e6dbd7f2d07615b6375cc974dfb46c49fc8c22bbd11e30d5a0d62a3c"
+    },
+    "08z_photo_gta": {
+      "fields": "5053b324dc4da7a064f104ff77d260891edf807421d678de7b2b62ef8f63b5c1",
+      "loras": "9967fe7d1f06e63c141d9917424088ade554c874239ed02379344c5a21aa8f44",
+      "style_lora": "a173dbfe412399b517c54ad9f4e360099266b48c7c18054f6a269220f5c217cb",
+      "style_weight": "1e181f0934d441445f03ff51c972ef44275b830c10a80401e53b27bf5baf327a",
+      "positive_template": "9f6fc76fa053577b1f625efbcb8990b3f51adbcf724559b0b5112b36f0aeebfd",
+      "negative": "5d1f7b2f87f736dc480fc5ea1e7b5caa6455a75d0ab52a7a4201de24de7dd2d6",
+      "samplers": "803ec8add3498ac66633e5fdbf8f47d69858594c8820ab43a85dd692fc73e5ba",
+      "negative_effective": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa"
     }
   }
 }

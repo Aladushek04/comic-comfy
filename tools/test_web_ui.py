@@ -581,7 +581,7 @@ def main():
                   styles["count"] == len(names) and styles["select"] == 0,
                   str(styles))
             check("вес LoRA справа у каждого стиля",
-                  styles["weights"] == ["0.6", "0.9", "0.9", "0.9", "0.85"],
+                  styles["weights"] == ["0.6", "0.9", "0.9", "0.9", "0.85", "0.85"],
                   str(styles["weights"]))
             check("выбран ровно один, и он помечен",
                   styles["pressed"].count("true") == 1
@@ -648,7 +648,7 @@ def main():
                   v2.evaluate("""() => {
                       const rows = document.querySelectorAll('.cp-style');
                       const rail = document.querySelector('.cp-rail');
-                      return rows.length === 5
+                      return rows.length === 6
                           && rail.scrollHeight <= rail.clientHeight + 1;
                   }"""))
             v2.evaluate("() => window.scrollTo(0, 400)")

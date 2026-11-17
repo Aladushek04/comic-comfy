@@ -720,7 +720,7 @@ def test_portable_paths():
 
     rc, out = check_install_run()
     check("полный набор -> код 0", rc == 0, out[-200:])
-    check("найдены все 17 моделей сборок", "моделей в сборках: 17" in out, out[-200:])
+    check("найдены все 23 модели сборок", "моделей в сборках: 23" in out, out[-200:])
 
     # Файл кастомного узла (поза 04) качает сам узел: пропажа — не провал.
     (models / "dw-ll_ucoco_384_bs5.torchscript.pt").unlink()
@@ -2316,12 +2316,16 @@ def meta_hash(value):
 
 
 def test_golden_meta():
-    """43) meta всех 12 сборок заморожена перед интерфейсом.
+    """43) meta всех сборок заморожена перед интерфейсом.
 
     P3 перегенерирует сборки декларативно, и тогда легко незаметно поменять
     контракт формы: привязки полей, слоты LoRA, стилевой шаблон и негатив. Здесь
     лежит хеш каждой части meta; изменилась хотя бы одна — проверка падает и
     называет сборку с полями.
+
+    Ключи сверх общего списка (`extra`) заморожены только у тех сборок, где они
+    есть: `negative_effective` появился у 08z, и его отсутствие у 12 старых
+    сборок — тоже контракт.
     """
     repo = Path(__file__).resolve().parent.parent
     golden = json.loads((repo / "tools" / "golden" / "meta.json").read_text(encoding="utf-8"))
@@ -2331,7 +2335,7 @@ def test_golden_meta():
     check("эталон сравнивает нужные части meta",
           keys == ["fields", "loras", "style_lora", "style_weight",
                    "positive_template", "negative", "samplers"], str(keys))
-    check("в эталоне 12 сборок", len(golden["builds"]) == 12, str(len(golden["builds"])))
+    check("в эталоне 13 сборок", len(golden["builds"]) == 13, str(len(golden["builds"])))
     check("сборки на диске и в эталоне совпадают", builds == sorted(golden["builds"]),
           str(sorted(set(builds) ^ set(golden["builds"]))))
     for name in builds:
@@ -2345,10 +2349,19 @@ def test_golden_meta():
         diff = [key for key in keys if meta_hash((meta or {}).get(key)) != want.get(key)]
         check(f"{name}: meta совпадает с эталоном", meta is not None and not diff,
               "meta пропал" if meta is None else "изменилось: " + ", ".join(diff))
+        extra = sorted(set(meta or {}) - set(keys) - {"label"})
+        check(f"{name}: дополнительных ключей ровно столько, сколько в эталоне",
+              extra == sorted(k for k in want if k not in keys), str(extra))
+        for key, digest in want.items():
+            if key in keys:
+                continue
+            check(f"{name}: {key} совпадает с эталоном",
+                  meta_hash((meta or {}).get(key)) == digest,
+                  repr((meta or {}).get(key)))
 
 
 def test_builds_structural():
-    """44) 12 сборок собираются из данных в те же файлы, что лежат в workflows/.
+    """44) 13 сборок собираются из данных в те же файлы, что лежат в workflows/.
 
     P3 описывает сборки таблицей (`comic/builds.py`), а граф собирает
     `comic/workflow.py`. Эталон — сами файлы `workflows/`: они прошли ревью, их
@@ -2363,7 +2376,7 @@ def test_builds_structural():
     from comic.builds import BUILDS, WORKFLOWS
 
     repo = Path(__file__).resolve().parent.parent
-    check("сборок в таблице 12", len(BUILDS) == 12, str(len(BUILDS)))
+    check("сборок в таблице 13", len(BUILDS) == 13, str(len(BUILDS)))
     check("описания собраны из той же таблицы", sorted(WORKFLOWS) == sorted(BUILDS),
           str(sorted(set(WORKFLOWS) ^ set(BUILDS))))
     for name in sorted(BUILDS):
@@ -2396,13 +2409,13 @@ def test_builds_structural():
 
 
 def test_depth_from_da3():
-    """45) глубина 07/08 — Depth Anything 3 нативными узлами, а не DA2."""
-    print("\n45) глубина 07/08 из Depth Anything 3")
+    """45) глубина 07/08/08z — Depth Anything 3 нативными узлами, а не DA2."""
+    print("\n45) глубина 07/08/08z из Depth Anything 3")
     repo = Path(__file__).resolve().parent.parent
     wf_dir = repo / "workflows"
     photo = sorted(p.stem[:-len(".api")] for p in wf_dir.glob("*.api.json")
-                   if p.stem.startswith(("07_photo_", "08_photo_")))
-    check("фото-сборок пять", len(photo) == 5, str(photo))
+                   if p.stem.startswith(("07_photo_", "08_photo_", "08z_photo_")))
+    check("фото-сборок шесть", len(photo) == 6, str(photo))
 
     for name in photo:
         api = json.loads((wf_dir / (name + ".api.json")).read_text(encoding="utf-8"))["prompt"]
@@ -2444,8 +2457,18 @@ def test_depth_from_da3():
         check(f"{name}: рендер берёт геометрию из инференса",
               render.get("da3_geometry") == [inf, 0], str(render))
 
-        cn = api[one("ControlNetApplyAdvanced")]["inputs"]
-        check(f"{name}: ControlNet берёт глубину из рендера", cn.get("image") == [ren, 0], str(cn))
+        if one("ControlNetApplyAdvanced"):
+            cn = api[one("ControlNetApplyAdvanced")]["inputs"]
+            check(f"{name}: ControlNet берёт глубину из рендера", cn.get("image") == [ren, 0], str(cn))
+        else:
+            # 08z: ту же карту глубины берёт Fun ControlNet, но через масштаб 24.
+            scale = one("ImageScaleToMaxDimension")
+            check(f"{name}: карта глубины масштабируется до 1024",
+                  api[scale]["inputs"].get("largest_size") == 1024
+                  and api[scale]["inputs"].get("image") == [ren, 0], str(api[scale]["inputs"]))
+            cn = api[one("QwenImageDiffsynthControlnet")]["inputs"]
+            check(f"{name}: Fun ControlNet берёт карту глубины",
+                  cn.get("image") == [scale, 0], str(cn))
 
         graph = json.loads((wf_dir / (name + ".json")).read_text(encoding="utf-8"))
         values = {str(n["id"]): n.get("widgets_values") for n in graph["nodes"]}
@@ -2455,15 +2478,15 @@ def test_depth_from_da3():
               f"{values.get(inf)} / {values.get(ren)}")
 
     others = sorted(p.stem[:-len(".api")] for p in wf_dir.glob("*.api.json")
-                    if not p.stem.startswith(("07_photo_", "08_photo_")))
-    check("остальных сборок семь (12 − 5 фото)", len(others) == 7, str(others))
+                    if not p.stem.startswith(("07_photo_", "08_photo_", "08z_photo_")))
+    check("остальных сборок семь (13 − 6 фото)", len(others) == 7, str(others))
     touched = []
     for name in others:
         api = json.loads((wf_dir / (name + ".api.json")).read_text(encoding="utf-8"))["prompt"]
         if any(n["class_type"].startswith("DA3") or n["class_type"] == "LoadDA3Model"
                for n in api.values()):
             touched.append(name)
-    check("DA3 не просочился в остальные восемь", not touched, str(touched))
+    check("DA3 не просочился в остальные семь", not touched, str(touched))
 
     example = (repo / "extra_model_paths.example.yaml").read_text(encoding="utf-8")
     check("geometry_estimation есть в образце путей",
@@ -2484,6 +2507,149 @@ def test_depth_from_da3():
                 if isinstance(value, dict):
                     objects.append(f"{path.stem}:{nid}.{key}")
     check("ни в одной сборке нет входа-объекта", not objects, ", ".join(objects))
+
+
+def test_zimage_build():
+    """46) 08z: Z-Image Turbo — 8 шагов, CFG 1, Fun ControlNet вместо SDXL-ControlNet.
+
+    Новый класс ошибок здесь не в тексте промпта, а в узлах: у Z-Image нет
+    SDXL-чекпойнта, ControlNet — это патч модели (`ModelPatchLoader` →
+    `QwenImageDiffsynthControlnet`), а латент пустой (`EmptySD3LatentImage`).
+    Ошибка в любом из них даёт не «другой стиль», а провал графа.
+    """
+    print("\n46) 08z: база Z-Image, 8 шагов и CFG 1")
+    repo = Path(__file__).resolve().parent.parent
+    name = "08z_photo_gta"
+    data = json.loads((repo / "workflows" / (name + ".api.json")).read_text(encoding="utf-8"))
+    api, meta = data["prompt"], data["meta"]
+
+    def one(kind):
+        ids = [nid for nid, n in api.items() if n["class_type"] == kind]
+        return ids[0] if len(ids) == 1 else None
+
+    check("08z: чекпойнта SDXL в графе нет",
+          not any(n["class_type"] == "CheckpointLoaderSimple" for n in api.values()))
+    check("08z: SDXL-ControlNet в графе нет",
+          one("ControlNetApplyAdvanced") is None and one("ControlNetLoader") is None)
+    unet = api[one("UNETLoader")]["inputs"]
+    check("08z: база — Z-Image Turbo int8",
+          unet.get("unet_name") == "z_image_turbo_int8_convrot.safetensors", str(unet))
+    clip = api[one("CLIPLoader")]["inputs"]
+    check("08z: энкодер Qwen3-4B с типом lumina2",
+          clip.get("clip_name") == "qwen_3_4b_fp8_mixed.safetensors"
+          and clip.get("type") == "lumina2", str(clip))
+    check("08z: VAE — ae.safetensors",
+          api[one("VAELoader")]["inputs"].get("vae_name") == "ae.safetensors")
+    check("08z: AuraFlow shift 3",
+          api[one("ModelSamplingAuraFlow")]["inputs"].get("shift") == 3.0,
+          str(api[one("ModelSamplingAuraFlow")]["inputs"]))
+    patch = api[one("ModelPatchLoader")]["inputs"]
+    check("08z: lite-патч из model_patches",
+          patch.get("name")
+          == "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors",
+          str(patch))
+    fun = one("QwenImageDiffsynthControlnet")
+    fun_in = api[fun]["inputs"]
+    check("08z: патч берёт модель после AuraFlow, патч, VAE и карту глубины",
+          fun_in.get("model") == [one("ModelSamplingAuraFlow"), 0]
+          and fun_in.get("model_patch") == [one("ModelPatchLoader"), 0]
+          and fun_in.get("vae") == [one("VAELoader"), 0]
+          and fun_in.get("image") == [one("ImageScaleToMaxDimension"), 0], str(fun_in))
+    check("08z: сила Fun ControlNet 1.0 на всём проходе",
+          fun_in.get("strength") == 1.0 and fun_in.get("start_percent") == 0.0
+          and fun_in.get("end_percent") == 1.0, str(fun_in))
+    scale = api[one("ImageScaleToMaxDimension")]["inputs"]
+    check("08z: карта глубины масштабируется до 1024",
+          scale.get("largest_size") == 1024
+          and scale.get("image") == [one("DA3Render"), 0], str(scale))
+    lat = api[one("EmptySD3LatentImage")]["inputs"]
+    check("08z: пустой латент SD3 832x1216",
+          (lat.get("width"), lat.get("height"), lat.get("batch_size")) == (832, 1216, 1),
+          str(lat))
+    ks = api[one("KSampler")]["inputs"]
+    check("08z: 8 шагов, CFG 1, res_multistep/simple, denoise 1",
+          (ks.get("steps"), ks.get("cfg"), ks.get("sampler_name"), ks.get("scheduler"),
+           ks.get("denoise")) == (8, 1.0, "res_multistep", "simple", 1.0), str(ks))
+    check("08z: сэмплер берёт модель из Fun ControlNet", ks.get("model") == [fun, 0], str(ks))
+    check("08z: фото не кодируется в латент (это text→image)",
+          not any(n["class_type"] == "VAEEncode" for n in api.values()))
+
+    check("08z: шаблон — фраза с {{subject}}",
+          "{{subject}}" in meta["positive_template"]
+          and meta["positive_template"].startswith("GTA V loading screen artwork"),
+          meta["positive_template"][:120])
+    check("08z: стилевая LoRA GTAV_ZImageTurbo весом 0.85",
+          meta["style_lora"] == "GTAV_ZImageTurbo.safetensors"
+          and meta["style_weight"] == 0.85,
+          f"{meta['style_lora']} {meta['style_weight']}")
+    check("08z: негатив в графе есть",
+          bool(meta["negative"]) and meta["negative"].startswith("photo, photorealistic"),
+          meta["negative"][:60])
+    check("08z: meta говорит, что негатив не действует",
+          meta.get("negative_effective") is False, str(meta.get("negative_effective")))
+    old_meta = [json.loads((repo / "workflows" / (n + ".api.json")).read_text(encoding="utf-8"))
+                .get("meta") or {} for n in ("07_photo_thepit", "08_photo_gta", "06_scene_noct")]
+    check("08z: старые сборки метки не получили",
+          all("negative_effective" not in m for m in old_meta),
+          str([sorted(m) for m in old_meta]))
+    check("08z: cn_strength привязан к Fun ControlNet",
+          (meta["fields"].get("cn_strength") or {}).get("node") == fun,
+          str(meta["fields"].get("cn_strength")))
+    weights = {n["inputs"].get("lora_name"): n["inputs"].get("strength_model")
+               for n in api.values() if n["class_type"] == "LoraLoaderModelOnly"}
+    check("08z: NSFW-слот с весом 0 рядом со стилем",
+          weights.get("NSFW_master_ZIT.safetensors") == 0.0
+          and weights.get("GTAV_ZImageTurbo.safetensors") == 0.85, str(weights))
+
+    # Ориентация: у пустого латента размер меняется местами, как в 01 (грабли 0).
+    def latent_of(landscape):
+        payload = pp.build_payload(name, "adult woman", "", landscape=landscape)
+        return next(n for n in payload["prompt"].values()
+                    if n["class_type"] == "EmptySD3LatentImage")["inputs"]
+
+    horizontal, vertical = latent_of(True), latent_of(False)
+    check("08z: горизонтальное фото -> 1216x832",
+          (horizontal["width"], horizontal["height"]) == (1216, 832), str(horizontal))
+    check("08z: вертикальное фото -> 832x1216",
+          (vertical["width"], vertical["height"]) == (832, 1216), str(vertical))
+    check("08z: --cn-strength правит силу Fun ControlNet",
+          pp.build_payload(name, "adult woman", "",
+                           cn_strength=0.4)["prompt"][fun]["inputs"]["strength"] == 0.4)
+
+
+def test_negative_inert():
+    """47) негатив, которого сэмплер не читает: --recheck отказывает, --dry-run говорит.
+
+    У Z-Image CFG 1, то есть ветки негатива нет. Молчать об этом нельзя: человек
+    думает, что `--negative-extra` и возрастная рамка в негативе работают.
+    """
+    print("\n47) 08z: негатив не действует (CFG 1)")
+    img = TMP / "zimage.png"
+    make(img, (7, 7, 7))
+    pp.write_cache(str(img), {"subject": "adult woman, black dress", "negative_extra": ""})
+
+    code, text = run_plain(["--image", str(img), "--workflow", "08z_photo_gta", "--dry-run"])
+    check("--dry-run 08z -> код 0", code == 0, str(code))
+    check("--dry-run говорит, что негатив не действует",
+          "негатив не действует (CFG 1)" in text, text.strip()[-400:])
+    check("--dry-run всё равно показывает негатив графа", "итоговый негатив" in text,
+          text.strip()[-200:])
+
+    code, text = run_plain(["--image", str(img), "--style", "thepit", "--dry-run"])
+    check("у 07 такой строки нет", "негатив не действует" not in text, text.strip()[-300:])
+
+    code, text = run_plain(["--image", str(img), "--workflow", "08z_photo_gta",
+                            "--no-llm", "--subject", "adult woman",
+                            "--generate", "--recheck"])
+    check("--recheck на 08z -> код 1", code not in (0, None), str(code))
+    check("--recheck называет причину",
+          "negative_effective" in text and "CFG 1" in text, text.strip()[-400:])
+    check("--recheck не дошёл до генерации", "генерация в ComfyUI" not in text,
+          text.strip()[-200:])
+    check("--recheck на 07 не отказывает по этой причине",
+          "negative_effective" not in run_plain(
+              ["--image", str(img), "--style", "thepit", "--dry-run"])[1],
+          "строка про negative_effective у 07")
 
 
 def test_prompt_builder():
@@ -2625,9 +2791,17 @@ def test_prompt_golden():
               first_diff(built.negative, want["negative"]))
 
     # Diff от baseline: два кадра не изменились вовсе, три — только на подстроку.
+    # 08z появилась после baseline, сравнивать её не с чем: эталон prompts.json
+    # для неё — единственный источник, и он собран тем же builder'ом выше.
     was = {r["workflow"]: r for r in base["runs"]}
+    check("в эталоне шесть фото-сборок: пять из baseline плюс 08z",
+          len(golden["prompts"]) == 6
+          and set(golden["prompts"]) - set(was) == {"08z_photo_gta"},
+          str(sorted(set(golden["prompts"]) ^ set(was))))
     for name, want in golden["prompts"].items():
-        before = was[name]
+        before = was.get(name)
+        if before is None:
+            continue
         check(f"{name}: негатив не изменился ни на байт", want["negative"] == before["negative"],
               first_diff(want["negative"], before["negative"]))
         if name in fixed:
@@ -2701,7 +2875,7 @@ def test_panel_sync():
                     if not p.name.endswith(".api.json"))
     check("снятые графы 03 убраны из репозитория",
           not [n for n in graphs if n.startswith("03_")], str(graphs))
-    check("в репозитории 12 графов", len(graphs) == 12, str(len(graphs)))
+    check("в репозитории 13 графов", len(graphs) == 13, str(len(graphs)))
 
     source = TMP / "panel_src"
     panel = TMP / "panel_dst"
@@ -2791,6 +2965,8 @@ def main():
         test_golden_meta()
         test_builds_structural()
         test_depth_from_da3()
+        test_zimage_build()
+        test_negative_inert()
         test_guard_overrides()
         test_panel_sync()
     finally:

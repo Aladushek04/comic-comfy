@@ -23,7 +23,7 @@ PHASE_STAGES = {
     "describe": ("queued", "start", "cache", "manual", "describe", "scene",
                  "unload", "cache_write", "subject", "negative", "notes", "setting"),
     # «Описание готово» — это конец промпта: кадра ещё нет, генерация не начата.
-    "prompt": ("preset", "prompt", "preview", "described"),
+    "prompt": ("preset", "prompt", "negative_inert", "preview", "described"),
     "generate": ("comfy", "comfy_launch", "comfy_start", "comfy_cached", "comfy_queue",
                  "generate", "variant", "sampling", "comfy_done"),
     "frame": ("save", "recheck", "done", "partial"),

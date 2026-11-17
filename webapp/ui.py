@@ -39,6 +39,7 @@ STAGE_LABEL = {
     "unload": "освобождаю память",
     "subject": "описание",
     "negative": "негатив",
+    "negative_inert": "негатив не действует (CFG 1)",
     "notes": "заметка",
     "setting": "настройка",
     "preset": "пресет",
@@ -64,7 +65,7 @@ STAGE_LABEL = {
 }
 
 ROLE_LABEL = {"style": "стиль", "body": "тело", "character": "персонаж",
-              "hands": "кисти", "lora": "LoRA"}
+              "hands": "кисти", "nsfw": "NSFW", "lora": "LoRA"}
 
 # Тема — состояние интерфейса, а не задания: файл рядом с кадрами, но не внутри
 # папки фото. env COMIC_THEME_FILE нужен проверкам, чтобы не переписывать выбор.
