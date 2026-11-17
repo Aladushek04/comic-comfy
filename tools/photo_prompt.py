@@ -189,9 +189,18 @@ def fingerprint(image_path):
 
 
 def image_tag(image_path):
-    """Читаемое и уникальное имя: <stem>_<хэш>."""
+    """Читаемое и уникальное имя: <stem>_<хэш>.
+
+    Хэш идемпотентен: если файл уже назван отпечатком (копия из `input`, кадр из
+    `out\\`), второй такой же не дописывается. Иначе прогон по копии из input
+    создавал вторую папку `out\\<имя>_<хэш>_<хэш>\\` и разрывал историю кадров.
+    """
     src = Path(image_path)
-    return f"{src.stem}_{fingerprint(src)}"
+    tag = fingerprint(src)
+    stem = src.stem
+    if stem.endswith("_" + tag):
+        stem = stem[: -len(tag) - 1]
+    return f"{stem}_{tag}"
 
 
 def input_name(image_path):

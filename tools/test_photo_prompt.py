@@ -2915,6 +2915,31 @@ def test_panel_sync():
     check("после копирования --check молчит", rc == 0, str(rc))
 
 
+def test_image_tag_idempotent():
+    """46) отпечаток в имени не удваивается.
+
+    Прогон по файлу, который уже лежит в `input` под именем `<stem>_<хэш>`
+    (копия из общего каталога, кадр из `out\\`), раньше давал
+    `<stem>_<хэш>_<хэш>` и вторую папку `out\\<...>\\`: история кадров рвалась
+    на две. Хэш считается по содержимому, поэтому повторно его дописывать не за что.
+    """
+    print("\n46) image_tag идемпотентен")
+    img = TMP / "twice.png"
+    make(img, (7, 8, 9))
+    tag = pp.image_tag(img)
+    check("обычное имя — <stem>_<хэш>", tag == "twice_" + pp.fingerprint(img), tag)
+
+    same = TMP / (tag + ".png")
+    shutil.copy2(img, same)
+    check("копия с отпечатком в имени не удваивает хэш",
+          pp.image_tag(same) == tag, pp.image_tag(same))
+    check("input_name от такой копии — одно имя",
+          pp.input_name(same) == tag + ".png", pp.input_name(same))
+    check("кэш у копии тот же",
+          pp.cache_path(same) == pp.cache_path(img),
+          f"{pp.cache_path(same).name} / {pp.cache_path(img).name}")
+
+
 def main():
     patch_roots()
     try:
@@ -2968,6 +2993,7 @@ def main():
         test_zimage_build()
         test_negative_inert()
         test_guard_overrides()
+        test_image_tag_idempotent()
         test_panel_sync()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
