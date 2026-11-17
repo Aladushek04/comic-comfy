@@ -100,9 +100,13 @@ class PromptBuilder:
     куда пойдёт текст, и отказывается собирать промпт, которому нет привязки.
     """
 
-    def __init__(self, meta, fields=None):
+    def __init__(self, meta, fields=None, tags_known=True):
         self.meta = dict(meta or {})
         self.fields = dict(fields or {})
+        # Считались ли теги WD14. Нужны, чтобы отличить «теги сказали, что тон
+        # кожи не назван» от «тегов не было вовсе»: во втором случае свидетельства
+        # нет, и ставить светлый якорь тёмнокожему субъекту нельзя.
+        self.tags_known = bool(tags_known)
 
     def template(self):
         """Шаблон positive из графа (пустая строка, если его нет)."""
@@ -135,6 +139,11 @@ class PromptBuilder:
             return "", ""
         if names_skin(subject):
             return "", "skipped: subject names skin tone"
+        if not self.tags_known:
+            # Теги не считались: молчание описания здесь ничего не доказывает.
+            # Ошибка в одну сторону дешевле: без якоря светлая кожа уйдёт в
+            # загар (как было до него), с якорем тёмнокожей субъект побелеет.
+            return "", "skipped: tags not counted"
         return anchor, "applied"
 
     def positive(self, subject):
@@ -165,11 +174,12 @@ class PromptBuilder:
         return BuiltPrompt(self.positive(subject), self.negative(negative_extra), applied)
 
 
-def skin_anchor_state(meta, subject):
+def skin_anchor_state(meta, subject, tags_known=True):
     """Что стало с якорем тона кожи: `applied`, `skipped: …` или пусто.
 
     Для тех, кто собирает positive не через `build()` (переопределение
     промпта в `photo_prompt.build_payload`): якорь там не ставится, и записать
-    это честнее, чем промолчать.
+    это честнее, чем промолчать. `tags_known=False` — теги WD14 не считались,
+    и молчание описания о тоне кожи тогда ничего не доказывает.
     """
-    return PromptBuilder(meta).skin_anchor(subject)[1]
+    return PromptBuilder(meta, tags_known=tags_known).skin_anchor(subject)[1]

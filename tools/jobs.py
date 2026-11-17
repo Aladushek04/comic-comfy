@@ -157,6 +157,7 @@ def _prompts(req, desc, landscape=False, image_name=None):
         style_weight=req.style_weight, image_name=image_name,
         cn_strength=req.cn_strength, overrides=req.overrides,
         positive=req.positive_override, negative=req.negative_override,
+        tags_known=req.tags,
     )
     applied = dict(payload.get("applied") or {})
     applied.setdefault("landscape", bool(landscape))
@@ -400,7 +401,8 @@ def run_job(req, emit=None, cancel=None):
                 style_weight=req.style_weight, image_name=image_name,
                 cn_strength=req.cn_strength, overrides=req.overrides,
                 positive=req.positive_override, negative=req.negative_override,
-                progress=out.progress, client_id=req.client_id, report=report)
+                progress=out.progress, client_id=req.client_id, report=report,
+                tags_known=req.tags)
             ok_all &= bool(ok)
             folder = None
             if name:
@@ -575,7 +577,8 @@ def _one_more(req, desc, out, seed=None, positive=None):
         style_weight=req.style_weight, image_name=pp.ensure_input(str(req.image)),
         cn_strength=req.cn_strength, overrides=req.overrides,
         positive=refined_positive, negative=req.negative_override,
-        progress=out.progress, client_id=req.client_id, report=report)
+        progress=out.progress, client_id=req.client_id, report=report,
+        tags_known=req.tags)
     if not ok or not name2:
         return False, None
     folder = pp.save_run(str(req.image), req.workflow, desc, sd, req.denoise, name2,

@@ -2789,6 +2789,28 @@ def test_skin_anchor():
           == "skipped: positive заменён целиком",
           str(over.get("applied")))
 
+    # Теги не считались (`--no-tags`): молчание описания о тоне кожи ничего не
+    # доказывает. Живой случай: VLM не назвал тон, назвал теггер
+    # (`dark-skinned_female`), и с `--no-tags` якорь лёг бы тёмнокожей субъект.
+    untagged = cp.PromptBuilder(metas["08z_photo_gta"], tags_known=False)
+    got = untagged.build("adult woman, long wavy dark brown hair, brown eyes")
+    check("08z без тегов: якорь не ставится",
+          not got.positive.startswith(anchor)
+          and got.applied.get("skin_anchor") == "skipped: tags not counted",
+          got.positive[:120])
+    got = untagged.build("adult woman, dark skin, brown eyes")
+    check("08z без тегов: названный тон всё равно главнее",
+          not got.positive.startswith(anchor)
+          and got.applied.get("skin_anchor") == "skipped: subject names skin tone",
+          got.positive[:120])
+    untagged_payload = pp.build_payload("08z_photo_gta", "adult woman, brown eyes", "",
+                                        seed=5, tags_known=False)
+    check("build_payload без тегов: якоря нет и это записано",
+          "porcelain complexion" not in untagged_payload["positive"]
+          and (untagged_payload.get("applied") or {}).get("skin_anchor")
+          == "skipped: tags not counted",
+          str(untagged_payload.get("applied")))
+
     saved = (pp.ROOT, pp.OUTPUT_DIR)
     pp.ROOT = TMP / "root_anchor"
     pp.OUTPUT_DIR = TMP / "out_anchor"

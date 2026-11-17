@@ -711,14 +711,14 @@ def compose_negative(negative_extra, meta=None):
     return PromptBuilder(meta).negative(negative_extra)
 
 
-def compose_positive(meta, subject, workflow=""):
+def compose_positive(meta, subject, workflow="", tags_known=True):
     """Промпт = шаблон сборки с подставленным субъектом.
 
     Шаблон приходит из графа (meta.positive_template), поэтому CLI выдаёт ровно тот
     промпт, что и панель, вместе со стилевыми настройками сборки. Если meta нет
     (старый .api.json) — собираем из таблицы STYLE_PREFIX, как раньше.
     """
-    builder = PromptBuilder(meta)
+    builder = PromptBuilder(meta, tags_known=tags_known)
     if builder.refuse_reason() is None:
         return builder.positive(subject)
     return join_tags(STYLE_PREFIX.get(workflow, ""), subject, "bold outlines, flat colors")
@@ -1035,7 +1035,7 @@ def sampler_settings(samplers):
 
 def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, landscape=False,
                   style_weight=None, image_name=None, cn_strength=None,
-                  overrides=None, positive=None, negative=None):
+                  overrides=None, positive=None, negative=None, tags_known=True):
     """Копия API-графа под конкретный кадр плюс итоговые промпты.
 
     Правки не касаются файла сборки: граф загружается заново, поэтому два
@@ -1055,14 +1055,14 @@ def build_payload(workflow, subject, negative_extra, denoise=None, seed=None, la
         raise PipelineError(f"для {workflow} не задан стилевой блок: пересобери воркфлоу")
 
     positive_text = (sanitize_subject(positive) if positive is not None
-                     else compose_positive(meta, subject, workflow))
+                     else compose_positive(meta, subject, workflow, tags_known=tags_known))
     negative_text = (ensure_guard(negative) if negative is not None
                      else compose_negative(negative_extra, meta))
     # Якорь тона кожи ставит builder первым в positive. Переопределение промпта
     # заменяет текст целиком, поэтому там якоря нет, и записать это лучше, чем
     # оставить предпросмотр и паспорт молчать (AGENTS 0.22).
     anchor_state = ("skipped: positive заменён целиком" if positive is not None
-                    else skin_anchor_state(meta, subject))
+                    else skin_anchor_state(meta, subject, tags_known=tags_known))
 
     patched = 0
     samplers = []
@@ -1347,12 +1347,14 @@ def _ws_watch(base, client_id, pid, progress, stop, ready=None):
 
 def generate(workflow, subject, negative_extra, denoise=None, seed=None, landscape=False,
              style_weight=None, image_name=None, cn_strength=None, overrides=None,
-             positive=None, negative=None, progress=None, client_id=None, report=None):
+             positive=None, negative=None, progress=None, client_id=None, report=None,
+             tags_known=True):
     try:
         payload = build_payload(workflow, subject, negative_extra, denoise=denoise, seed=seed,
                                 landscape=landscape, style_weight=style_weight,
                                 image_name=image_name, cn_strength=cn_strength,
-                                overrides=overrides, positive=positive, negative=negative)
+                                overrides=overrides, positive=positive, negative=negative,
+                                tags_known=tags_known)
     except PipelineError as e:
         sys.exit(str(e))
     api = payload["prompt"]
